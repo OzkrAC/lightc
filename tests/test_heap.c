@@ -277,6 +277,52 @@ static void test_heap_allocate_size_overflow(void) {
     lc_heap_free(small.value);
 }
 
+/* ===== M7: emptied slab pages are reclaimed ===== */
+
+/*
+ * Fill several 64 KiB slab pages of one bucket, then free everything. Each page
+ * that empties (and is not the last one kept resident per bucket) is returned
+ * to its segment — previously page_reclaim was dead code and the footprint grew
+ * monotonically. We assert the reclaim counter advanced, and that the heap is
+ * still fully usable afterwards (reclaimed pages/segments get reused cleanly).
+ */
+#define RECLAIM_BLOCKS 20000
+static void *reclaim_ptrs[RECLAIM_BLOCKS];
+
+static void test_heap_page_reclaim(void) {
+    lc_heap_stats before, after;
+    lc_heap_get_stats(&before);
+
+    /* Hold the allocations so the pages genuinely fill (used_count stays high)
+     * and span multiple slab pages. */
+    for (int i = 0; i < RECLAIM_BLOCKS; i++) {
+        lc_result_ptr r = lc_heap_allocate(48);
+        TEST_ASSERT_PTR_OK(r);
+        reclaim_ptrs[i] = r.value;
+    }
+    for (int i = 0; i < RECLAIM_BLOCKS; i++) {
+        lc_heap_free(reclaim_ptrs[i]);
+    }
+
+    lc_heap_get_stats(&after);
+
+#if LC_STATS
+    /* The spanned pages emptied; all but one-per-bucket must have been reclaimed. */
+    TEST_ASSERT(after.heap_pages_reclaimed > before.heap_pages_reclaimed);
+#endif
+
+    /* Heap still works: allocate and use a block (exercises reuse of reclaimed
+     * pages / a freshly re-created segment). */
+    lc_result_ptr r = lc_heap_allocate(48);
+    TEST_ASSERT_PTR_OK(r);
+    uint8_t *b = (uint8_t *)r.value;
+    b[0] = 0x7E;
+    b[47] = 0x7F;
+    TEST_ASSERT_EQ(b[0], (uint8_t)0x7E);
+    TEST_ASSERT_EQ(b[47], (uint8_t)0x7F);
+    lc_heap_free(r.value);
+}
+
 /* ===== Alloc/free cycles ===== */
 
 static void test_heap_alloc_free_cycles(void) {
@@ -434,6 +480,9 @@ int main(int argc, char **argv, char **envp) {
 
     /* Heap stress */
     TEST_RUN(test_heap_stress);
+
+    /* M7: emptied slab pages are reclaimed */
+    TEST_RUN(test_heap_page_reclaim);
 
     /* Statistics */
     TEST_RUN(test_heap_stats);

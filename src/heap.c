@@ -165,6 +165,7 @@ static _Atomic(uint64_t) stat_peak_allocs = 0;
 static _Atomic(uint64_t) stat_peak_bytes = 0;
 static _Atomic(uint64_t) stat_large_allocs = 0;
 static _Atomic(uint64_t) stat_large_cache_hits = 0;
+static _Atomic(uint64_t) stat_pages_reclaimed = 0;
 
 static void stat_track_alloc(size_t size) {
     atomic_fetch_add_explicit(&stat_total_allocs, 1, memory_order_relaxed);
@@ -190,9 +191,13 @@ static void stat_track_free(size_t size) {
     atomic_fetch_sub_explicit(&stat_active_allocs, 1, memory_order_relaxed);
     atomic_fetch_sub_explicit(&stat_active_bytes, size, memory_order_relaxed);
 }
+static inline void stat_track_page_reclaim(void) {
+    atomic_fetch_add_explicit(&stat_pages_reclaimed, 1, memory_order_relaxed);
+}
 #else
 static inline void stat_track_alloc(size_t size) { (void)size; }
 static inline void stat_track_free(size_t size)  { (void)size; }
+static inline void stat_track_page_reclaim(void) {}
 #endif
 
 /* --- Helpers --- */
@@ -458,6 +463,9 @@ static void segment_release(lc_heap_segment *seg) {
     lc_kernel_unmap_memory(seg, SEGMENT_SIZE);
 }
 
+/* Return an emptied slab page to its segment. Caller must hold heap_global_lock
+ * (touches seg->used_page_count and all_segments) and must have already
+ * unlinked the page from the owner's thread-local list. */
 [[gnu::cold]]
 static void page_reclaim(lc_heap_page *page) {
     lc_kernel_advise_memory(page->data_start, ALLOC_PAGE_SIZE, MADV_DONTNEED);
@@ -467,6 +475,7 @@ static void page_reclaim(lc_heap_page *page) {
     page->owner_tid = 0;
     page->next = NULL;
     atomic_store_explicit(&page->remote_free_list, NULL, memory_order_relaxed);
+    stat_track_page_reclaim();
 
     lc_heap_segment *seg = (lc_heap_segment *)((uintptr_t)page->data_start & SEGMENT_ALIGN_MASK);
     seg->used_page_count--;
@@ -571,6 +580,34 @@ static void remove_page_from_list(lc_heap_page **list_head, lc_heap_page *page) 
         }
         pp = &(*pp)->next;
     }
+}
+
+/*
+ * After a same-thread free, hand an emptied page back to its segment so the
+ * heap footprint can shrink instead of growing monotonically.
+ *
+ * Safe because used_count == 0 means every block handed out from this page has
+ * been freed-and-accounted: a pending remote free would still be counted (it is
+ * only decremented on drain), so used_count == 0 implies the remote list is
+ * empty too, and with no live blocks no other thread can push a new one. The
+ * owner alone reaches this path, so unlinking from its own list needs no lock;
+ * page_reclaim touches shared segment state under heap_global_lock.
+ *
+ * One page per bucket is kept resident so a tight alloc/free loop on a single
+ * page does not madvise-and-refault (or unmap/remap a whole segment) every
+ * iteration.
+ */
+static void maybe_reclaim_page(lc_heap_local *local, lc_heap_page *page) {
+    if (page->used_count != 0) return;
+
+    uint32_t bucket = page->bucket;
+    lc_heap_page *head = local->pages[bucket];
+    if (head == page && page->next == NULL) return;  /* keep the sole page */
+
+    remove_page_from_list(&local->pages[bucket], page);
+    lc_spinlock_acquire(&heap_global_lock);
+    page_reclaim(page);
+    lc_spinlock_release(&heap_global_lock);
 }
 
 /* --- Public API --- */
@@ -756,6 +793,9 @@ void lc_heap_free(void *ptr) {
         header->magic = HEAP_MAGIC_FREED;
         lc_bytes_fill((uint8_t *)header + HEADER_SIZE, 0xCC, header->size);
 #endif
+        /* Return the page to its segment if it just emptied (keeps footprint
+         * bounded; previously these pages were never reclaimed). */
+        maybe_reclaim_page(local, page);
     } else {
         /* Different thread — CAS push to remote free list, no lock */
 #if LC_HEAP_DEBUG
@@ -818,6 +858,7 @@ void lc_heap_get_stats(lc_heap_stats *stats) {
     stats->peak_active_bytes     = atomic_load_explicit(&stat_peak_bytes, memory_order_relaxed);
     stats->large_allocations     = atomic_load_explicit(&stat_large_allocs, memory_order_relaxed);
     stats->large_cache_hits      = atomic_load_explicit(&stat_large_cache_hits, memory_order_relaxed);
+    stats->heap_pages_reclaimed  = atomic_load_explicit(&stat_pages_reclaimed, memory_order_relaxed);
 
     /* Read current large cache count under lock */
     lc_spinlock_acquire(&large_cache_lock);
@@ -846,5 +887,6 @@ void lc_heap_reset_stats(void) {
         memory_order_relaxed);
     atomic_store_explicit(&stat_large_allocs, 0, memory_order_relaxed);
     atomic_store_explicit(&stat_large_cache_hits, 0, memory_order_relaxed);
+    atomic_store_explicit(&stat_pages_reclaimed, 0, memory_order_relaxed);
 #endif
 }

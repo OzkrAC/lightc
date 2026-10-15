@@ -65,6 +65,9 @@ typedef struct {
     uint64_t large_allocations;       /* total large (mmap) allocations */
     uint64_t large_cache_hits;        /* large allocs served from cache */
     uint64_t large_cache_count;       /* current entries in the large cache */
+
+    /* Small-slab reclamation */
+    uint64_t heap_pages_reclaimed;    /* cumulative emptied slab pages returned */
 } lc_heap_stats;
 
 /* Collect current heap statistics (zeroes struct when LC_STATS=0). */
