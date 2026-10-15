@@ -48,13 +48,25 @@ typedef struct {
 
 /*
  * Size classes — 29 buckets with ~1.25x geometric spacing.
+ *
+ * Every block size MUST be a multiple of 16: a block starts at a 16-aligned
+ * offset within a 64 KiB-aligned page, and the user pointer is block + the
+ * 16-byte header, so a non-16-multiple stride would hand out 8-mod-16 addresses
+ * for odd block indices — violating the documented 16-byte ABI alignment
+ * (a movaps / _Atomic __int128 on such a block would fault or tear).
+ *
+ * The smallest group [32,64) only contains two distinct 16-multiples (32, 48),
+ * so the 1.25x/1.75x steps that would otherwise give 40 and 56 are rounded up
+ * to 48 and 64. That leaves one redundant 48 slot (index 2 is never selected,
+ * since find_bucket returns the first class >= the request) — a negligible cost
+ * for universal 16-alignment.
  */
 #define BUCKET_COUNT    29
 #define BUCKET_LARGE    0xFFFFFFFF
 #define BUCKET_NONE     0xFFFFFFFE
 
 static const size_t bucket_block_sizes[BUCKET_COUNT] = {
-                 32,  40,  48,  56,
+                 32,  48,  48,  64,   /* was 32,40,48,56 — 40/56 not 16-aligned */
                  64,  80,  96, 112,
                 128, 160, 192, 224,
                 256, 320, 384, 448,

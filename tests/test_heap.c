@@ -277,6 +277,37 @@ static void test_heap_allocate_size_overflow(void) {
     lc_heap_free(small.value);
 }
 
+/* ===== M8: every allocation is 16-byte aligned ===== */
+
+/*
+ * The heap documents 16-byte alignment (SSE / _Atomic __int128). A block starts
+ * 16-aligned and the user pointer is block + 16-byte header, so the stride (the
+ * bucket size) must be a multiple of 16 or odd-indexed blocks come back
+ * 8-mod-16. Allocate many blocks of each small size consecutively (filling
+ * successive indices in a page, so odd indices are exercised) and require every
+ * returned pointer to be 16-aligned. Sizes 24 and 40 map to the buckets whose
+ * strides were formerly 40 and 56 — the ones that misaligned.
+ */
+#define ALIGN_BATCH 64
+static void *align_ptrs[ALIGN_BATCH];
+
+static void test_heap_block_alignment(void) {
+    static const size_t sizes[] = { 1, 8, 16, 24, 32, 40, 48, 56, 64, 100, 200, 256 };
+    const size_t nsizes = sizeof(sizes) / sizeof(sizes[0]);
+
+    for (size_t s = 0; s < nsizes; s++) {
+        for (int i = 0; i < ALIGN_BATCH; i++) {
+            lc_result_ptr r = lc_heap_allocate(sizes[s]);
+            TEST_ASSERT_PTR_OK(r);
+            align_ptrs[i] = r.value;
+            TEST_ASSERT_EQ(((uintptr_t)r.value) & 15u, (uintptr_t)0);
+        }
+        for (int i = 0; i < ALIGN_BATCH; i++) {
+            lc_heap_free(align_ptrs[i]);
+        }
+    }
+}
+
 /* ===== M7: emptied slab pages are reclaimed ===== */
 
 /*
@@ -480,6 +511,9 @@ int main(int argc, char **argv, char **envp) {
 
     /* Heap stress */
     TEST_RUN(test_heap_stress);
+
+    /* M8: every allocation is 16-byte aligned */
+    TEST_RUN(test_heap_block_alignment);
 
     /* M7: emptied slab pages are reclaimed */
     TEST_RUN(test_heap_page_reclaim);
