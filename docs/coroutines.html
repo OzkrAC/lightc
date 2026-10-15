@@ -1,0 +1,125 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Coroutines · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: lightc coroutine API reference — stackful coroutines with a cooperative round-robin scheduler and an assembly context switch over the callee-saved registers.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Coroutines {#top}
+
+{.brief}
+Stackful coroutines and a cooperative scheduler. `lightc/coroutine.h`.
+
+::toc
+
+## Detailed description {#detail}
+
+A coroutine is a function with its own call stack that can suspend in the middle and resume later. A scheduler runs a set of them round-robin on a single thread, switching context in about five nanoseconds. Coroutines are the machinery under [lightio](async.html#lightio), where each connection is a coroutine.
+
+### Execution model {#model}
+
+Scheduling is **cooperative**: a coroutine runs until it calls `lc_coroutine_yield` or returns, at which point the scheduler saves its registers and resumes the next one. When control comes back, it continues from the line after the yield, with its locals and call depth intact. Nothing is preempted, so coroutines on one scheduler never race with each other. A coroutine that never yields starves the rest — yield to an I/O loop for blocking work ([lightio](async.html#lightio) does exactly this over `io_uring`).
+
+### The context switch {#switch}
+
+Switching is a short assembly routine that saves the current registers and loads another's, then returns into the resumed coroutine. It saves **only the callee-saved registers**, since the ABI guarantees the caller already spilled the rest — which is why it is cheap and needs no syscall.
+
+| Arch | Saved |
+|---|---|
+| x86_64 | `rbx`, `rbp`, `r12`–`r15`, `rsp` |
+| aarch64 | `x19`–`x28`, `x29` (fp), `x30` (lr), `sp`, and `d8`–`d15` |
+
+On aarch64 the low 64 bits of `d8`–`d15` are callee-saved by the ABI, so the switch preserves them too. A new coroutine's context is arranged so the first switch enters a trampoline that calls its function, with the stack aligned to the ABI's 16-byte rule at entry.
+
+### Stacks {#stacks}
+
+Each coroutine gets its own `mmap`'d stack of `LC_COROUTINE_STACK_SIZE` (64 KiB) with a one-page `PROT_NONE` guard at the low end, sized from the kernel's real page size. `lc_scheduler_destroy` unmaps every stack.
+
+:::tip
+Coroutines compose with threads: each thread can run its own scheduler (the scheduler is anchored in thread-local storage), so a pool of event loops is one scheduler per thread — how [`lio_loop_run_threaded`](async.html#lio_loop_run) scales a server across cores.
+:::
+
+## Macros and types {#types}
+
+:::member{#lc_coroutine_types}
+```c
+#define LC_COROUTINE_STACK_SIZE (64 * 1024)   /* 64 KiB per coroutine */
+#define LC_MAX_COROUTINES       256
+
+typedef void (*lc_coroutine_func)(void *arg);
+typedef struct { /* … */ } lc_scheduler;    // held by value, not allocated
+typedef struct lc_coroutine lc_coroutine;
+```
+A coroutine function takes a `void *` and returns nothing; it ends by returning. `lc_scheduler` is a value the caller holds (created with `lc_scheduler_create`), not a pointer you allocate. `LC_MAX_COROUTINES` is the default capacity.
+:::
+
+## Functions {#functions}
+
+:::member{#lc_scheduler_create}
+```c
+lc_scheduler lc_scheduler_create(void);
+lc_scheduler lc_scheduler_create_with_capacity(uint32_t max_coroutines);
+```
+Create a scheduler by value. `lc_scheduler_create` allows up to `LC_MAX_COROUTINES`; the `_with_capacity` form sets a custom ceiling. If the backing allocation fails the scheduler is created with zero capacity, so a later `lc_coroutine_create` simply returns `NULL` rather than misbehaving.
+:::
+
+:::member{#lc_coroutine_create}
+```c
+lc_coroutine *lc_coroutine_create(lc_scheduler *sched, lc_coroutine_func func, void *arg);
+```
+Add a coroutine to `sched`. Maps its stack and prepares its initial context; it does not run until `lc_scheduler_run`.
+
+| Parameter | |
+|---|---|
+| `sched` | the scheduler to add to |
+| `func`, `arg` | the coroutine body and its argument |
+
+**Returns** — a handle, or `NULL` if the scheduler is at capacity or a stack could not be mapped.
+:::
+
+:::member{#lc_scheduler_run}
+```c
+void lc_scheduler_run(lc_scheduler *sched);
+```
+Drive the runnable coroutines round-robin until all have finished, then return. A coroutine that has already finished is never resumed; re-running a scheduler whose coroutines all finished is a no-op, and coroutines added after an earlier run start cleanly on a later one.
+:::
+
+:::member{#lc_coroutine_yield}
+```c
+void lc_coroutine_yield(void);
+```
+Suspend the current coroutine and hand control to the scheduler, which resumes the next runnable one. Execution continues from the following statement when control returns. Called outside a running scheduler it is a safe no-op.
+:::
+
+:::member{#lc_scheduler_destroy}
+```c
+void lc_scheduler_destroy(lc_scheduler *sched);
+```
+Unmap every coroutine stack and release the scheduler's storage. Call after `lc_scheduler_run` returns.
+:::
+
+## Example {#example}
+
+```c [two coroutines interleaving]
+static void counter(void *arg) {
+    int id = (int)(intptr_t)arg;
+    for (int i = 0; i < 3; i++) { lc_print_signed(STDOUT, id); lc_coroutine_yield(); }
+}
+
+lc_scheduler s = lc_scheduler_create();
+lc_coroutine_create(&s, counter, (void *)(intptr_t)1);
+lc_coroutine_create(&s, counter, (void *)(intptr_t)2);
+lc_scheduler_run(&s);        // prints 1 2 1 2 1 2
+lc_scheduler_destroy(&s);
+```
+
+{.source}
+Header `include/lightc/coroutine.h`; source `src/coroutine.c`, `arch/<arch>/coroutine.S`.

@@ -1,0 +1,139 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Heap · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: lightc heap API reference — general-purpose allocator with a per-thread bucket allocator over slab pages and segments, lock-free cross-thread frees, a large-block cache, page reclamation, and 16-byte alignment.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Heap {#top}
+
+{.brief}
+General-purpose allocator — `lc_heap_allocate` / `lc_heap_free` / `lc_heap_reallocate`. A per-thread bucket allocator over `mmap`, with a large-block cache. `lightc/heap.h`.
+
+::toc
+
+## Detailed description {#detail}
+
+The heap serves small objects from thread-local slab pages with no locking on the common path, and large objects from dedicated mappings with a small reuse cache. Every returned pointer is **16-byte aligned**. A request's path is decided purely by size: small requests use the bucket allocator; a request whose block would exceed 4096 bytes uses the large path. All calls report failure through the [error model](guide.html#errors).
+
+### Size classes {#buckets}
+
+Small requests round up to one of 29 fixed size classes with roughly 1.25× spacing. Each block carries a 16-byte header before the returned pointer, so the class is chosen for `size + 16`. Every class is a multiple of 16, which keeps every block in a page — including odd-indexed ones — 16-aligned.
+
+```text
+32  48  48  64 | 64  80  96 112 | 128 160 192 224 | 256 320 384 448
+512 640 768 896 | 1024 1280 1536 1792 | 2048 2560 3072 3584 4096
+```
+
+A lookup finds the power-of-two group from a leading-zero count, then scans the (at most four) classes in that group.
+
+### Slab pages and segments {#slabs}
+
+The small allocator carves memory at two granularities:
+
+- A **segment** is a 4 MiB region, `mmap`'d aligned to its own size, holding 63 pages.
+- A **page** (slab) is 64 KiB. Assigned to one size class, it is sliced into equal blocks tracked by a bitmap — one bit per block. Allocation is a bitmap scan for a clear bit; a same-thread free clears the bit. No lock is needed within a page.
+
+### Per-thread allocation {#tls}
+
+Each thread owns an `lc_heap_local` — per-bucket page lists — reachable through the thread's TLS register (`%fs` on x86_64, `TPIDR_EL0` on aarch64) in a single instruction after the first allocation. Allocation touches shared state only when a new page or segment is needed, and then only a short global lock around the segment list. The locals are indexed in a global hash table keyed by thread id, so a recycled tid reconnects to its existing local.
+
+### Cross-thread frees {#remote}
+
+A block freed by a thread other than its owner is pushed onto the page's remote-free list with a lock-free compare-and-swap; the owner drains that list back into the bitmap on its next allocation from the page. The producer never blocks and the owner never locks. A remotely freed block still counts as in-use until drained, so a page's used-count reaches zero only when it is genuinely empty.
+
+### Large blocks {#large}
+
+A request whose block exceeds 4096 bytes gets its own `mmap`, with the true page count stored ahead of the header so `free` releases the exact extent. A freed large mapping goes into a 16-entry cache and is reused by the next large request of equal-or-larger size (best fit), avoiding the `mmap`/`munmap` round trip; when the cache is full the smallest entry is evicted and unmapped.
+
+### Reclamation {#reclaim}
+
+When the last block in a slab page is freed on its owning thread, the page is returned to its segment (`madvise(MADV_DONTNEED)`), and a fully empty segment is unmapped. One empty page per bucket is kept resident to avoid thrashing on a tight allocate/free loop. The footprint tracks live usage rather than growing monotonically.
+
+:::note
+The TLS register must be valid before the first `%fs:0` read; `_start` establishes it for the main thread and `CLONE_SETTLS` for children (see [Threads](threads.html#detail)). This is why the heap and thread modules are intertwined.
+:::
+
+## Types {#types}
+
+:::member{#lc_heap_stats}
+```c
+typedef struct {
+    uint64_t total_allocations, total_frees;
+    uint64_t total_bytes_allocated, total_bytes_freed;
+    uint64_t active_allocations, active_bytes;
+    uint64_t peak_active_allocations, peak_active_bytes;
+    uint64_t large_allocations, large_cache_hits, large_cache_count;
+    uint64_t heap_pages_reclaimed;
+} lc_heap_stats;
+```
+A snapshot of heap counters, filled by `lc_heap_get_stats`. Populated only when statistics are compiled in (`LC_STATS`, on in debug builds); otherwise the struct is zeroed.
+:::
+
+## Functions {#functions}
+
+:::member{#lc_heap_allocate}
+```c
+[[nodiscard]] lc_result_ptr lc_heap_allocate(size_t size);
+```
+Allocate `size` bytes of uninitialized memory, 16-byte aligned.
+
+| Parameter | |
+|---|---|
+| `size` | bytes requested; 0 is treated as 1 |
+
+**Returns** — `lc_result_ptr`: `value` is the block on success; `error` is `LC_ERR_NOMEM` on failure (including a size so large the bookkeeping would overflow).
+:::
+
+:::member{#lc_heap_allocate_zeroed}
+```c
+[[nodiscard]] lc_result_ptr lc_heap_allocate_zeroed(size_t size);
+```
+As `lc_heap_allocate`, but the block is zero-filled.
+:::
+
+:::member{#lc_heap_reallocate}
+```c
+[[nodiscard]] lc_result_ptr lc_heap_reallocate(void *ptr, size_t new_size);
+```
+Resize an allocation, preserving contents up to the smaller of the old and new sizes. May move the block and copy.
+
+| Parameter | |
+|---|---|
+| `ptr` | an existing allocation, or `NULL` to allocate afresh |
+| `new_size` | new size in bytes; `0` frees `ptr` and returns `value == NULL` |
+
+**Returns** — `lc_result_ptr`: the resized block, or `LC_ERR_NOMEM` (the original block is left intact on failure).
+:::
+
+:::member{#lc_heap_free}
+```c
+void lc_heap_free(void *ptr);
+```
+Free a block returned by one of the allocate calls. `NULL` is a no-op. Safe to call from a thread other than the one that allocated the block (the free is routed to the owner).
+:::
+
+:::member{#lc_heap_get_stats}
+```c
+void lc_heap_get_stats(lc_heap_stats *stats);
+```
+Fill `*stats` with the current counters. When statistics are disabled (`LC_STATS=0`), the struct is zeroed, so instrumented code compiles either way.
+:::
+
+:::member{#lc_heap_reset_stats}
+```c
+void lc_heap_reset_stats(void);
+```
+Reset the cumulative counters. A no-op when statistics are disabled.
+:::
+
+{.source}
+Header `include/lightc/heap.h`; source `src/heap.c`. For bump allocation that is freed all at once, see the arena in `include/lightc/memory.h`.

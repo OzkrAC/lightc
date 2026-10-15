@@ -1,0 +1,157 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Core & conventions · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: Core conventions of the lightc API — the lc_result error model, program startup and exit, and the raw syscall layer with its EINTR-safe helpers.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Core & conventions {#top}
+
+{.brief}
+The error model, startup and exit, and the raw syscall layer shared by every module. `result.h`, `lifecycle.h`, `syscall.h`, `types.h`.
+
+::toc
+
+## Error handling {#errors}
+
+lightc has no `errno`. A fallible call returns a small struct carrying both the outcome and an error code; the caller inspects the code. Two shapes are used throughout the API.
+
+:::member{#lc_result}
+```c
+typedef struct { int64_t value; int32_t error; } lc_result;
+```
+Result of a call that yields an integer or nothing. `error` is `LC_OK` (0) on success, else an `LC_ERR_*` code; `value` is meaningful only when `error == LC_OK`.
+:::
+
+:::member{#lc_result_ptr}
+```c
+typedef struct { void *value; int32_t error; } lc_result_ptr;
+```
+Result of a call that yields a pointer. On success `value` is the pointer and `error` is `LC_OK`; on failure `value` is `NULL` and `error` is an `LC_ERR_*` code.
+:::
+
+**Constructors and predicates.** All are `static inline` in `result.h`.
+
+| Function | Meaning |
+|---|---|
+| `lc_ok(int64_t v)` → `lc_result` | success carrying `v` |
+| `lc_err(int32_t e)` → `lc_result` | failure with code `e` |
+| `lc_ok_ptr(void *p)` / `lc_err_ptr(int32_t e)` → `lc_result_ptr` | pointer success / failure |
+| `lc_is_ok(r)` / `lc_is_err(r)` → `bool` | test an `lc_result` |
+| `lc_ptr_is_ok(r)` / `lc_ptr_is_err(r)` → `bool` | test an `lc_result_ptr` |
+| `lc_error_name(int32_t e)` → `const char *` | human-readable code name, e.g. `"ENOMEM"` |
+| `lc_result_from_sysret(int64_t)` → `lc_result` | fold a raw `lc_sysret` into an `lc_result` |
+
+```c
+lc_result_ptr r = lc_heap_allocate(256);
+if (lc_ptr_is_err(r)) return 1;   // r.error holds the LC_ERR_* code
+uint8_t *buf = r.value;           // valid only on the ok path
+```
+
+**Error codes.** `error` is `0` for success or a positive `LC_ERR_*` constant otherwise. The codes mirror common `errno` values.
+
+| Code | Meaning |
+|---|---|
+| `LC_OK` | success (0) |
+| `LC_ERR_NOMEM` | allocation failed |
+| `LC_ERR_INVAL` | invalid argument |
+| `LC_ERR_NOENT` | no such file or object |
+| `LC_ERR_AGAIN` | temporarily unavailable (e.g. queue full) |
+| `LC_ERR_IO` | I/O error |
+
+:::note
+Allocating functions are `[[nodiscard]]`: the compiler warns if the result is dropped. One level below the typed API, raw syscalls return `lc_sysret` (an `int64_t`): non-negative on success, or `-errno` on failure — the raw Linux convention. `lc_result_from_sysret` maps the `[-4095,-1]` range to an error.
+:::
+
+## Program lifecycle {#lifecycle}
+
+### Startup {#startup}
+
+The kernel loads the static ELF and enters `_start` (hand-written assembly, `arch/<arch>/start.S`) with `argc`, `argv`, `envp` and the auxiliary vector on the stack. Before `main`, `_start`:
+
+1. clears the frame pointer for a clean backtrace base;
+2. on x86_64, points the thread pointer at a heap TLS sentinel so the first `%fs:0` read in the allocator cannot fault;
+3. calls `lc_runtime_init(stack_top)`, which scans the auxiliary vector for `AT_PAGESZ` and records the kernel's real page size;
+4. reads `argc`, `argv`, `envp` and calls `main(argc, argv, envp)`;
+5. passes `main`'s return value to the `exit_group` syscall.
+
+There is no C runtime, so there are no automatic constructors; `main`'s signature is `int main(int argc, char **argv, char **envp)` because there is no global `environ`.
+
+### Exit {#exit}
+
+Returning from `main` calls `exit_group` directly — no handlers run. To run cleanup, use `lifecycle.h`.
+
+:::member{#lc_atexit}
+```c
+[[nodiscard]] lc_result lc_atexit(lc_atexit_func func);
+```
+Register `func` (a `void (*)(void)`) to run at `lc_exit`. Up to `LC_MAX_ATEXIT_HANDLERS` (32) may be registered. Returns `LC_ERR_FULL` when the table is full.
+:::
+
+:::member{#lc_exit}
+```c
+void lc_exit(int code) __attribute__((noreturn));
+```
+Run the registered handlers in last-in-first-out order, then `exit_group(code)`. The handler chain runs **exactly once**: re-entry — a signal arriving mid-shutdown, or a handler that itself calls `lc_exit` — is guarded and does not re-run it. A plain `return` from `main` does **not** run atexit handlers.
+:::
+
+## The syscall layer {#syscalls}
+
+`syscall.h` is the single point of contact with the kernel: seven argument-count trampolines, a wide set of named wrappers over them, and the constants they take. Syscall numbers differ per architecture (`arch/<arch>/syscall_nr.h`); the wrappers hide that.
+
+| Trampoline | Form |
+|---|---|
+| `lc_syscall0(nr)` … `lc_syscall6(nr, a0…a5)` | raw syscall, returns `lc_sysret` (`-errno` on error) |
+
+Named wrappers follow the pattern `lc_kernel_*`: `lc_kernel_read_bytes`, `lc_kernel_write_bytes`, `lc_kernel_open_file`, `lc_kernel_close_file`, `lc_kernel_map_memory`, `lc_kernel_unmap_memory`, `lc_kernel_seek_position`, and many more. Two groups warrant explicit documentation.
+
+:::member{#lc_kernel_map_memory}
+```c
+void *lc_kernel_map_memory(void *addr, size_t len, int32_t prot,
+                           int32_t flags, int32_t fd, int64_t offset);
+```
+`mmap` wrapper. Returns the mapping, or `MAP_FAILED` (`(void *)-1`) on failure — the raw `-errno` the kernel returns is normalized to `MAP_FAILED`. Test the result against `MAP_FAILED`, not for a small negative pointer.
+:::
+
+:::member{#lc_kernel_write_all}
+```c
+lc_sysret lc_kernel_write_all(int32_t fd, const void *buf, size_t count);
+lc_sysret lc_kernel_read_all (int32_t fd, void *buf, size_t count);
+lc_sysret lc_kernel_read_retry(int32_t fd, void *buf, size_t count);
+```
+EINTR- and partial-transfer-safe I/O. `write_all` writes the whole buffer, retrying on `EINTR` and looping over short writes; `read_all` reads until the buffer is full or EOF; `read_retry` performs one read, retrying only `EINTR`. Each returns the byte count, or a negative errno. Prefer these over bare `lc_kernel_read_bytes`/`write_bytes` for buffered and whole-object I/O so a signal never silently drops data.
+:::
+
+**Constants.** `syscall.h` also defines the flags and file descriptors the wrappers take: `STDIN` (0), `STDOUT` (1), `STDERR` (2); open flags `O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`; protection `PROT_READ`, `PROT_WRITE`, `PROT_EXEC`; mapping `MAP_PRIVATE`, `MAP_SHARED`, `MAP_ANONYMOUS`, `MAP_FIXED`.
+
+:::member{#lc_runtime_page_size}
+```c
+size_t lc_runtime_page_size(void);
+```
+The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). `LC_PAGE_SIZE` (4096) is the compile-time allocation-granularity assumption; this is the actual page size, which on aarch64 may be 16 KiB or 64 KiB. Guard pages are sized from this value.
+:::
+
+## Types and strings {#types}
+
+`types.h` defines the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t`, `bool`/`true`/`false` and `NULL` **without** including `<stdint.h>` or `<stddef.h>` — the freestanding compiler builtins suffice. `lc_sysret` is an `int64_t`.
+
+`string.h` provides string and byte operations that lower to the compiler's `__builtin_*` routines; lengths are explicit, so no API assumes NUL termination.
+
+| Function | Operation |
+|---|---|
+| `lc_string_length(s)` | length to the NUL terminator |
+| `lc_string_equal(a, alen, b, blen)` | compare two sized strings |
+| `lc_bytes_copy(dst, src, n)` | copy `n` bytes |
+| `lc_bytes_fill(dst, byte, n)` | fill `n` bytes |
+| `lc_bytes_compare(a, b, n)` | compare `n` bytes |
+
+{.source}
+Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.

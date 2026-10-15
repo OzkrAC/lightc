@@ -1,0 +1,105 @@
+/* docs.css — styling for the lightc API documentation.
+ *
+ * Keyed on the renderer's classes and data-t attributes (never on tags), and
+ * built on its --t-* custom properties so it follows the loaded theme and both
+ * light and dark modes. Loaded last in :::use, so it wins at equal specificity.
+ */
+
+:root { --t-width: 48rem; }
+
+/* ---- Top navigation bar ---- */
+.tern .site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1.1rem;
+  margin: 0 0 2rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--t-line);
+  font-size: 0.92em;
+}
+.tern .site-nav .brand { font-weight: 700; letter-spacing: -0.02em; margin-inline-end: 0.3rem; }
+.tern .site-nav a { text-decoration: none; color: var(--t-muted); }
+.tern .site-nav a:hover { color: var(--t-link); }
+.tern .site-nav a[aria-current="page"] { color: var(--t-fg); font-weight: 600; }
+
+/* ---- Brief tagline under a page title (the module's one-liner + header) ---- */
+.tern .brief { font-size: 1.08em; color: var(--t-fg); margin-top: 0.2rem; }
+.tern .brief code { color: var(--t-muted); }
+
+/* ---- Callouts ---- */
+.tern .callout {
+  margin: 1.3rem 0;
+  padding: 0.7rem 1rem;
+  border-inline-start: 4px solid var(--callout-accent, var(--t-link));
+  border-radius: 6px;
+  background: var(--t-soft);
+}
+.tern .callout > .t-label {
+  display: block;
+  font-weight: 700;
+  font-size: 0.82em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--callout-accent, var(--t-link));
+  margin-bottom: 0.2rem;
+}
+.tern .callout > :last-child { margin-bottom: 0; }
+.tern [data-t="tip"]       { --callout-accent: #2f9e44; }
+.tern [data-t="important"] { --callout-accent: var(--t-link); }
+.tern [data-t="warning"]   { --callout-accent: var(--t-warn); }
+.tern [data-t="danger"]    { --callout-accent: var(--t-error); }
+.tern [data-t="note"]      { --callout-accent: var(--t-muted); }
+
+/* ---- Member entries: a function/macro/type documented reference-style ---- */
+.tern .member {
+  margin: 1.2rem 0;
+  border: 1px solid var(--t-line);
+  border-radius: 7px;
+  padding: 0 0 0.6rem;
+}
+/* The signature fence becomes the member's header bar. */
+.tern .member > pre {
+  margin: 0 0 0.7rem;
+  border: 0;
+  border-bottom: 1px solid var(--t-line);
+  border-radius: 7px 7px 0 0;
+  background: var(--t-soft);
+}
+/* Everything else in a member is indented like a Doxygen member body. */
+.tern .member > *:not(pre) { margin-inline: 1rem; }
+.tern .member > :last-child { margin-bottom: 0; }
+.tern .member table { width: auto; }
+/* "Parameters:" / "Returns:" lead-ins. */
+.tern .pname { color: var(--t-link); }
+
+/* ---- Module index cards (a +++ grid with .cards) ---- */
+.tern .cards { gap: 1rem; margin: 1.5rem 0; }
+.tern .cards .t-cell {
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--t-line);
+  border-radius: 8px;
+  background: var(--t-soft);
+}
+.tern .cards .t-cell h3 { margin-top: 0.1rem; }
+.tern .cards .t-cell > :last-child { margin-bottom: 0; }
+
+/* ---- Facts strip on the landing page ---- */
+.tern .facts { gap: 0.8rem; margin: 1.5rem 0; }
+.tern .facts .t-cell {
+  text-align: center;
+  padding: 0.8rem 0.6rem;
+  border: 1px solid var(--t-line);
+  border-radius: 8px;
+}
+.tern .facts strong { display: block; font-size: 1.5em; line-height: 1.1; color: var(--t-link); }
+
+/* ---- Source footer under a page ---- */
+.tern .source {
+  font-size: 0.9em;
+  color: var(--t-muted);
+  border-top: 1px dotted var(--t-line);
+  padding-top: 0.4rem;
+}
+
+.tern table { font-size: 0.96em; }

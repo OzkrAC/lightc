@@ -1,0 +1,199 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Async & lightio · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: lightc async I/O API reference — the io_uring submission/completion ring, and lightio, an event loop that runs one coroutine per connection.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Async & lightio {#top}
+
+{.brief}
+Asynchronous I/O over Linux `io_uring`, and a coroutine-per-connection event loop. `lightc/async.h`, `lightio/lightio.h`.
+
+::toc
+
+## Detailed description {#detail}
+
+Two layers. `async.h` is a thin wrapper over **io_uring**: two shared ring buffers between the program and the kernel — a submission queue the program fills and a completion queue the kernel fills. `lightio` is built on it and on [coroutines](coroutines.html): an event loop that runs **one coroutine per connection**, so a handler reads and writes in a straight line while the loop multiplexes many connections.
+
+The submission path has three moves: **submit** stages an operation in the submission queue; **flush** publishes staged entries to the kernel (`io_uring_enter`); **wait**/**peek** reap completions. Staging and publishing are separate so many submissions batch into one `io_uring_enter`. A full queue fails a submit with `LC_ERR_AGAIN` rather than overrunning, and `flush` retries short or interrupted `enter` calls so no submission is lost.
+
+```text
+submit_read/write ──stage──▶ submission queue
+flush             ──enter──▶ kernel starts the work
+wait / peek       ◀──reap──  completion queue (each carries its tag)
+```
+
+## io_uring {#async}
+
+:::member{#lc_async_result}
+```c
+typedef struct { int32_t result; uint64_t tag; } lc_async_result;
+typedef struct lc_async_ring lc_async_ring;   // opaque
+```
+A completion: `result` is the operation's return (bytes transferred, or a negative errno), and `tag` is the value supplied when the operation was submitted, identifying which one finished.
+:::
+
+:::member{#lc_async_ring_create}
+```c
+[[nodiscard]] lc_result_ptr lc_async_ring_create(uint32_t queue_size);
+void lc_async_ring_destroy(lc_async_ring *ring);
+```
+Create or tear down a ring. `queue_size` is the submission-queue depth (rounded up to a power of two).
+
+**Returns** — `lc_result_ptr`: the ring on success; an error if io_uring is unavailable (it needs Linux 5.1+), which the caller should treat as "fall back to synchronous I/O".
+:::
+
+:::member{#lc_async_submit_read}
+```c
+[[nodiscard]] lc_result lc_async_submit_read (lc_async_ring *ring, int32_t fd, void *buf,
+                                              uint32_t count, uint64_t offset, uint64_t tag);
+[[nodiscard]] lc_result lc_async_submit_write(lc_async_ring *ring, int32_t fd, const void *buf,
+                                              uint32_t count, uint64_t offset, uint64_t tag);
+```
+Stage a read or write. `offset` is the file offset, or `(uint64_t)-1` for "current position". `tag` is echoed back on the matching completion. The entry is only staged — nothing reaches the kernel until a `flush` (or a `wait`, which flushes first).
+
+**Returns** — `LC_OK`, or `LC_ERR_AGAIN` when the submission queue is full.
+:::
+
+:::member{#lc_async_submit_raw}
+```c
+[[nodiscard]] lc_result lc_async_submit_raw(lc_async_ring *ring, uint8_t opcode, int32_t fd,
+                                            uint64_t addr, uint32_t len, uint64_t off,
+                                            uint32_t rw_flags, uint64_t tag);
+```
+Stage an arbitrary io_uring operation by opcode (timeouts, accept, and so on). The typed `submit_read`/`submit_write` are thin wrappers over this.
+:::
+
+:::member{#lc_async_flush}
+```c
+uint32_t lc_async_flush(lc_async_ring *ring);
+```
+Publish all staged submissions to the kernel. Returns the number submitted. Retries interrupted or short `io_uring_enter` calls.
+:::
+
+:::member{#lc_async_wait}
+```c
+uint32_t lc_async_wait(lc_async_ring *ring, lc_async_result *results, uint32_t max);
+uint32_t lc_async_peek(lc_async_ring *ring, lc_async_result *results, uint32_t max);
+```
+Reap completions into `results` (up to `max`). `lc_async_wait` flushes, then blocks until at least one completion is available; `lc_async_peek` returns immediately with whatever is ready. Both return the number written.
+:::
+
+:::member{#lc_async_get_free_slots}
+```c
+uint32_t lc_async_get_free_slots(const lc_async_ring *ring);
+```
+Room left in the submission queue — the number of further `submit` calls that will succeed before a `flush`.
+:::
+
+### Example {#async-example}
+
+```c
+lc_result_ptr rp = lc_async_ring_create(32);
+if (lc_ptr_is_err(rp)) return 1;            // io_uring unavailable
+lc_async_ring *ring = rp.value;
+
+char buf[4096];
+lc_async_submit_read(ring, fd, buf, sizeof(buf), (uint64_t)-1, /*tag=*/7);
+
+lc_async_result done[16];
+uint32_t n = lc_async_wait(ring, done, 16);  // flush + block for ≥1 completion
+for (uint32_t i = 0; i < n; i++)
+    if (done[i].tag == 7) { /* done[i].result bytes read, or -errno */ }
+
+lc_async_ring_destroy(ring);
+```
+
+## lightio {#lightio}
+
+lightio restores straight-line control flow over io_uring. Its loop owns a ring and a [coroutine](coroutines.html) scheduler; each accepted connection runs the handler in its own coroutine. When the handler calls `lio_read` or `lio_write`, that coroutine submits the operation and yields; the loop drives other connections and resumes it when the completion arrives. The handler reads as if blocking; the loop never does.
+
+:::member{#lio_handler}
+```c
+typedef void (*lio_handler)(lio_stream *stream);
+typedef struct lio_loop   lio_loop;
+typedef struct lio_stream lio_stream;
+```
+A connection handler receives an `lio_stream`. `lio_read`, `lio_write` and `lio_sleep` may be called **only** from inside a handler coroutine — they are its yield points.
+:::
+
+:::member{#lio_loop_create}
+```c
+lio_loop *lio_loop_create(void);
+void      lio_loop_destroy(lio_loop *loop);
+```
+Create a loop (with its own ring and scheduler), or tear one down. Returns `NULL` on failure.
+:::
+
+:::member{#lio_tcp_serve}
+```c
+[[nodiscard]] lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler);
+```
+Listen on `port` and run `handler` in a fresh coroutine for each accepted connection. Returns an error if the socket could not be created, bound or listened.
+:::
+
+:::member{#lio_loop_run}
+```c
+void lio_loop_run(lio_loop *loop);
+void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count);
+void lio_loop_stop(lio_loop *loop);
+```
+`lio_loop_run` drives the loop until `lio_loop_stop` is called. `lio_loop_run_threaded` runs `thread_count` worker threads, each with its own loop and ring accepting on the shared socket — the kernel spreads connections across them, so it scales near-linearly with no shared state.
+:::
+
+:::member{#lio_read}
+```c
+int32_t lio_read (lio_stream *stream, void *buf, uint32_t count);
+int32_t lio_write(lio_stream *stream, const void *buf, uint32_t count);
+```
+Read or write within a handler, suspending the coroutine until the operation completes. `lio_read` returns the byte count (`0` = peer closed, `<0` = error). `lio_write` writes fully, or returns what it managed. If a submission cannot be staged (a full queue), these return an error instead of suspending forever, so a connection fails cleanly rather than hanging.
+:::
+
+:::member{#lio_sleep}
+```c
+void    lio_sleep(lio_stream *stream, int64_t milliseconds);
+void    lio_close(lio_stream *stream);
+int32_t lio_stream_fd(const lio_stream *stream);
+```
+`lio_sleep` suspends the current handler coroutine for `milliseconds` (an io_uring timeout), letting the loop serve others meanwhile. `lio_close` closes the connection early; `lio_stream_fd` returns the underlying socket descriptor.
+:::
+
+### Example: a TCP echo server {#lightio-example}
+
+```c [echo.c]
+#include <lightio/lightio.h>
+
+static void echo(lio_stream *stream) {
+    char buf[4096];
+    for (;;) {
+        int32_t n = lio_read(stream, buf, sizeof(buf));
+        if (n <= 0) break;                         // 0 = closed, <0 = error
+        if (lio_write(stream, buf, (uint32_t)n) <= 0) break;
+    }
+}
+
+int main(void) {
+    lio_loop *loop = lio_loop_create();
+    if (!loop) return 1;
+    if (lc_is_err(lio_tcp_serve(loop, 8080, echo))) return 1;
+    lio_loop_run(loop);
+    lio_loop_destroy(loop);
+    return 0;
+}
+```
+
+:::warning
+io_uring requires Linux 5.1+ (later for some opcodes). `lc_async_ring_create` and `lio_loop_create` fail when it is unavailable; check the result and fall back to the synchronous socket API if older kernels must be supported.
+:::
+
+{.source}
+Headers `include/lightc/async.h`, `include/lightio/lightio.h`; source `src/async.c`, `src/lightio.c`. lightio builds on [Coroutines](coroutines.html) and the ring above.

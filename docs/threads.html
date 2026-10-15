@@ -1,0 +1,152 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Threads · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: lightc threads API reference — OS threads over the clone syscall with guard-paged stacks, and the futex-based synchronization set: spinlock, mutex, condition variable, read/write lock, barrier, once, and thread-local keys.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Threads {#top}
+
+{.brief}
+Preemptive OS threads over `clone`, and futex-based synchronization primitives. `lightc/thread.h`.
+
+::toc
+
+## Detailed description {#detail}
+
+Threads are real kernel threads created with `clone`; there is no pthread library underneath. Each gets its own `mmap`'d stack with a one-page `PROT_NONE` guard at the low end, sized from the kernel's [real page size](guide.html#lc_runtime_page_size) so a stack overflow faults instead of corrupting a neighbour. The synchronization primitives are built on the kernel's `futex`: each is initialized by a value macro (no constructor call), and blocks in the kernel only under contention — the uncontended path is a single atomic operation.
+
+| Primitive | Init | Use for |
+|---|---|---|
+| `lc_spinlock` | `LC_SPINLOCK_INIT` | very short critical sections (busy-wait) |
+| `lc_mutex` | `LC_MUTEX_INIT` | general mutual exclusion (sleeps when contended) |
+| `lc_condvar` | `LC_CONDVAR_INIT` | waiting for a condition, with a mutex |
+| `lc_rwlock` | `LC_RWLOCK_INIT` | many readers, occasional writer |
+| `lc_barrier` | `lc_barrier_init` | releasing N threads together |
+| `lc_once` | `LC_ONCE_INIT` | run an initializer exactly once |
+
+## Thread management {#threads}
+
+:::member{#lc_thread}
+```c
+typedef int32_t (*lc_thread_func)(void *arg);
+typedef struct { int32_t tid; /* … stack, liveness … */ } lc_thread;
+
+#define LC_DEFAULT_STACK_SIZE (1024 * 1024)   /* 1 MiB */
+```
+A thread runs an `lc_thread_func` and is represented by an `lc_thread` the caller owns. After a successful create, `tid` is the kernel thread id. The function's `int32_t` return is the thread's result, available to the joiner.
+:::
+
+:::member{#lc_thread_create}
+```c
+[[nodiscard]] lc_result lc_thread_create(lc_thread *thread, lc_thread_func func, void *arg);
+[[nodiscard]] lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func,
+                                                    void *arg, size_t stack_size);
+```
+Map a guard-paged stack, set up thread-local storage for the child, and `clone`. `lc_thread_create` uses `LC_DEFAULT_STACK_SIZE`; the `_with_stack` form takes an explicit size.
+
+| Parameter | |
+|---|---|
+| `thread` | out: filled with the thread handle |
+| `func`, `arg` | the entry function and its argument |
+| `stack_size` | stack bytes (the `_with_stack` form) |
+
+**Returns** — `lc_result`: `LC_OK`, or an error (e.g. `LC_ERR_NOMEM`) if the stack or thread could not be created.
+:::
+
+:::member{#lc_thread_join}
+```c
+void lc_thread_join(lc_thread *thread);
+```
+Block until the thread exits, then unmap its stack. **Idempotent**: a second join is a safe no-op, so it never double-unmaps a range a later `mmap` may have reused. There is no detached mode; join each thread you create, from the owning thread.
+:::
+
+## Spinlock {#spinlock}
+
+:::member{#lc_spinlock}
+```c
+void lc_spinlock_acquire(lc_spinlock *lock);
+void lc_spinlock_release(lc_spinlock *lock);
+bool lc_spinlock_try_acquire(lc_spinlock *lock);   // true if acquired
+```
+A one-word busy-wait lock; cheapest when the critical section is a few instructions and contention is rare. Initialize with `LC_SPINLOCK_INIT`. `lc_spinlock_try_acquire` returns without blocking.
+:::
+
+## Mutex {#mutex}
+
+:::member{#lc_mutex}
+```c
+void lc_mutex_lock(lc_mutex *m);
+void lc_mutex_unlock(lc_mutex *m);
+bool lc_mutex_try_lock(lc_mutex *m);   // true if acquired
+```
+A three-state futex mutex (*unlocked*, *locked*, *locked-with-waiters*). The fast path is one compare-and-swap; it enters the kernel only to sleep on contention and only wakes a waiter when one exists. Initialize with `LC_MUTEX_INIT`.
+:::
+
+## Condition variable {#condvar}
+
+:::member{#lc_condvar}
+```c
+void lc_condvar_wait(lc_condvar *cv, lc_mutex *m);
+void lc_condvar_signal(lc_condvar *cv);      // wake one waiter
+void lc_condvar_broadcast(lc_condvar *cv);   // wake all waiters
+```
+Wait for a condition another thread will signal. `lc_condvar_wait` atomically unlocks `m` and sleeps, re-locking `m` before it returns. Always wait in a `while` loop around the predicate — a wakeup is not a guarantee the condition holds. Initialize with `LC_CONDVAR_INIT`.
+
+```c
+lc_mutex_lock(&m);
+while (!ready) lc_condvar_wait(&cv, &m);
+lc_mutex_unlock(&m);
+```
+:::
+
+## Read/write lock {#rwlock}
+
+:::member{#lc_rwlock}
+```c
+void lc_rwlock_read_lock(lc_rwlock *rw);    void lc_rwlock_read_unlock(lc_rwlock *rw);
+void lc_rwlock_write_lock(lc_rwlock *rw);   void lc_rwlock_write_unlock(lc_rwlock *rw);
+```
+Shared reads, exclusive writes — for read-dominated data. Multiple readers hold the lock at once; a writer excludes all. The write path uses a strong compare-and-swap, so it never sleeps on an already-free lock. Initialize with `LC_RWLOCK_INIT`.
+:::
+
+## Barrier and once {#barrier-once}
+
+:::member{#lc_barrier}
+```c
+void lc_barrier_init(lc_barrier *b, uint32_t thread_count);
+void lc_barrier_wait(lc_barrier *b);
+```
+A barrier releases all waiters once `thread_count` of them have arrived. Initialize with `lc_barrier_init`, then each thread calls `lc_barrier_wait`.
+:::
+
+:::member{#lc_call_once}
+```c
+typedef void (*lc_once_func)(void);
+void lc_call_once(lc_once *once, lc_once_func func);
+```
+Run `func` exactly once across all threads, no matter how many call `lc_call_once` with the same `once`. Initialize the `lc_once` with `LC_ONCE_INIT`.
+:::
+
+## Thread-local storage {#tls}
+
+:::member{#lc_tls}
+```c
+#define LC_TLS_MAX_KEYS 64
+bool  lc_tls_key_create(lc_tls_key *key);   // false if no key is free
+void  lc_tls_set(lc_tls_key key, void *value);
+void *lc_tls_get(lc_tls_key key);           // NULL until set on this thread
+```
+Generic thread-local slots, a `pthread_key`-style API with up to `LC_TLS_MAX_KEYS` keys. Each thread sees its own value for a given key; the keys themselves are process-wide. The slots live in the same per-thread structure the [heap](heap.html#tls) uses.
+:::
+
+{.source}
+Header `include/lightc/thread.h`; source `src/thread.c`, `arch/<arch>/thread.S`. For cooperative, single-threaded concurrency, see [Coroutines](coroutines.html).

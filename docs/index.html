@@ -1,0 +1,119 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>lightc · API reference</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: API reference for lightc, a freestanding C runtime for Linux — no libc, no external dependencies, everything from _start to exit on raw syscalls. Targets x86_64 and aarch64.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# lightc {#top}
+
+{.brief}
+A freestanding C runtime for Linux. No libc, no system linker scripts, no external dependencies — everything from `_start` to `exit` is implemented on raw Linux syscalls. Targets **x86_64** and **aarch64**.
+
+::toc
+
+:::div{.facts cols="1 1 1 1"}
+**415 B**
+smallest static binary
++++
+**2**
+architectures
++++
+**0**
+runtime dependencies
++++
+**~5 ns**
+coroutine switch
+:::
+
+## Overview {#overview}
+
+lightc is the layer a hosted program normally receives from libc and the C runtime, re-implemented as a small, inspectable library. It provides process startup and teardown, memory allocation, threads and synchronization, coroutines, synchronous and asynchronous I/O, and the usual building blocks (strings, formatting, logging, containers, time, sockets) — each as a module under `include/lightc/` or `include/lightio/`.
+
+Two invariants hold throughout the API:
+
+- **No hidden state.** There is no global `errno` and no implicit allocator. A fallible call returns its status in an `lc_result` or `lc_result_ptr` value (see [the error model](guide.html#errors)); memory comes from an allocator you name.
+- **The kernel ABI is the only dependency.** Every external effect is a syscall. Only two source files are per-architecture: the startup stub and the syscall trampoline.
+
+## Modules {#modules}
+
+Each module is one public header. Linked modules have a reference page; the rest are documented at their headers.
+
+:::div{.cards cols="1 1"}
+### [Core & conventions](guide.html)
+`result.h`, `syscall.h`, `types.h`, `lifecycle.h` — the error model, the raw syscall layer, startup and exit, and the fixed-width types defined without `<stdint.h>`.
++++
+### [Heap](heap.html)
+`heap.h` — general-purpose allocator: per-thread bucket allocator over slab pages and segments, lock-free cross-thread frees, a large-block cache, 16-byte alignment.
++++
+### [Threads](threads.html)
+`thread.h` — threads over `clone` with guard-paged stacks, and the futex-based synchronization set: spinlock, mutex, condition variable, read/write lock, barrier, once, and thread-local keys.
++++
+### [Coroutines](coroutines.html)
+`coroutine.h` — stackful coroutines and a cooperative round-robin scheduler, with an assembly context switch over the callee-saved registers.
++++
+### [Async & lightio](async.html)
+`async.h`, `lightio/lightio.h` — the `io_uring` submission/completion ring, and an event loop that runs one coroutine per connection.
++++
+### Further modules
+`socket.h`, `io.h`, `format.h`, `print.h`, `log.h`, `time.h`, `library.h`, `signal.h`, and the `lightdata/` containers are documented at their headers; reference pages follow.
+:::
+
+## Conventions {#conventions}
+
+| Topic | Summary |
+|---|---|
+| Error reporting | `lc_result` (`int64_t value`, `int32_t error`) and `lc_result_ptr` (`void *value`, `int32_t error`); `error` is `LC_OK` or an `LC_ERR_*` code. See [Error handling](guide.html#errors). |
+| Naming | Public symbols are prefixed `lc_` (`lio_` for lightio); raw syscall wrappers are `lc_kernel_*`; compile-time constants are `LC_*`. |
+| Strings | Lengths are explicit; APIs do not assume NUL termination. |
+| Allocation | Allocating calls are `[[nodiscard]]` and return `lc_result_ptr`. |
+| Thread safety | Noted per function. The heap and synchronization primitives are thread-safe; most data-structure handles are not, unless stated. |
+
+## Building {#building}
+
+A shell `configure` script selects a build mode and writes `build.ninja`; `ninja` builds. The toolchain requirement is GCC and ninja only.
+
+| Mode | Flags |
+|---|---|
+| `./configure debug` | `-O0 -g3`, safety checks on |
+| `./configure release` | `-O2 -DNDEBUG`, stripped (default) |
+| `./configure tiny` | `-Os`, smallest binary |
+
+| Target | Builds |
+|---|---|
+| `ninja` | the static library, examples and tests |
+| `ninja test` | run the test suites |
+| `ninja bench` | run the benchmarks |
+
+The output links statically with lightc's own linker script (`lightc.ld`, or `lightc-tiny.ld` in tiny mode), no-PIE, with no interpreter and no dynamic dependencies.
+
+## Example {#example}
+
+A program defines `main` and links against the runtime, which supplies `_start`. No system headers are included.
+
+```c [hello.c]{#hello}
+#include <lightc/syscall.h>
+
+int main(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
+
+    const char msg[] = "hello from lightc — no libc, no problem\n";
+    lc_kernel_write_bytes(STDOUT, msg, sizeof(msg) - 1);
+    return 0;
+}
+```
+
+```sh
+gcc -ffreestanding -nostdlib -nostartfiles -Iinclude \
+    hello.c build/liblightc.a -T lightc.ld -static -no-pie -o hello
+```
+
+See [Core & conventions](guide.html) for the startup sequence, the error model and the syscall layer.
