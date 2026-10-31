@@ -7,6 +7,11 @@
 /* Global state */
 static lc_log_level  log_min_level = LC_LOG_DEBUG;
 static int32_t       log_fd = 2;  /* STDERR */
+/* Serializes log writes so lines from different threads do not interleave.
+ * NOTE: this is a non-reentrant spinlock. Logging from a signal handler that
+ * interrupted a thread already inside a log call on the same thread would
+ * deadlock. Async-signal-safe logging is out of scope here; do not log from
+ * signal handlers. */
 static lc_spinlock   log_lock = LC_SPINLOCK_INIT;
 static lc_log_format log_format = LC_LOG_FORMAT_TEXT;
 
@@ -59,29 +64,32 @@ static size_t build_prefix(char *buf, size_t buf_size, lc_log_level level) {
 
 /*
  * Add a JSON-escaped version of the message to the format builder.
- * Escapes: " -> \", \ -> \\, \n -> \\n, \r -> \\r, \t -> \\t
+ * Escapes " \ \n \r \t specially, and every other control byte (< 0x20) as
+ * \u00XX — a raw control byte would make the line invalid JSON. Stops early
+ * once `soft_limit` bytes have been used, and never emits a partial escape, so
+ * the caller can always append the closing `"}` and newline and stay valid.
  */
-static void format_add_json_escaped(lc_format *fmt, const char *msg, size_t len) {
+static void format_add_json_escaped(lc_format *fmt, const char *msg, size_t len,
+                                    size_t soft_limit) {
+    static const char HEX[] = "0123456789abcdef";
     for (size_t i = 0; i < len; i++) {
+        /* An escape is at most 6 bytes (\u00XX); stop if it would not leave room
+         * under the soft limit, so the fixed closing always fits afterwards. */
+        if (fmt->used + 6 > soft_limit) break;
         char c = msg[i];
         switch (c) {
-        case '"':
-            lc_format_add_string(fmt, "\\\"", 2);
-            break;
-        case '\\':
-            lc_format_add_string(fmt, "\\\\", 2);
-            break;
-        case '\n':
-            lc_format_add_string(fmt, "\\n", 2);
-            break;
-        case '\r':
-            lc_format_add_string(fmt, "\\r", 2);
-            break;
-        case '\t':
-            lc_format_add_string(fmt, "\\t", 2);
-            break;
+        case '"':  lc_format_add_string(fmt, "\\\"", 2); break;
+        case '\\': lc_format_add_string(fmt, "\\\\", 2); break;
+        case '\n': lc_format_add_string(fmt, "\\n", 2); break;
+        case '\r': lc_format_add_string(fmt, "\\r", 2); break;
+        case '\t': lc_format_add_string(fmt, "\\t", 2); break;
         default:
-            lc_format_add_char(fmt, c);
+            if ((uint8_t)c < 0x20) {
+                char esc[6] = { '\\', 'u', '0', '0', HEX[((uint8_t)c >> 4) & 0xF], HEX[(uint8_t)c & 0xF] };
+                lc_format_add_string(fmt, esc, 6);
+            } else {
+                lc_format_add_char(fmt, c);
+            }
             break;
         }
     }
@@ -105,7 +113,10 @@ static void write_json_line(lc_log_level level, const char *message, size_t msg_
     lc_format_add_text(&fmt, ",\"level\":\"");
     lc_format_add_string(&fmt, level_names[level], level_name_lens[level]);
     lc_format_add_text(&fmt, "\",\"msg\":\"");
-    format_add_json_escaped(&fmt, message, msg_len);
+    /* Reserve the tail so the closing `","tid":<n>}` + newline always fits and
+     * the line stays valid JSON even when the message is longer than the buffer. */
+    format_add_json_escaped(&fmt, message, msg_len,
+                            fmt.capacity > 40 ? fmt.capacity - 40 : 0);
     lc_format_add_text(&fmt, "\",\"tid\":");
     lc_format_add_unsigned(&fmt, (uint64_t)(uint32_t)lc_kernel_get_thread_id());
     lc_format_add_text(&fmt, "}\n");

@@ -678,6 +678,28 @@ static void test_list_front_back(void) {
 
 /* ===== main ===== */
 
+/* lc_list_remove must be a no-op on a node that is not linked (already removed,
+ * or never pushed) — otherwise a double remove corrupts the count and pointers. */
+static void test_list_remove_idempotent(void) {
+    lc_list list;
+    lc_list_init(&list);
+    lc_list_node a = {0}, b = {0}, unlinked = {0};
+
+    lc_list_push_back(&list, &a);
+    lc_list_push_back(&list, &b);
+    TEST_ASSERT_EQ(lc_list_count(&list), (size_t)2);
+
+    lc_list_remove(&list, &a);
+    TEST_ASSERT_EQ(lc_list_count(&list), (size_t)1);
+    lc_list_remove(&list, &a);                         /* double remove: no-op */
+    TEST_ASSERT_EQ(lc_list_count(&list), (size_t)1);
+    lc_list_remove(&list, &unlinked);                  /* never pushed: no-op */
+    TEST_ASSERT_EQ(lc_list_count(&list), (size_t)1);
+
+    lc_list_remove(&list, &b);
+    TEST_ASSERT_EQ(lc_list_count(&list), (size_t)0);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -732,6 +754,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_list_is_empty);
     TEST_RUN(test_list_count);
     TEST_RUN(test_list_front_back);
+    TEST_RUN(test_list_remove_idempotent);
 
     return test_main();
 }

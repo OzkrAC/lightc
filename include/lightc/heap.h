@@ -6,11 +6,13 @@
 /*
  * Heap allocator — individual alloc/free.
  *
- * Small allocations (≤ 2048): bucket allocator with free lists.
- * Large allocations (> 2048): direct mmap, munmap on free.
+ * Small allocations (block ≤ 4096 bytes): a per-thread bucket allocator over
+ * 64 KiB slab pages carved from 4 MiB segments, with lock-free cross-thread
+ * frees. Large allocations: a dedicated mmap, kept in a small reuse cache on
+ * free rather than unmapped immediately. Every allocation is 16-byte aligned.
  *
- * Every allocation has a hidden header storing its size class,
- * so lc_heap_free knows how to return it.
+ * Each allocation has a hidden 16-byte header storing its size class, so
+ * lc_heap_free knows how to return it. See docs/heap.html for the full design.
  */
 
 /* Allocate `size` bytes. */

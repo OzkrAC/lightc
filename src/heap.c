@@ -733,9 +733,9 @@ void lc_heap_free(void *ptr) {
     if (ptr == NULL) return;
 
     lc_heap_header *header = (lc_heap_header *)((uint8_t *)ptr - HEADER_SIZE);
-    stat_track_free(header->size);
 
-    /* Validate magic — detect double-free and heap corruption (debug only) */
+    /* Validate magic FIRST (debug) — before dereferencing header->size for
+     * stats — so a double-free or corrupt header is reported rather than read. */
 #if LC_HEAP_DEBUG
     if (header->magic == HEAP_MAGIC_FREED) {
         lc_kernel_write_bytes(2, "lightc: double-free detected\n", 29);
@@ -746,6 +746,8 @@ void lc_heap_free(void *ptr) {
         lc_kernel_exit(134);
     }
 #endif
+
+    stat_track_free(header->size);
 
     if (header->bucket == BUCKET_LARGE) {
         /* The mapping base and its TRUE page count live in the large prefix,
@@ -826,6 +828,19 @@ lc_result_ptr lc_heap_reallocate(void *ptr, size_t new_size) {
     }
 
     lc_heap_header *header = (lc_heap_header *)((uint8_t *)ptr - HEADER_SIZE);
+
+    /* Validate magic (debug) before trusting the header — matches lc_heap_free. */
+#if LC_HEAP_DEBUG
+    if (header->magic == HEAP_MAGIC_FREED) {
+        lc_kernel_write_bytes(2, "lightc: realloc of freed block\n", 31);
+        lc_kernel_exit(134);
+    }
+    if (header->magic != HEAP_MAGIC) {
+        lc_kernel_write_bytes(2, "lightc: heap corruption detected\n", 33);
+        lc_kernel_exit(134);
+    }
+#endif
+
     size_t old_size = header->size;
 
     if (header->bucket != BUCKET_LARGE) {
@@ -833,6 +848,29 @@ lc_result_ptr lc_heap_reallocate(void *ptr, size_t new_size) {
         if (new_size <= usable) {
 #if LC_STATS
             /* Adjust active bytes for the size change */
+            if (new_size > old_size) {
+                atomic_fetch_add_explicit(&stat_active_bytes, new_size - old_size, memory_order_relaxed);
+                atomic_fetch_add_explicit(&stat_total_bytes_allocated, new_size - old_size, memory_order_relaxed);
+            } else {
+                atomic_fetch_sub_explicit(&stat_active_bytes, old_size - new_size, memory_order_relaxed);
+                atomic_fetch_add_explicit(&stat_total_bytes_freed, old_size - new_size, memory_order_relaxed);
+            }
+#endif
+            header->size = new_size;
+            return lc_ok_ptr(ptr);
+        }
+    }
+
+    /* Large block: resize in place when the new size still belongs to the large
+     * class and fits the mapping's capacity — avoids an mmap + copy + munmap for
+     * a large-to-large shrink (or a grow that still fits). A shrink into the
+     * small-class range falls through to allocate-and-copy, reclaiming memory. */
+    if (header->bucket == BUCKET_LARGE) {
+        uint8_t *block = (uint8_t *)header - LARGE_PREHEADER_SIZE;
+        size_t block_pages = *(size_t *)block;
+        size_t capacity = block_pages * LC_PAGE_SIZE - LARGE_HEADER_SIZE;
+        if (new_size <= capacity && find_bucket(new_size) == BUCKET_LARGE) {
+#if LC_STATS
             if (new_size > old_size) {
                 atomic_fetch_add_explicit(&stat_active_bytes, new_size - old_size, memory_order_relaxed);
                 atomic_fetch_add_explicit(&stat_total_bytes_allocated, new_size - old_size, memory_order_relaxed);

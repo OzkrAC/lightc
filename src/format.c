@@ -67,7 +67,9 @@ static const char *render_binary(uint64_t value, char *buf, size_t buf_size, siz
 
 lc_format lc_format_start(char *buffer, size_t capacity) {
     lc_format fmt = {
-        .buffer = buffer,
+        /* A zero-length buffer has no room even for the terminator; drop the
+         * pointer so finish writes nothing (put never writes with capacity 0). */
+        .buffer = capacity > 0 ? buffer : NULL,
         .capacity = capacity > 0 ? capacity - 1 : 0, /* reserve 1 for null */
         .used = 0,
         .overflow = false
@@ -76,9 +78,12 @@ lc_format lc_format_start(char *buffer, size_t capacity) {
 }
 
 size_t lc_format_finish(lc_format *fmt) {
-    /* Null-terminate at the actual write position (clamped to capacity) */
-    size_t pos = fmt->used < fmt->capacity + 1 ? fmt->used : fmt->capacity;
-    fmt->buffer[pos] = '\0';
+    /* Null-terminate at the actual write position (clamped to capacity). With a
+     * zero-length buffer there is nowhere to write it, so skip. */
+    if (fmt->buffer != NULL) {
+        size_t pos = fmt->used < fmt->capacity + 1 ? fmt->used : fmt->capacity;
+        fmt->buffer[pos] = '\0';
+    }
     return fmt->used;
 }
 
@@ -267,6 +272,39 @@ static const uint64_t pow10_table[] = {
     1000000000000000000ULL,  /* 18 */
 };
 
+/* Print the exact integer value of a finite double >= 2^64. Such values have no
+ * fractional bits, so the integer is significand << (E-52) — up to ~1024 bits.
+ * Build it as a little-endian binary big-integer and emit decimal digits by
+ * repeated division by 10. */
+static void put_huge_double_int(lc_format *fmt, uint64_t significand, int shift) {
+    uint8_t mag[128] = {0};                 /* little-endian binary, up to 1024 bits */
+    int nbytes = (shift + 53 + 7) / 8;
+    if (nbytes > (int)sizeof(mag)) nbytes = (int)sizeof(mag);
+    for (int i = 0; i < 53; i++) {
+        if (significand & (1ULL << i)) {
+            int bitpos = shift + i;
+            int byi = bitpos >> 3;
+            if (byi < nbytes) mag[byi] |= (uint8_t)(1u << (bitpos & 7));
+        }
+    }
+    char dec[400];
+    int dlen = 0;
+    int hi = nbytes;
+    while (hi > 0 && mag[hi - 1] == 0) hi--;
+    if (hi == 0) { put(fmt, '0'); return; }
+    while (hi > 0) {
+        uint32_t rem = 0;
+        for (int i = hi - 1; i >= 0; i--) {
+            uint32_t cur = (rem << 8) | mag[i];
+            mag[i] = (uint8_t)(cur / 10);
+            rem = cur % 10;
+        }
+        dec[dlen++] = (char)('0' + rem);
+        while (hi > 0 && mag[hi - 1] == 0) hi--;
+    }
+    for (int i = dlen - 1; i >= 0; i--) put(fmt, dec[i]);
+}
+
 void lc_format_add_double_precision(lc_format *fmt, double value, uint32_t precision) {
     /* Type-pun to inspect bits */
     uint64_t bits;
@@ -312,9 +350,16 @@ void lc_format_add_double_precision(lc_format *fmt, double value, uint32_t preci
         precision = 18;
     }
 
-    /* Handle very large values that would overflow uint64_t */
+    /* Values >= 2^64 overflow uint64_t but are finite integers (no fractional
+     * bits at that magnitude) — print the exact integer rather than "inf". */
     if (value >= 18446744073709551616.0) {
-        put_bytes(fmt, "inf", 3);
+        uint64_t sig = (1ULL << 52) | mantissa;   /* implicit leading 1 (normal) */
+        int E = (int)exponent - 1023;              /* unbiased exponent; >= 64 here */
+        put_huge_double_int(fmt, sig, E - 52);
+        if (precision > 0) {
+            put(fmt, '.');
+            for (uint32_t i = 0; i < precision; i++) put(fmt, '0');
+        }
         return;
     }
 

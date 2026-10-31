@@ -164,6 +164,28 @@ static void test_log_json_format(void) {
 
 /* ===== main ===== */
 
+/* Control bytes (< 0x20) must be escaped as \u00XX so the JSON stays valid, and
+ * the line must still end with a well-formed "}\n". */
+static void test_log_json_control_escape(void) {
+    int32_t fds[2];
+    setup_log_pipe(fds);
+    lc_log_set_level(LC_LOG_DEBUG);
+    lc_log_set_format(LC_LOG_FORMAT_JSON);
+
+    lc_log_string(LC_LOG_INFO, "a\x01\x1fz", 4);   /* 0x01 and 0x1f are control bytes */
+
+    char buf[1024];
+    size_t n = drain_pipe(fds[0], buf, sizeof(buf));
+    TEST_ASSERT(n >= 2);
+    TEST_ASSERT(lc_string_contains(buf, n, "\\u0001", 6));
+    TEST_ASSERT(lc_string_contains(buf, n, "\\u001f", 6));
+    TEST_ASSERT_EQ(buf[n - 1], '\n');              /* well-formed line ending */
+    TEST_ASSERT_EQ(buf[n - 2], '}');
+
+    lc_log_set_format(LC_LOG_FORMAT_TEXT);
+    teardown_log_pipe(fds);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -178,6 +200,7 @@ int main(int argc, char **argv, char **envp) {
 
     /* JSON format output */
     TEST_RUN(test_log_json_format);
+    TEST_RUN(test_log_json_control_escape);
 
     return test_main();
 }

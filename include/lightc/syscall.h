@@ -41,6 +41,7 @@ lc_sysret lc_syscall6(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3
 #define O_TRUNC     01000
 #define O_APPEND    02000
 #define O_NONBLOCK  04000
+#define O_DIRECTORY 0200000
 #define O_CLOEXEC   02000000
 
 /* mmap prot */

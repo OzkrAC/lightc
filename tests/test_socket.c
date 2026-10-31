@@ -245,6 +245,17 @@ static void test_socket_udp_exchange(void) {
 
 /* ===== main ===== */
 
+/* Byte-order helpers: round-trip is identity; on a little-endian host (x86_64,
+ * aarch64/Linux) host<->network swaps. */
+static void test_socket_byte_order(void) {
+    TEST_ASSERT_EQ(lc_network_to_host_16(lc_host_to_network_16(0x1234)), (uint16_t)0x1234);
+    TEST_ASSERT_EQ(lc_network_to_host_32(lc_host_to_network_32(0x12345678u)), (uint32_t)0x12345678u);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    TEST_ASSERT_EQ(lc_host_to_network_16(0x0102), (uint16_t)0x0201);
+    TEST_ASSERT_EQ(lc_host_to_network_32(0x01020304u), (uint32_t)0x04030201u);
+#endif
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -261,6 +272,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_socket_create_close);
 
     /* TCP echo exchange */
+    TEST_RUN(test_socket_byte_order);
     TEST_RUN(test_socket_tcp_exchange);
 
     /* UDP echo exchange */

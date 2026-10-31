@@ -22,7 +22,9 @@ static size_t next_power_of_2(size_t n) {
     n |= n >> 4;
     n |= n >> 8;
     n |= n >> 16;
-    n |= n >> 32;
+#if __SIZE_MAX__ > 0xffffffffu
+    n |= n >> 32;   /* only on a 64-bit size_t; `>> 32` would be UB on 32-bit */
+#endif
     return n + 1;
 }
 
@@ -507,6 +509,13 @@ void lc_list_push_back(lc_list *list, lc_list_node *node) {
 }
 
 void lc_list_remove(lc_list *list, lc_list_node *node) {
+    /* An unlinked node (never pushed, or already removed — remove clears both
+     * links) is skipped, so a double remove or a remove of a node not in a list
+     * cannot corrupt the links or decrement the count spuriously. A linked node
+     * always has non-NULL neighbours (at least the list's head sentinel).
+     * Membership in THIS specific list is not verifiable in O(1) for an
+     * intrusive list; pass the list the node actually belongs to. */
+    if (node->prev == NULL && node->next == NULL) return;
     node->prev->next = node->next;
     node->next->prev = node->prev;
     node->prev = NULL;

@@ -387,6 +387,32 @@ static void test_io_reader_eintr(void) {
 
 /* ===== main ===== */
 
+/* directory_open must reject a non-directory (O_DIRECTORY) rather than "open"
+ * a regular file and list it as empty. */
+static void test_directory_open_notdir(void) {
+    const char *path = "build/m_notdir.tmp";
+    TEST_ASSERT_OK(lc_file_write_all(path, "x", 1));
+
+    lc_directory dir;
+    TEST_ASSERT_ERR(lc_directory_open(&dir, path));   /* a regular file: rejected */
+    (void)lc_kernel_unlinkat(AT_FDCWD, path, 0);
+
+    TEST_ASSERT_OK(lc_directory_open(&dir, "."));      /* a real directory: ok */
+    lc_directory_close(&dir);
+}
+
+/* /proc files report size 0 via SEEK_END; lc_file_read_all must still return
+ * their contents by reading until EOF, not an empty buffer. */
+static void test_file_read_all_proc(void) {
+    uint8_t *data = NULL;
+    size_t size = 0;
+    lc_result r = lc_file_read_all("/proc/self/stat", &data, &size);
+    TEST_ASSERT_OK(r);
+    TEST_ASSERT(size > 0);
+    TEST_ASSERT_NOT_NULL(data);
+    lc_heap_free(data);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -415,6 +441,8 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_writer_put_string_no_buffer);
     TEST_RUN(test_file_write_read_all);
     TEST_RUN(test_io_reader_eintr);
+    TEST_RUN(test_directory_open_notdir);
+    TEST_RUN(test_file_read_all_proc);
 
     return test_main();
 }

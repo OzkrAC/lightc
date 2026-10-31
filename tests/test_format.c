@@ -330,6 +330,31 @@ static void test_format_double_neg_zero(void) {
 
 /* ===== main ===== */
 
+/* A zero-capacity buffer has no room even for the terminator: finish must not
+ * write (which would be one byte out of bounds), and content must overflow. */
+static void test_format_zero_capacity(void) {
+    char buf[4] = { 0x7F, 0x7F, 0x7F, 0x7F };
+    lc_format fmt = lc_format_start(buf, 0);
+    lc_format_add_text(&fmt, "hello");
+    (void)lc_format_finish(&fmt);
+    TEST_ASSERT_EQ(buf[0], (char)0x7F);           /* canary intact: nothing written */
+    TEST_ASSERT(lc_format_has_overflow(&fmt));
+}
+
+/* Finite doubles >= 2^64 must print their exact integer value, not "inf". */
+static void test_format_large_double(void) {
+    char buf[64];
+    lc_format a = lc_format_start(buf, sizeof(buf));
+    lc_format_add_double_precision(&a, 1e20, 0);
+    size_t na = lc_format_finish(&a);
+    TEST_ASSERT_STR_EQ(buf, na, "100000000000000000000", 21);
+
+    lc_format b = lc_format_start(buf, sizeof(buf));
+    lc_format_add_double_precision(&b, -1e20, 0);
+    size_t nb = lc_format_finish(&b);
+    TEST_ASSERT_STR_EQ(buf, nb, "-100000000000000000000", 22);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -387,6 +412,8 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_format_double_neg_inf);
     TEST_RUN(test_format_double_precision);
     TEST_RUN(test_format_double_neg_zero);
+    TEST_RUN(test_format_zero_capacity);
+    TEST_RUN(test_format_large_double);
 
     return test_main();
 }

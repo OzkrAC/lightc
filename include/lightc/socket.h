@@ -42,19 +42,29 @@ typedef struct {
     uint8_t  _pad[8];     /* padding to 16 bytes (sockaddr_in size) */
 } lc_socket_address;
 
-/* --- Byte order helpers --- */
+/* --- Byte order helpers ---
+ *
+ * Network byte order is big-endian. These convert between host and network
+ * order correctly on either endianness: on a big-endian host they are the
+ * identity, on a little-endian host they swap. (x86_64 and aarch64/Linux are
+ * little-endian, so the generated code is a byte swap there.) */
 
 [[gnu::const]]
 static inline uint16_t lc_host_to_network_16(uint16_t value) {
-    return (uint16_t)((value >> 8) | (value << 8));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return value;
+#else
+    return __builtin_bswap16(value);
+#endif
 }
 
 [[gnu::const]]
 static inline uint32_t lc_host_to_network_32(uint32_t value) {
-    return ((value >> 24) & 0xFF) |
-           ((value >> 8)  & 0xFF00) |
-           ((value << 8)  & 0xFF0000) |
-           ((value << 24) & 0xFF000000);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return value;
+#else
+    return __builtin_bswap32(value);
+#endif
 }
 
 [[gnu::const]]

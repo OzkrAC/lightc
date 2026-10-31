@@ -252,31 +252,49 @@ lc_result lc_file_read_all(const char *path, uint8_t **out_data, size_t *out_siz
     *out_data = NULL;
     *out_size = 0;
 
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY, 0);
+    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_CLOEXEC, 0);
     if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
     int32_t fd = (int32_t)fd_ret;
 
-    /* Get file size via seek to end */
+    /* Try to get the size via seek to end. Pipes and the /proc and /sys
+     * filesystems either report 0 or do not support lseek at all; treat any
+     * non-positive or failed result as "unknown size" and fall through to the
+     * grow-until-EOF path below (the fd is still positioned at the start). */
     lc_sysret end = lc_kernel_seek_position(fd, 0, SEEK_END);
-    if (end < 0) {
-        lc_kernel_close_file(fd);
-        return lc_err((int32_t)(-end));
-    }
-    size_t file_size = (size_t)end;
-
-    /* Seek back to start */
-    lc_sysret start = lc_kernel_seek_position(fd, 0, SEEK_SET);
-    if (start < 0) {
-        lc_kernel_close_file(fd);
-        return lc_err((int32_t)(-start));
+    size_t file_size = 0;
+    if (end > 0) {
+        if (lc_kernel_seek_position(fd, 0, SEEK_SET) < 0) {
+            lc_kernel_close_file(fd);
+            return lc_err(LC_ERR_IO);
+        }
+        file_size = (size_t)end;
     }
 
-    /* Handle empty files */
+    /* Size unknown: read until EOF into a growing buffer instead of trusting
+     * the reported size. (A genuinely empty regular file reads 0 bytes
+     * immediately and returns the empty result.) */
     if (file_size == 0) {
+        size_t cap = 4096, len = 0;
+        lc_result_ptr a = lc_heap_allocate(cap);
+        if (lc_ptr_is_err(a)) { lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
+        uint8_t *buf = a.value;
+        for (;;) {
+            if (len == cap) {
+                lc_result_ptr g = lc_heap_reallocate(buf, cap * 2);
+                if (lc_ptr_is_err(g)) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
+                buf = g.value;
+                cap *= 2;
+            }
+            lc_sysret n = lc_kernel_read_retry(fd, buf + len, cap - len);
+            if (n < 0) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err((int32_t)(-n)); }
+            if (n == 0) break;  /* EOF */
+            len += (size_t)n;
+        }
         lc_kernel_close_file(fd);
-        *out_data = NULL;
-        *out_size = 0;
-        return lc_ok(0);
+        if (len == 0) { lc_heap_free(buf); *out_data = NULL; *out_size = 0; return lc_ok(0); }
+        *out_data = buf;
+        *out_size = len;
+        return lc_ok((int64_t)len);
     }
 
     /* Allocate buffer */
@@ -307,7 +325,7 @@ lc_result lc_file_read_all(const char *path, uint8_t **out_data, size_t *out_siz
 }
 
 lc_result lc_file_write_all(const char *path, const void *data, size_t size) {
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    lc_sysret fd_ret = lc_kernel_open_file(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
     int32_t fd = (int32_t)fd_ret;
 
@@ -322,7 +340,7 @@ lc_result lc_file_write_all(const char *path, const void *data, size_t size) {
 }
 
 lc_result lc_file_get_size(const char *path) {
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY, 0);
+    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_CLOEXEC, 0);
     if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
     int32_t fd = (int32_t)fd_ret;
 
@@ -350,7 +368,11 @@ struct linux_dirent64 {
 };
 
 lc_result lc_directory_open(lc_directory *dir, const char *path) {
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY, 0);
+    /* O_DIRECTORY makes the kernel reject a non-directory at open (-ENOTDIR),
+     * instead of "opening" a regular file and later conflating getdents's
+     * -ENOTDIR with end-of-directory. O_CLOEXEC keeps the fd out of exec'd
+     * children. */
+    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
     if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
 
     dir->fd       = (int32_t)fd_ret;
@@ -365,6 +387,13 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
         /* If we have data in the buffer, return the next entry */
         if (dir->position < dir->filled) {
             struct linux_dirent64 *d = (struct linux_dirent64 *)(dir->buffer + dir->position);
+            /* Guard against a corrupt record: d_reclen == 0 would spin forever,
+             * and a record claiming to extend past the filled bytes would read
+             * out of bounds. Either means the stream is unusable — stop. */
+            if (d->d_reclen == 0 || dir->position + d->d_reclen > dir->filled) {
+                dir->done = true;
+                return false;
+            }
             entry->name = d->d_name;
             entry->type = d->d_type;
             dir->position += d->d_reclen;

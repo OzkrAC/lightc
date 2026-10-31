@@ -464,6 +464,26 @@ static void test_heap_stats(void) {
 
 /* ===== main ===== */
 
+/* A large block shrunk to a still-large size is resized in place — same pointer,
+ * no mmap/copy/munmap — and its contents are preserved. */
+static void test_heap_reallocate_large_inplace(void) {
+    lc_result_ptr a = lc_heap_allocate(100000);   /* large: block > 4096 */
+    TEST_ASSERT_PTR_OK(a);
+    void *orig = a.value;
+    uint8_t *p = (uint8_t *)orig;
+    p[0] = 0xA5;
+    p[60000] = 0x5A;
+
+    lc_result_ptr s = lc_heap_reallocate(orig, 70000);   /* still large, fits */
+    TEST_ASSERT_PTR_OK(s);
+    TEST_ASSERT_EQ((uintptr_t)s.value, (uintptr_t)orig);  /* in place */
+    uint8_t *q = (uint8_t *)s.value;
+    TEST_ASSERT_EQ(q[0], (uint8_t)0xA5);
+    TEST_ASSERT_EQ(q[60000], (uint8_t)0x5A);
+
+    lc_heap_free(s.value);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -517,6 +537,7 @@ int main(int argc, char **argv, char **envp) {
 
     /* M7: emptied slab pages are reclaimed */
     TEST_RUN(test_heap_page_reclaim);
+    TEST_RUN(test_heap_reallocate_large_inplace);
 
     /* Statistics */
     TEST_RUN(test_heap_stats);

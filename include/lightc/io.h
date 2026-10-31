@@ -133,7 +133,10 @@ typedef struct {
 /* Open a directory for listing. */
 [[nodiscard]] lc_result lc_directory_open(lc_directory *dir, const char *path);
 
-/* Get the next entry. Returns true if an entry was read, false when done. */
+/* Get the next entry. Returns true if an entry was read, false when done.
+ * NOTE: entry->name points into the directory's internal buffer and is only
+ * valid until the next lc_directory_next or lc_directory_close call — copy it
+ * if you need to keep it. */
 bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry);
 
 /* Close the directory. */
