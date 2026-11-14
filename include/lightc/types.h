@@ -11,7 +11,7 @@
 /* Version */
 #define LC_VERSION_MAJOR 0
 #define LC_VERSION_MINOR 1
-#define LC_VERSION_PATCH 0
+#define LC_VERSION_PATCH 1
 
 /* Returns version as a single integer: major * 10000 + minor * 100 + patch */
 [[gnu::const]]

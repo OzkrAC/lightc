@@ -122,6 +122,11 @@ gcc -ffreestanding -fno-stack-protector -nostdlib -nostartfiles -Iinclude \
 gcc $(pkg-config --cflags lightc) hello.c $(pkg-config --libs lightc) -o hello
 ```
 
-The `--libs` flags name `lightc.ld`; `pkg-config --variable=ldscript_tiny lightc` prints the path of `lightc-tiny.ld` to pass to `-T` instead.
+The `--libs` flags already pass `-T` with `lightc.ld`. A second `-T` is added to the first, not used in its place, so to link with `lightc-tiny.ld` swap its path in. `pkg-config --variable=ldscript_tiny lightc` prints that path:
+
+```sh
+gcc $(pkg-config --cflags lightc) hello.c \
+    $(pkg-config --libs lightc | sed "s|-T[^ ]*lightc\.ld|-T$(pkg-config --variable=ldscript_tiny lightc)|") -o hello
+```
 
 See [Core & conventions](guide.html) for the startup sequence, the error model and the syscall layer.
