@@ -15,8 +15,18 @@ Requires GCC and ninja.
 
 ninja                # build everything
 ninja test           # run all tests (171 tests across 10 suites)
+ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja bench          # run benchmarks
 ```
+
+`configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where plain `ninja` stops in the x86-only `examples/bench_heap.c`:
+
+```sh
+CC=aarch64-linux-gnu-gcc ./configure release
+ninja build/liblightc.a tests
+```
+
+The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensyscalls.sh` generates `include/lightc/arch/*/syscall_nr.h`, the `LC_ERR_*` errno lines of `include/lightc/result.h` and the lists `tests/abi_check.c` checks from it. Run it after editing `syscalls.def` and commit the files it changes with the edit: CI runs it too and fails when it changes a file.
 
 ## Modules
 

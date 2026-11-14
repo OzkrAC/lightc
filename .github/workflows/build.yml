@@ -23,6 +23,11 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run tests
         run: ninja test
+      # The programs of the fixed defects that tests/regress/manifest marks
+      # gating. This also runs when a suite failed, so one run reports both.
+      - name: Run regress programs
+        if: ${{ !cancelled() }}
+        run: ninja regress
 
   build-release:
     name: Release (build + test)
@@ -40,6 +45,11 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run tests
         run: ninja test
+      # The programs of the fixed defects that tests/regress/manifest marks
+      # gating. This also runs when a suite failed, so one run reports both.
+      - name: Run regress programs
+        if: ${{ !cancelled() }}
+        run: ninja regress
 
   build-tiny:
     name: Tiny (build)
@@ -51,6 +61,37 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
       - name: Build (tiny)
         run: ./configure tiny && ninja
+
+  # The pending ids in tests/regress/manifest are defects not fixed yet, so
+  # their programs are expected to fail. This job prints each id with PASS or
+  # FAIL and gates nothing: ninja regress-pending exits 0 either way. When a
+  # pending program does not build, the job still lists every pending id and
+  # then fails, and continue-on-error keeps the workflow green. A PASS says
+  # the defect looks fixed: the PR with the fix marks its id gating, and
+  # ninja regress runs it from then on.
+  regress-pending:
+    name: Pending regress programs (not gating)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
+      - name: Configure (debug)
+        run: ./configure debug
+      # As in the debug and release jobs, so a pending program that passes
+      # here also passes there once its id is gating.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # While a pending program does not build, ninja runs none of them;
+      # -k 0 still builds the others, and pending.sh then lists every
+      # pending id, one with no program as FAIL.
+      - name: Run pending regress programs
+        run: |
+          ninja -k 0 regress-pending && exit 0
+          sh tests/regress/pending.sh $(awk '{ sub(/#.*/, "") } $2 == "pending" { print "build/regress/" $1 }' tests/regress/manifest)
+          exit 1
 
   aarch64-qemu:
     name: aarch64 under qemu-user (debug build + test)
@@ -66,33 +107,30 @@ jobs:
         run: |
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
-      # Debug, because release and tiny strip with the host's strip. Only the
-      # suites and the plugin test_library loads are built: the default target
-      # also builds examples/bench_heap.c, which uses the x86-only rdtsc.
+      # configure takes the arch from CC and ar from CC's prefix, so CC alone
+      # sets up the cross build. Debug, so lightc's safety checks run; the
+      # aarch64-cross job builds release and tiny. Only the suites and the
+      # plugin test_library loads are built: the default target also builds
+      # examples/bench_heap.c, which uses the x86-only rdtsc.
       - name: Build (aarch64 debug, tests only)
         run: |
-          ARCH=aarch64 CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar ./configure debug
+          CC=aarch64-linux-gnu-gcc ./configure debug
+          grep -qx 'arch = aarch64' build.ninja
           ninja build/test_plugin.so tests
       # As in the x86_64 jobs, so the user namespace case skips only because
       # qemu-user cannot create one.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # Every suite in the tests target runs, even after one fails, so a single
-      # run shows every aarch64 failure; ninja test stops at the first failing
-      # suite. Each suite gets 120 s, so a hung one fails with status 124 and
-      # the log shows which one, instead of the job's 15 minutes running out.
+      # ninja test (tests/run.sh) runs every suite, even after one fails, so a
+      # single run shows every aarch64 failure. Each suite gets 120 s, so a
+      # hung one fails and the summary names it, instead of the job's 15
+      # minutes running out. qemu-user has no io_uring, so test_async and
+      # test_lightio skip every test, which only this job allows: in the
+      # x86_64 jobs that fails the run.
       - name: Run tests
         run: |
-          : > build/failed.txt
-          for t in $(sed -n 's/^build tests: phony //p' build.ninja | sed 's/\$builddir/build/g'); do
-            echo "--- $t ---"
-            timeout 120 "$t" || echo "${t#build/} exited with status $?" >> build/failed.txt
-          done 2>&1 | tee build/test.log
-          if [ -s build/failed.txt ]; then
-            echo "Failed suites:"
-            cat build/failed.txt
-            exit 1
-          fi
+          set -o pipefail
+          LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio" ninja test 2>&1 | tee build/test.log
       # Cases qemu-user cannot run print SKIP: instead. Count the SKIP: lines
       # of each suite and fail unless the counts equal ci/qemu-skips.txt, so a
       # skip that appears or goes away fails the job. This also runs when a
@@ -114,6 +152,62 @@ jobs:
             echo "The SKIP: counts differ from ci/qemu-skips.txt (-: the list, +: this run)."
             exit 1
           fi
+      # The gating regress programs need nothing qemu-user lacks, so unlike
+      # the suites none may skip: the step fails on any SKIP: line. Their
+      # output stays out of build/test.log, whose SKIP: lines the step above
+      # counts.
+      - name: Run regress programs
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          ninja regress 2>&1 | tee build/regress.log
+          if grep -E '^[[:space:]]*SKIP:' build/regress.log; then
+            echo "A gating regress program skipped a test under qemu-user."
+            exit 1
+          fi
+
+  aarch64-cross:
+    name: aarch64 cross builds (release + tiny)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu
+      # Ubuntu's own strip and objcopy handle only x86_64, so these links pass
+      # only with the aarch64-linux-gnu- tools configure takes from CC's
+      # prefix. Every suite must then be an aarch64 binary with no symbol
+      # table, and in tiny mode with no section headers.
+      - name: Build (aarch64 release and tiny, tests only)
+        run: |
+          for mode in release tiny; do
+            ./configure clean
+            CC=aarch64-linux-gnu-gcc ./configure "$mode"
+            grep -qx 'arch = aarch64' build.ninja
+            ninja build/liblightc.a tests
+            for t in $(sed -n 's/^build tests: phony //p' build.ninja | sed 's/\$builddir/build/g'); do
+              readelf -h "$t" | grep -q 'Machine: *AArch64$' || { echo "$t is not an aarch64 binary"; exit 1; }
+              if [ "$mode" = tiny ]; then
+                readelf -h "$t" | grep -q 'Number of section headers: *0$' || { echo "$t still has section headers"; exit 1; }
+              elif readelf -S "$t" | grep -q '\.symtab'; then
+                echo "$t is not stripped"
+                exit 1
+              fi
+            done
+            echo "$mode: every suite is a stripped aarch64 binary"
+          done
+      # lightbox still configures lightc with ARCH set. ARCH must equal CC's
+      # target arch: lightbox's line builds, and an ARCH that names another
+      # arch stops configure.
+      - name: Configure with ARCH, as lightbox does
+        run: |
+          ./configure clean
+          ARCH=aarch64 CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar ./configure release
+          ninja build/liblightc.a
+          if ARCH=x86_64 CC=aarch64-linux-gnu-gcc ./configure release; then
+            echo "configure accepted ARCH=x86_64 with an aarch64 compiler"
+            exit 1
+          fi
 
   abi-check:
     name: UAPI ABI check (x86_64 + aarch64)
@@ -123,10 +217,47 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc linux-libc-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      # abi_check.c checks every syscall number and errno value of
+      # syscalls.def, through the headers generated from it and the lists
+      # generated into it. Each check also runs when one above failed, so
+      # one run reports every failure.
       - name: Check x86_64
         run: gcc -std=c2x -ffreestanding -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only tests/abi_check.c
       - name: Check aarch64
+        if: ${{ !cancelled() }}
         run: aarch64-linux-gnu-gcc -std=c2x -ffreestanding -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only tests/abi_check.c
+      # result.h must have every errno: the E* names and values each arch's
+      # asm/errno.h defines must be exactly the errno lines of syscalls.def.
+      - name: Check that syscalls.def lists every errno
+        if: ${{ !cancelled() }}
+        run: |
+          awk '{ sub(/#.*/, "") } $1 == "errno" { print $2, $3 }' syscalls.def | sort > "$RUNNER_TEMP/errno.def"
+          for cc in gcc aarch64-linux-gnu-gcc; do
+            echo '#include <asm/errno.h>' | $cc -E -dM -x c - |
+              awk '$1 == "#define" && $2 ~ /^E[A-Z0-9]+$/ { print $2, $3 }' | sort > "$RUNNER_TEMP/errno.uapi"
+            if ! diff -u "$RUNNER_TEMP/errno.uapi" "$RUNNER_TEMP/errno.def"; then
+              echo "$cc: the errnos of syscalls.def differ from asm/errno.h (-: asm/errno.h, +: syscalls.def)."
+              exit 1
+            fi
+            echo "$cc: syscalls.def has the $(wc -l < "$RUNNER_TEMP/errno.def") errnos of asm/errno.h"
+          done
+      # The syscall_nr.h files, the errno lines of result.h and the lists in
+      # abi_check.c are generated from syscalls.def and checked in. Run the
+      # generator as a developer does: it must change no file, so a
+      # syscalls.def edit committed without its regenerated files fails, and
+      # so does a hand edit of a generated line. Here sh is dash and awk is
+      # mawk, which also keeps the generator to POSIX sh and awk.
+      - name: Check the files generated from syscalls.def
+        if: ${{ !cancelled() }}
+        run: |
+          sh tools/gensyscalls.sh
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git diff
+            echo "These files differ from what tools/gensyscalls.sh generates from syscalls.def."
+            echo "Run sh tools/gensyscalls.sh and commit the files it changes."
+            exit 1
+          fi
 
   pkg-config-consumer:
     name: pkg-config consumer (install + link)

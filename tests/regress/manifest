@@ -1,0 +1,33 @@
+# Regress programs: one per defect, named by the defect's ledger id.
+#
+# tests/regress/<id>.c checks that one defect is gone. It is written as a
+# suite is, with tests/test.h and no wait without a bound, and asserts the
+# defect's symptom, so it fails while the defect is there and passes once it
+# is fixed. As with a suite, a program that skips every test fails the run.
+# Each id below is in one of two states:
+#
+#   gating   The defect is fixed. ninja regress runs the program through
+#            tests/run.sh, as ninja test runs the suites, and fails unless
+#            it passes. CI runs ninja regress in its debug, release and
+#            aarch64-qemu jobs.
+#   pending  The defect is not fixed yet, so the program fails for now.
+#            ninja regress-pending runs it and prints the id with PASS or
+#            FAIL, and does not fail on the result. It must still build:
+#            while one does not, ninja regress-pending runs none of them.
+#            CI runs it in the regress-pending job, which gates nothing
+#            and then still lists every pending id, one that did not
+#            build as FAIL.
+#
+# The PR that fixes a pending defect marks its id gating. A PR that fixes a
+# defect with no program here adds tests/regress/<id>.c, shows that it fails
+# without the fix, and lists the id as gating.
+#
+# configure reads this file and writes the build edges, so run ./configure
+# again after editing it; the regress-pending job reads its pending ids too.
+# Format: one "id state" pair per line, "#" starts a comment. An id has only
+# letters, digits and dashes.
+
+RT-main-exit            gating
+RT-fchmodat-flags       gating
+FMT-print-double-oob    gating
+TIME-sleep-eintr        pending

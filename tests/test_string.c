@@ -206,7 +206,8 @@ static void test_contains_not_found(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* lc_string_length */
     TEST_RUN(test_string_length_empty);

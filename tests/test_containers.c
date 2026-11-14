@@ -701,7 +701,8 @@ static void test_list_remove_idempotent(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* Array tests */
     TEST_RUN(test_array_create);

@@ -7,13 +7,64 @@
 #   ./configure debug        — debug symbols, no optimization
 #   ./configure tiny         — minimal binary size, stripped
 #   ./configure clean        — remove build artifacts
+#
+# Environment (an empty value counts as unset):
+#   CC       — the compiler (default gcc). It sets the target: the arch is
+#              the first field of `$CC -dumpmachine`, x86_64 or aarch64.
+#   AR, STRIP, OBJCOPY
+#            — default to CC's prefix: aarch64-linux-gnu-ar, -strip and
+#              -objcopy for CC=aarch64-linux-gnu-gcc (also after a launcher,
+#              as in CC="ccache aarch64-linux-gnu-gcc"), ar, strip and objcopy
+#              for gcc. A prefixed tool that is not installed falls back to
+#              the plain name; set these when that is the wrong tool.
+#   CFLAGS   — added after configure's own C flags, so they can override them.
+#   LDFLAGS  — added after configure's own link flags.
+#   SYSROOT  — passed to every compile and link as --sysroot=$SYSROOT.
+#   ARCH     — deprecated, kept for older callers. It must equal CC's target
+#              arch, or configure stops: it cannot pick another compiler.
+#
+# A cross build for aarch64, which builds named targets because plain ninja
+# also builds examples/bench_heap.c, which is x86-only:
+#   CC=aarch64-linux-gnu-gcc ./configure release && ninja build/liblightc.a tests
 
 set -e
 
-ARCH=${ARCH:-$(uname -m)}
 CC=${CC:-gcc}
-AR=${AR:-ar}
 BUILDDIR="build"
+
+# --- Binutils: the ones with CC's prefix, when they are installed ---
+
+# The prefix comes from the first word of CC that names a GCC, so options and
+# a launcher such as ccache are skipped. aarch64-linux-gnu-gcc and
+# aarch64-linux-gnu-gcc-13 give aarch64-linux-gnu-, gcc gives no prefix.
+TOOL_PREFIX=""
+for word in $CC; do
+    case "$word" in -*) continue ;; esac
+    case "${word##*/}" in
+        *-gcc)        TOOL_PREFIX=${word%gcc} ;;
+        *-gcc-[0-9]*) TOOL_PREFIX=${word%gcc-*} ;;
+        *)            continue ;;
+    esac
+    break
+done
+
+# Prints the prefixed $1, as CC spells it or else found on PATH, or the plain
+# $1 when neither is installed. Some *-gcc have no binutils of that name:
+# musl-gcc, a compiler in a ccache directory, or a distro's native
+# <triplet>-gcc.
+find_tool() {
+    for tool in "${TOOL_PREFIX}$1" "${TOOL_PREFIX##*/}$1"; do
+        case "$tool" in
+            "$1") ;;
+            */*)  [ -f "$tool" ] && [ -x "$tool" ] && { echo "$tool"; return; } ;;
+            *)    command -v "$tool" >/dev/null 2>&1 && { echo "$tool"; return; } ;;
+        esac
+    done
+    echo "$1"
+}
+AR=${AR:-$(find_tool ar)}
+STRIP=${STRIP:-$(find_tool strip)}
+OBJCOPY=${OBJCOPY:-$(find_tool objcopy)}
 
 # --- Detect C23 flag (GCC 14+ uses -std=c23, older uses -std=c2x) ---
 
@@ -29,24 +80,24 @@ MODE="${1:-release}"
 
 case "$MODE" in
     debug)
-        CFLAGS="$CSTD -O0 -g3 -Wall -Wextra -Wpedantic"
-        LDFLAGS="-static -no-pie"
+        MODE_CFLAGS="$CSTD -O0 -g3 -Wall -Wextra -Wpedantic"
+        MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc.ld"
-        STRIP=""
+        STRIP_CMD=""
         DESC="debug (no optimization, full debug symbols)"
         ;;
     release)
-        CFLAGS="$CSTD -O2 -DNDEBUG -Wall -Wextra -Wpedantic"
-        LDFLAGS="-static -no-pie"
+        MODE_CFLAGS="$CSTD -O2 -DNDEBUG -Wall -Wextra -Wpedantic"
+        MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc.ld"
-        STRIP="strip \$out"
+        STRIP_CMD="$STRIP \$out"
         DESC="release (optimized, stripped)"
         ;;
     tiny)
-        CFLAGS="$CSTD -Os -DNDEBUG -Wall -Wextra -Wpedantic -fno-asynchronous-unwind-tables"
-        LDFLAGS="-static -no-pie"
+        MODE_CFLAGS="$CSTD -Os -DNDEBUG -Wall -Wextra -Wpedantic -fno-asynchronous-unwind-tables"
+        MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc-tiny.ld"
-        STRIP="strip \$out && objcopy --strip-section-headers \$out"
+        STRIP_CMD="$STRIP \$out && $OBJCOPY --strip-section-headers \$out"
         DESC="tiny (minimal binary size)"
         ;;
     clean)
@@ -61,18 +112,95 @@ case "$MODE" in
         ;;
 esac
 
-# --- Map $ARCH (default: uname -m) to our arch dirs and flags ---
+# --- Target arch: the first field of CC's target triple ---
+
+if ! TARGET=$($CC -dumpmachine 2>/dev/null) || [ -z "$TARGET" ]; then
+    echo "'$CC -dumpmachine' failed: set CC to a GCC for x86_64 or aarch64"
+    exit 1
+fi
+
+# ARCH is still read for callers that pass it. One that names another arch
+# than CC's would have CC assemble that arch's start code, so it stops
+# configure instead.
+if [ -n "$ARCH" ] && [ "$ARCH" != "${TARGET%%-*}" ]; then
+    echo "ARCH=$ARCH, but $CC targets $TARGET"
+    echo "The arch comes from CC: unset ARCH, or set CC to a compiler for $ARCH"
+    exit 1
+fi
+ARCH=${TARGET%%-*}
+
+# --- Map $ARCH to our arch dirs and flags ---
 
 case "$ARCH" in
     x86_64)  ARCH_DIR="x86_64";  ARCH_FLAGS="" ;;
     aarch64) ARCH_DIR="aarch64"; ARCH_FLAGS="-mno-outline-atomics" ;;
     *)
-        echo "Unsupported architecture: $ARCH"
+        echo "Unsupported architecture: $ARCH ($CC targets $TARGET)"
         exit 1
         ;;
 esac
 
 COMMON_FLAGS="-ffreestanding -nostdlib -nostartfiles -nodefaultlibs -fno-stack-protector${ARCH_FLAGS:+ ${ARCH_FLAGS}} -Iinclude"
+
+# --- Regress programs: the "id state" lines of tests/regress/manifest ---
+
+# Each id gets build edges for tests/regress/<id>.c. The gating ones go to
+# ninja regress, the pending ones to ninja regress-pending. An id has only
+# letters, digits and dashes, so it needs no escaping in build.ninja. "#"
+# starts a comment, as in ci/qemu-skips.txt.
+REGRESS_MANIFEST="tests/regress/manifest"
+REGRESS_BUILDS=""
+REGRESS_GATING=""
+REGRESS_PENDING=""
+regress_ids=" "
+regress_line=0
+if [ -f "$REGRESS_MANIFEST" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        regress_line=$((regress_line + 1))
+        where="$REGRESS_MANIFEST:$regress_line"
+        line=${line%%#*}
+        read -r id state extra << LINE
+$line
+LINE
+        [ -n "$id" ] || continue
+        case "$id" in
+            *[!A-Za-z0-9-]*)
+                echo "$where: '$id' is not an id: use only letters, digits and dashes"
+                exit 1
+                ;;
+        esac
+        case "$regress_ids" in
+            *" $id "*) echo "$where: $id is listed twice"; exit 1 ;;
+        esac
+        case "$state" in
+            gating)  REGRESS_GATING="$REGRESS_GATING \$builddir/regress/$id" ;;
+            pending) REGRESS_PENDING="$REGRESS_PENDING \$builddir/regress/$id" ;;
+            *)       echo "$where: $id must be gating or pending, not '$state'"; exit 1 ;;
+        esac
+        if [ -n "$extra" ]; then
+            echo "$where: '$extra' after the state of $id"
+            exit 1
+        fi
+        if [ ! -f "tests/regress/$id.c" ]; then
+            echo "$where: there is no tests/regress/$id.c"
+            exit 1
+        fi
+        regress_ids="$regress_ids$id "
+        REGRESS_BUILDS="${REGRESS_BUILDS}build \$builddir/regress/$id.o: cc_test tests/regress/$id.c
+build \$builddir/regress/$id: link \$builddir/regress/$id.o \$builddir/liblightc.a | \$ldscript
+
+"
+    done < "$REGRESS_MANIFEST"
+fi
+
+# tests/run.sh needs at least one program, so with no gating id
+# ninja regress does nothing.
+if [ -n "$REGRESS_GATING" ]; then
+    REGRESS_EDGE="build regress: run_tests${REGRESS_GATING} | tests/run.sh
+  description = Running regress programs"
+else
+    REGRESS_EDGE="build regress: phony"
+fi
 
 # --- Generate build.ninja ---
 
@@ -86,12 +214,14 @@ cat > build.ninja << EOF
 #   ninja clean    — remove build artifacts
 
 arch = ${ARCH_DIR}
-cc = ${CC}
+cc = ${CC}${SYSROOT:+ --sysroot=${SYSROOT}}
 ar = ${AR}
 builddir = ${BUILDDIR}
+ldscript = ${LDSCRIPT}
 
-cflags = ${CFLAGS} ${COMMON_FLAGS}
+cflags = ${MODE_CFLAGS} ${COMMON_FLAGS}${CFLAGS:+ ${CFLAGS}}
 asflags = -Iinclude -Wa,--noexecstack
+ldflags = ${MODE_LDFLAGS}${LDFLAGS:+ ${LDFLAGS}}
 
 # --- Rules ---
 
@@ -108,8 +238,10 @@ rule ar
   command = \$ar rcs \$out \$in
   description = AR \$out
 
+# Every link edge also lists the linker script as an implicit input, so
+# editing it relinks every binary.
 rule link
-  command = \$cc -nostdlib -nostartfiles -nodefaultlibs ${LDFLAGS} -T ${LDSCRIPT} \$in -o \$out ${STRIP:+&& ${STRIP}}
+  command = \$cc -nostdlib -nostartfiles -nodefaultlibs \$ldflags -T \$ldscript \$in -o \$out ${STRIP_CMD:+&& ${STRIP_CMD}}
   description = LINK \$out
 
 rule clean_cmd
@@ -152,22 +284,22 @@ build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$build
 # --- Examples ---
 
 build \$builddir/hello.o: cc examples/hello.c
-build \$builddir/hello: link \$builddir/hello.o \$builddir/liblightc.a
+build \$builddir/hello: link \$builddir/hello.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/syscalls.o: cc examples/syscalls.c
-build \$builddir/syscalls: link \$builddir/syscalls.o \$builddir/liblightc.a
+build \$builddir/syscalls: link \$builddir/syscalls.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/strings.o: cc examples/strings.c
-build \$builddir/strings: link \$builddir/strings.o \$builddir/liblightc.a
+build \$builddir/strings: link \$builddir/strings.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/print.example.o: cc examples/print.c
-build \$builddir/print.example: link \$builddir/print.example.o \$builddir/liblightc.a
+build \$builddir/print.example: link \$builddir/print.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/memory.example.o: cc examples/memory.c
-build \$builddir/memory.example: link \$builddir/memory.example.o \$builddir/liblightc.a
+build \$builddir/memory.example: link \$builddir/memory.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/heap.example.o: cc examples/heap.c
-build \$builddir/heap.example: link \$builddir/heap.example.o \$builddir/liblightc.a
+build \$builddir/heap.example: link \$builddir/heap.example.o \$builddir/liblightc.a | \$ldscript
 
 rule cc_stats
   command = \$cc \$cflags -DLC_STATS=1 -MMD -MF \$out.d -c \$in -o \$out
@@ -185,49 +317,49 @@ rule ar_stats
   description = AR \$out
 
 build \$builddir/liblightc_stats.a: ar_stats \$builddir/liblightc.a \$builddir/heap_stats.o \$builddir/memory_stats.o
-build \$builddir/heapviz: link \$builddir/heapviz.o \$builddir/liblightc_stats.a
+build \$builddir/heapviz: link \$builddir/heapviz.o \$builddir/liblightc_stats.a | \$ldscript
 
 build \$builddir/thread.example.o: cc examples/thread.c
-build \$builddir/thread.example: link \$builddir/thread.example.o \$builddir/liblightc.a
+build \$builddir/thread.example: link \$builddir/thread.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_heap.o: cc examples/bench_heap.c
-build \$builddir/bench_heap: link \$builddir/bench_heap.o \$builddir/liblightc.a
+build \$builddir/bench_heap: link \$builddir/bench_heap.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_startup.o: cc examples/bench_startup.c
-build \$builddir/bench_startup: link \$builddir/bench_startup.o \$builddir/liblightc.a
+build \$builddir/bench_startup: link \$builddir/bench_startup.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/io.example.o: cc examples/io.c
-build \$builddir/io.example: link \$builddir/io.example.o \$builddir/liblightc.a
+build \$builddir/io.example: link \$builddir/io.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/async.example.o: cc examples/async.c
-build \$builddir/async.example: link \$builddir/async.example.o \$builddir/liblightc.a
+build \$builddir/async.example: link \$builddir/async.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/socket.example.o: cc examples/socket.c
-build \$builddir/socket.example: link \$builddir/socket.example.o \$builddir/liblightc.a
+build \$builddir/socket.example: link \$builddir/socket.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/httpd.o: cc examples/httpd.c
-build \$builddir/httpd: link \$builddir/httpd.o \$builddir/liblightc.a
+build \$builddir/httpd: link \$builddir/httpd.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/coroutine.example.o: cc examples/coroutine.c
-build \$builddir/coroutine.example: link \$builddir/coroutine.example.o \$builddir/liblightc.a
+build \$builddir/coroutine.example: link \$builddir/coroutine.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/format.example.o: cc examples/format.c
-build \$builddir/format.example: link \$builddir/format.example.o \$builddir/liblightc.a
+build \$builddir/format.example: link \$builddir/format.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/log.example.o: cc examples/log.c
-build \$builddir/log.example: link \$builddir/log.example.o \$builddir/liblightc.a
+build \$builddir/log.example: link \$builddir/log.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/time.example.o: cc examples/time.c
-build \$builddir/time.example: link \$builddir/time.example.o \$builddir/liblightc.a
+build \$builddir/time.example: link \$builddir/time.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/lightio_echo.o: cc examples/lightio_echo.c
-build \$builddir/lightio_echo: link \$builddir/lightio_echo.o \$builddir/liblightc.a
+build \$builddir/lightio_echo: link \$builddir/lightio_echo.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/lightio_http.o: cc examples/lightio_http.c
-build \$builddir/lightio_http: link \$builddir/lightio_http.o \$builddir/liblightc.a
+build \$builddir/lightio_http: link \$builddir/lightio_http.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/lightio_test.o: cc examples/lightio_test.c
-build \$builddir/lightio_test: link \$builddir/lightio_test.o \$builddir/liblightc.a
+build \$builddir/lightio_test: link \$builddir/lightio_test.o \$builddir/liblightc.a | \$ldscript
 
 rule cc_shared
   command = \$cc -shared -fPIC -nostdlib -o \$out \$in
@@ -236,10 +368,10 @@ rule cc_shared
 build \$builddir/test_plugin.so: cc_shared examples/test_plugin.c
 
 build \$builddir/library.example.o: cc examples/library.c
-build \$builddir/library.example: link \$builddir/library.example.o \$builddir/liblightc.a
+build \$builddir/library.example: link \$builddir/library.example.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/containers.example.o: cc examples/containers.c
-build \$builddir/containers.example: link \$builddir/containers.example.o \$builddir/liblightc.a
+build \$builddir/containers.example: link \$builddir/containers.example.o \$builddir/liblightc.a | \$ldscript
 
 # --- Tests ---
 
@@ -248,73 +380,98 @@ rule cc_test
   depfile = \$out.d
   description = CC \$out
 
+build \$builddir/test_harness.o: cc_test tests/test_harness.c
+build \$builddir/test_harness: link \$builddir/test_harness.o \$builddir/liblightc.a | \$ldscript
+
 build \$builddir/test_string.o: cc_test tests/test_string.c
-build \$builddir/test_string: link \$builddir/test_string.o \$builddir/liblightc.a
+build \$builddir/test_string: link \$builddir/test_string.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_format.o: cc_test tests/test_format.c
-build \$builddir/test_format: link \$builddir/test_format.o \$builddir/liblightc.a
+build \$builddir/test_format: link \$builddir/test_format.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_containers.o: cc_test tests/test_containers.c
-build \$builddir/test_containers: link \$builddir/test_containers.o \$builddir/liblightc.a
+build \$builddir/test_containers: link \$builddir/test_containers.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_memory.o: cc_test tests/test_memory.c
-build \$builddir/test_memory: link \$builddir/test_memory.o \$builddir/liblightc.a
+build \$builddir/test_memory: link \$builddir/test_memory.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_heap.o: cc_test tests/test_heap.c
-build \$builddir/test_heap: link \$builddir/test_heap.o \$builddir/liblightc.a
+build \$builddir/test_heap: link \$builddir/test_heap.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_thread.o: cc_test tests/test_thread.c
-build \$builddir/test_thread: link \$builddir/test_thread.o \$builddir/liblightc.a
+build \$builddir/test_thread: link \$builddir/test_thread.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_coroutine.o: cc_test tests/test_coroutine.c
-build \$builddir/test_coroutine: link \$builddir/test_coroutine.o \$builddir/liblightc.a
+build \$builddir/test_coroutine: link \$builddir/test_coroutine.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_io.o: cc_test tests/test_io.c
-build \$builddir/test_io: link \$builddir/test_io.o \$builddir/liblightc.a
+build \$builddir/test_io: link \$builddir/test_io.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_time.o: cc_test tests/test_time.c
-build \$builddir/test_time: link \$builddir/test_time.o \$builddir/liblightc.a
+build \$builddir/test_time: link \$builddir/test_time.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_print.o: cc_test tests/test_print.c
-build \$builddir/test_print: link \$builddir/test_print.o \$builddir/liblightc.a
+build \$builddir/test_print: link \$builddir/test_print.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_async.o: cc_test tests/test_async.c
-build \$builddir/test_async: link \$builddir/test_async.o \$builddir/liblightc.a
+build \$builddir/test_async: link \$builddir/test_async.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_socket.o: cc_test tests/test_socket.c
-build \$builddir/test_socket: link \$builddir/test_socket.o \$builddir/liblightc.a
+build \$builddir/test_socket: link \$builddir/test_socket.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_log.o: cc_test tests/test_log.c
-build \$builddir/test_log: link \$builddir/test_log.o \$builddir/liblightc.a
+build \$builddir/test_log: link \$builddir/test_log.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_signal.o: cc_test tests/test_signal.c
-build \$builddir/test_signal: link \$builddir/test_signal.o \$builddir/liblightc.a
+build \$builddir/test_signal: link \$builddir/test_signal.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_lifecycle.o: cc_test tests/test_lifecycle.c
-build \$builddir/test_lifecycle: link \$builddir/test_lifecycle.o \$builddir/liblightc.a
+build \$builddir/test_lifecycle: link \$builddir/test_lifecycle.o \$builddir/liblightc.a | \$ldscript
 
+# test_library loads test_plugin.so from its own directory, so building the
+# suite builds the plugin too.
 build \$builddir/test_library.o: cc_test tests/test_library.c
-build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a
+build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so
 
 build \$builddir/test_thread_sync.o: cc_test tests/test_thread_sync.c
-build \$builddir/test_thread_sync: link \$builddir/test_thread_sync.o \$builddir/liblightc.a
+build \$builddir/test_thread_sync: link \$builddir/test_thread_sync.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_lightio.o: cc_test tests/test_lightio.c
-build \$builddir/test_lightio: link \$builddir/test_lightio.o \$builddir/liblightc.a
+build \$builddir/test_lightio: link \$builddir/test_lightio.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/test_syscall.o: cc_test tests/test_syscall.c
-build \$builddir/test_syscall: link \$builddir/test_syscall.o \$builddir/liblightc.a
+build \$builddir/test_syscall: link \$builddir/test_syscall.o \$builddir/liblightc.a | \$ldscript
 
-build tests: phony \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall
 
-# The console pool streams each suite's output as it runs; otherwise ninja
-# holds it until the edge ends and drops it if a hung suite is interrupted.
+# tests/run.sh runs every suite, even after one fails, each with a time
+# limit, and ends with a summary. The console pool streams each suite's
+# output as it runs; otherwise ninja holds it until the edge ends and drops
+# it if a hung suite is interrupted.
 rule run_tests
-  command = for t in \$in; do echo "--- \$\$t ---" && \$\$t || exit 1; done
+  command = sh tests/run.sh \$in
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so tests/run.sh
+
+# --- Regress programs ---
+
+# One program per defect, named by its ledger id: see tests/regress/manifest.
+# ninja regress runs the gating ones through tests/run.sh and fails unless
+# every one passes. ninja regress-pending runs the pending ones, which fail
+# until their defect is fixed, and lists each with PASS or FAIL; it does not
+# fail on the result, only when one of them does not build, and then it runs
+# none. Neither is part of ninja test or the tests target.
+
+${REGRESS_BUILDS}${REGRESS_EDGE}
+
+rule run_regress_pending
+  command = sh tests/regress/pending.sh \$in
+  description = Running pending regress programs
+  pool = console
+
+build regress-pending: run_regress_pending${REGRESS_PENDING} | tests/run.sh tests/regress/pending.sh
 
 # --- Install ---
 
@@ -340,22 +497,22 @@ rule cc_bench
   description = CC \$out
 
 build \$builddir/bench_heap2.o: cc_bench bench/bench_heap.c
-build \$builddir/bench_heap2: link \$builddir/bench_heap2.o \$builddir/liblightc.a
+build \$builddir/bench_heap2: link \$builddir/bench_heap2.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_arena.o: cc_bench bench/bench_arena.c
-build \$builddir/bench_arena: link \$builddir/bench_arena.o \$builddir/liblightc.a
+build \$builddir/bench_arena: link \$builddir/bench_arena.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_string.o: cc_bench bench/bench_string.c
-build \$builddir/bench_string: link \$builddir/bench_string.o \$builddir/liblightc.a
+build \$builddir/bench_string: link \$builddir/bench_string.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_containers.o: cc_bench bench/bench_containers.c
-build \$builddir/bench_containers: link \$builddir/bench_containers.o \$builddir/liblightc.a
+build \$builddir/bench_containers: link \$builddir/bench_containers.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_thread.o: cc_bench bench/bench_thread.c
-build \$builddir/bench_thread: link \$builddir/bench_thread.o \$builddir/liblightc.a
+build \$builddir/bench_thread: link \$builddir/bench_thread.o \$builddir/liblightc.a | \$ldscript
 
 build \$builddir/bench_format.o: cc_bench bench/bench_format.c
-build \$builddir/bench_format: link \$builddir/bench_format.o \$builddir/liblightc.a
+build \$builddir/bench_format: link \$builddir/bench_format.o \$builddir/liblightc.a | \$ldscript
 
 build benchmarks: phony \$builddir/bench_heap2 \$builddir/bench_arena \$builddir/bench_string \$builddir/bench_containers \$builddir/bench_thread \$builddir/bench_format
 

@@ -6,6 +6,7 @@
 #include <lightc/print.h>
 #include <lightc/socket.h>
 #include <lightc/thread.h>
+#include <lightc/time.h>
 #include <stdatomic.h>
 
 #define S(literal) literal, sizeof(literal) - 1
@@ -18,39 +19,89 @@ static void say_pass_fail(bool passed) {
 }
 
 /* ================================================================
+ * Free ports and bounded waits, for all three exchanges
+ *
+ * Each server binds port 0, so the kernel picks a free port, and reads
+ * that port back with getsockname. It stores the port, then sets its ready
+ * flag to 1, or sets the flag to -1 if it cannot start. Its client waits
+ * for the flag at most WAIT_MS, and accept and receive give up after the
+ * same time, so no thread waits forever.
+ * ================================================================ */
+
+#define WAIT_MS 5000
+
+/* SO_RCVTIMEO from the kernel's <asm-generic/socket.h>, which x86_64 and
+ * aarch64 both use. It takes a struct timeval, two 64-bit fields on both. */
+#define LINUX_SO_RCVTIMEO 20
+
+/* Make accept and receive on fd fail with EAGAIN after WAIT_MS. A socket
+ * that accept returns inherits this from the listening socket. */
+static bool limit_wait(int32_t fd) {
+    struct { int64_t seconds; int64_t microseconds; } timeout = { WAIT_MS / 1000, 0 };
+    return lc_syscall5(SYS_setsockopt, fd, LC_SOL_SOCKET, LINUX_SO_RCVTIMEO,
+                       (int64_t)&timeout, sizeof(timeout)) == 0;
+}
+
+/* The port fd is bound to, in host byte order, or 0 if getsockname fails. */
+static uint16_t bound_port(int32_t fd) {
+    lc_socket_address addr;
+    uint32_t addr_length = sizeof(addr);
+    if (lc_kernel_getsockname(fd, &addr, &addr_length) != 0) return 0;
+    return lc_network_to_host_16(addr.port);
+}
+
+/* Close fd, if the server has one yet, and set *ready to -1, so the client
+ * stops waiting. Returns the server thread's exit code. */
+static int32_t server_failed(int32_t fd, _Atomic(int32_t) *ready) {
+    if (fd >= 0) lc_socket_close(fd);
+    atomic_store_explicit(ready, -1, memory_order_release);
+    return 1;
+}
+
+/* Wait at most WAIT_MS for a server to set *ready. True once it is ready,
+ * false if it failed or the time ran out. */
+static bool wait_for_server(_Atomic(int32_t) *ready) {
+    int64_t start = lc_time_start_timer();
+    for (;;) {
+        int32_t state = atomic_load_explicit(ready, memory_order_acquire);
+        if (state != 0) return state == 1;
+        if (lc_time_elapsed_milliseconds(start) >= WAIT_MS) return false;
+        lc_time_sleep_microseconds(100);
+    }
+}
+
+/* ================================================================
  * TCP test — server/client exchange via threads
  * ================================================================ */
 
-#define TCP_PORT 18234
-
-/* Atomic flag: server sets to 1 after it is listening */
+/* Server state: 0 = starting, 1 = listening on tcp_port, -1 = failed */
 static _Atomic(int32_t) server_ready = 0;
+static uint16_t tcp_port;   /* set before server_ready = 1 */
 
 /* Server thread: accept one connection, receive, send back */
 static int32_t tcp_server_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Create, bind, listen */
+    /* Create, bind to port 0 (any free port), listen */
     lc_result r = lc_socket_create(LC_SOCK_STREAM);
-    if (lc_is_err(r)) return 1;
+    if (lc_is_err(r)) return server_failed(-1, &server_ready);
     int32_t server_fd = (int32_t)r.value;
 
-    if (lc_is_err(lc_socket_set_reuse_address(server_fd))) {
-        lc_socket_close(server_fd);
-        return 1;
-    }
+    if (lc_is_err(lc_socket_set_reuse_address(server_fd)))
+        return server_failed(server_fd, &server_ready);
 
-    lc_socket_address addr = lc_socket_address_any(TCP_PORT);
-    if (lc_is_err(lc_socket_bind(server_fd, &addr))) {
-        lc_socket_close(server_fd);
-        return 1;
-    }
+    lc_socket_address addr = lc_socket_address_any(0);
+    if (lc_is_err(lc_socket_bind(server_fd, &addr)))
+        return server_failed(server_fd, &server_ready);
 
-    if (lc_is_err(lc_socket_listen(server_fd, 1))) {
-        lc_socket_close(server_fd);
-        return 1;
-    }
+    if (lc_is_err(lc_socket_listen(server_fd, 1)))
+        return server_failed(server_fd, &server_ready);
+
+    /* Read back the port the kernel picked, and bound accept and receive */
+    tcp_port = bound_port(server_fd);
+    if (tcp_port == 0 || !limit_wait(server_fd))
+        return server_failed(server_fd, &server_ready);
 
     /* Signal that we are listening */
     atomic_store_explicit(&server_ready, 1, memory_order_release);
@@ -104,17 +155,20 @@ static int32_t tcp_client_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Wait for server to be ready */
-    while (atomic_load_explicit(&server_ready, memory_order_acquire) == 0) {
-        /* spin */
-    }
+    /* Wait for server to be ready, or to fail */
+    if (!wait_for_server(&server_ready)) return 1;
 
     /* Connect to server */
     lc_result r = lc_socket_create(LC_SOCK_STREAM);
     if (lc_is_err(r)) return 1;
     int32_t fd = (int32_t)r.value;
 
-    lc_socket_address addr = lc_socket_address_create(127, 0, 0, 1, TCP_PORT);
+    if (!limit_wait(fd)) {
+        lc_socket_close(fd);
+        return 1;
+    }
+
+    lc_socket_address addr = lc_socket_address_create(127, 0, 0, 1, tcp_port);
     if (lc_is_err(lc_socket_connect(fd, &addr))) {
         lc_socket_close(fd);
         return 1;
@@ -155,28 +209,29 @@ static int32_t tcp_client_thread(void *arg) {
  * UDP test — send/receive datagram on loopback
  * ================================================================ */
 
-#define UDP_PORT 18235
-
+/* Server state: 0 = starting, 1 = bound to udp_port, -1 = failed */
 static _Atomic(int32_t) udp_server_ready = 0;
+static uint16_t udp_port;   /* set before udp_server_ready = 1 */
 
 static int32_t udp_server_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
     lc_result r = lc_socket_create(LC_SOCK_DGRAM);
-    if (lc_is_err(r)) return 1;
+    if (lc_is_err(r)) return server_failed(-1, &udp_server_ready);
     int32_t fd = (int32_t)r.value;
 
-    if (lc_is_err(lc_socket_set_reuse_address(fd))) {
-        lc_socket_close(fd);
-        return 1;
-    }
+    /* Bind to port 0 (any free port). No SO_REUSEADDR: UDP sockets that all
+     * set it can be given the same port by a bind to port 0, and then one
+     * of them gets the datagrams meant for another. */
+    lc_socket_address addr = lc_socket_address_any(0);
+    if (lc_is_err(lc_socket_bind(fd, &addr)))
+        return server_failed(fd, &udp_server_ready);
 
-    lc_socket_address addr = lc_socket_address_any(UDP_PORT);
-    if (lc_is_err(lc_socket_bind(fd, &addr))) {
-        lc_socket_close(fd);
-        return 1;
-    }
+    /* Read back the port the kernel picked, and bound receive */
+    udp_port = bound_port(fd);
+    if (udp_port == 0 || !limit_wait(fd))
+        return server_failed(fd, &udp_server_ready);
 
     /* Signal that we are bound */
     atomic_store_explicit(&udp_server_ready, 1, memory_order_release);
@@ -217,17 +272,20 @@ static int32_t udp_client_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Wait for server to be ready */
-    while (atomic_load_explicit(&udp_server_ready, memory_order_acquire) == 0) {
-        /* spin */
-    }
+    /* Wait for server to be ready, or to fail */
+    if (!wait_for_server(&udp_server_ready)) return 1;
 
     lc_result r = lc_socket_create(LC_SOCK_DGRAM);
     if (lc_is_err(r)) return 1;
     int32_t fd = (int32_t)r.value;
 
+    if (!limit_wait(fd)) {
+        lc_socket_close(fd);
+        return 1;
+    }
+
     /* Send datagram to server */
-    lc_socket_address dest = lc_socket_address_create(127, 0, 0, 1, UDP_PORT);
+    lc_socket_address dest = lc_socket_address_create(127, 0, 0, 1, udp_port);
     const char *msg = "udp hello";
     size_t msg_len = 9;
     lc_result sr = lc_socket_send_to(fd, msg, msg_len, &dest);
@@ -262,18 +320,23 @@ static int32_t udp_client_thread(void *arg) {
  * Convenience functions test
  * ================================================================ */
 
-#define CONV_PORT 18236
-
+/* Server state: 0 = starting, 1 = listening on conv_port, -1 = failed */
 static _Atomic(int32_t) conv_server_ready = 0;
+static uint16_t conv_port;   /* set before conv_server_ready = 1 */
 
 static int32_t conv_server_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Use convenience function: create + bind + listen */
-    lc_result r = lc_socket_listen_on(CONV_PORT, 1);
-    if (lc_is_err(r)) return 1;
+    /* Use convenience function: create + bind to port 0 + listen */
+    lc_result r = lc_socket_listen_on(0, 1);
+    if (lc_is_err(r)) return server_failed(-1, &conv_server_ready);
     int32_t server_fd = (int32_t)r.value;
+
+    /* Read back the port the kernel picked, and bound accept and receive */
+    conv_port = bound_port(server_fd);
+    if (conv_port == 0 || !limit_wait(server_fd))
+        return server_failed(server_fd, &conv_server_ready);
 
     /* Signal that we are listening */
     atomic_store_explicit(&conv_server_ready, 1, memory_order_release);
@@ -313,15 +376,18 @@ static int32_t conv_client_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Wait for server to be ready */
-    while (atomic_load_explicit(&conv_server_ready, memory_order_acquire) == 0) {
-        /* spin */
-    }
+    /* Wait for server to be ready, or to fail */
+    if (!wait_for_server(&conv_server_ready)) return 1;
 
     /* Use convenience function: create + connect */
-    lc_result r = lc_socket_connect_to(127, 0, 0, 1, CONV_PORT);
+    lc_result r = lc_socket_connect_to(127, 0, 0, 1, conv_port);
     if (lc_is_err(r)) return 1;
     int32_t fd = (int32_t)r.value;
+
+    if (!limit_wait(fd)) {
+        lc_socket_close(fd);
+        return 1;
+    }
 
     /* Send a message */
     const char *msg = "convenience test";
@@ -367,13 +433,14 @@ int main(int argc, char **argv, char **envp) {
         int32_t server_ok = 0, client_ok = 0;
         lc_thread server, client;
 
-        ok = !lc_is_err(lc_thread_create(&server, tcp_server_thread, &server_ok));
-        if (ok) ok = !lc_is_err(lc_thread_create(&client, tcp_client_thread, &client_ok));
-        if (ok) {
-            lc_thread_join(&client);
-            lc_thread_join(&server);
-        }
-        ok = ok && server_ok && client_ok;
+        bool server_started = !lc_is_err(lc_thread_create(&server, tcp_server_thread, &server_ok));
+        bool client_started = server_started
+            && !lc_is_err(lc_thread_create(&client, tcp_client_thread, &client_ok));
+        /* Join each thread that started. A server whose client did not
+         * start gives up waiting for it after WAIT_MS. */
+        if (client_started) lc_thread_join(&client);
+        if (server_started) lc_thread_join(&server);
+        ok = client_started && server_ok && client_ok;
     }
     say_pass_fail(ok);
 
@@ -384,13 +451,14 @@ int main(int argc, char **argv, char **envp) {
         int32_t server_ok = 0, client_ok = 0;
         lc_thread server, client;
 
-        ok = !lc_is_err(lc_thread_create(&server, udp_server_thread, &server_ok));
-        if (ok) ok = !lc_is_err(lc_thread_create(&client, udp_client_thread, &client_ok));
-        if (ok) {
-            lc_thread_join(&client);
-            lc_thread_join(&server);
-        }
-        ok = ok && server_ok && client_ok;
+        bool server_started = !lc_is_err(lc_thread_create(&server, udp_server_thread, &server_ok));
+        bool client_started = server_started
+            && !lc_is_err(lc_thread_create(&client, udp_client_thread, &client_ok));
+        /* Join each thread that started. A server whose client did not
+         * start gives up waiting for it after WAIT_MS. */
+        if (client_started) lc_thread_join(&client);
+        if (server_started) lc_thread_join(&server);
+        ok = client_started && server_ok && client_ok;
     }
     say_pass_fail(ok);
 
@@ -401,13 +469,14 @@ int main(int argc, char **argv, char **envp) {
         int32_t server_ok = 0, client_ok = 0;
         lc_thread server, client;
 
-        ok = !lc_is_err(lc_thread_create(&server, conv_server_thread, &server_ok));
-        if (ok) ok = !lc_is_err(lc_thread_create(&client, conv_client_thread, &client_ok));
-        if (ok) {
-            lc_thread_join(&client);
-            lc_thread_join(&server);
-        }
-        ok = ok && server_ok && client_ok;
+        bool server_started = !lc_is_err(lc_thread_create(&server, conv_server_thread, &server_ok));
+        bool client_started = server_started
+            && !lc_is_err(lc_thread_create(&client, conv_client_thread, &client_ok));
+        /* Join each thread that started. A server whose client did not
+         * start gives up waiting for it after WAIT_MS. */
+        if (client_started) lc_thread_join(&client);
+        if (server_started) lc_thread_join(&server);
+        ok = client_started && server_ok && client_ok;
     }
     say_pass_fail(ok);
 

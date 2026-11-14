@@ -15,7 +15,12 @@
  * SIG*, MS_*, ...). Each such UAPI value is captured as an enum constant
  * UAPI_<name>, the UAPI macro is #undef'd, and only then is syscall.h
  * included, so every assert compares lightc's definition with the kernel's.
- * SYS_* numbers are compared with __NR_* directly; those names do not clash.
+ * SYS_* numbers are compared with __NR_* directly, and LC_ERR_* values with
+ * E* directly; those names do not clash.
+ *
+ * The lists of syscalls and errnos to check are generated from syscalls.def,
+ * from which tools/gensyscalls.sh also generates the SYS_* and LC_ERR_*
+ * definitions, so every number and errno value in syscalls.def is checked.
  *
  * Not checked, because no UAPI header defines them: STDIN, STDOUT, STDERR,
  * MAP_FAILED, F_OK, R_OK, W_OK, X_OK, MNT_DETACH, and the pointer constants
@@ -24,6 +29,7 @@
 
 #include <stddef.h>          /* offsetof */
 
+#include <asm/errno.h>       /* E* */
 #include <asm/unistd.h>      /* __NR_* */
 #include <asm/signal.h>      /* SIG*, SIG_BLOCK..., struct sigaction */
 #include <linux/fcntl.h>     /* O_*, AT_* */
@@ -134,30 +140,77 @@ _Static_assert(LC_CLOCK_MONOTONIC == CLOCK_MONOTONIC, "LC_CLOCK_MONOTONIC differ
 
 /* --- Syscall numbers --- */
 
+/*
+ * The syscalls of syscalls.def: SYSCALLS lists those both arches have, and
+ * SYSCALLS_<ARCH>_ONLY those only one has. For a syscall syscalls.def gives
+ * no number on an arch, an #error checks that the arch has no __NR_ for it.
+ */
+/* BEGIN GENERATED abi-syscalls: from syscalls.def by tools/gensyscalls.sh */
 #define SYSCALLS(X)                                                         \
-    X(read) X(write) X(close) X(lseek) X(mmap) X(mprotect) X(munmap)        \
-    X(brk) X(ioctl) X(writev) X(openat) X(getpid) X(futex) X(madvise)       \
-    X(exit) X(exit_group) X(clone) X(gettid) X(getdents64)                  \
-    X(socket) X(bind) X(listen) X(connect) X(sendto) X(recvfrom)            \
-    X(setsockopt) X(shutdown) X(accept4)                                    \
-    X(clock_gettime) X(nanosleep)                                           \
-    X(execve) X(wait4) X(pipe2) X(dup3) X(setsid)                           \
-    X(rt_sigaction) X(rt_sigprocmask) X(kill) X(signalfd4)                  \
-    X(mount) X(umount2) X(pivot_root) X(chdir) X(fstat) X(statx)            \
-    X(mknodat) X(mkdirat) X(symlinkat) X(unlinkat) X(readlinkat)            \
-    X(fchownat) X(fchmodat) X(fchmodat2) X(faccessat2)                      \
-    X(unshare) X(setns) X(sethostname) X(prctl) X(seccomp)                  \
-    X(getuid) X(setuid) X(setgid) X(setgroups)                              \
-    X(io_uring_setup) X(io_uring_enter) X(io_uring_register)
+    X(read) X(write) X(close) X(lseek) X(mmap) X(mprotect) X(munmap) X(brk) \
+    X(ioctl) X(writev) X(openat) X(getpid) X(madvise) X(clone) X(exit)      \
+    X(gettid) X(futex) X(exit_group) X(getdents64) X(socket) X(connect)     \
+    X(sendto) X(recvfrom) X(shutdown) X(bind) X(listen) X(getsockname)      \
+    X(setsockopt) X(accept4) X(clock_gettime) X(nanosleep) X(execve)        \
+    X(wait4) X(pipe2) X(dup3) X(setsid) X(rt_sigaction) X(rt_sigprocmask)   \
+    X(kill) X(signalfd4) X(mount) X(umount2) X(pivot_root) X(chdir)         \
+    X(fstat) X(statx) X(mknodat) X(mkdirat) X(symlinkat) X(unlinkat)        \
+    X(readlinkat) X(fchownat) X(fchmodat) X(fchmodat2) X(faccessat2)        \
+    X(unshare) X(setns) X(sethostname) X(prctl) X(seccomp) X(getuid)        \
+    X(setuid) X(setgid) X(setgroups) X(io_uring_setup) X(io_uring_enter)    \
+    X(io_uring_register)
+#define SYSCALLS_X86_64_ONLY(X)                                             \
+    X(open) X(arch_prctl)
+#define SYSCALLS_AARCH64_ONLY(X)
+#if defined(__aarch64__) && defined(__NR_open)
+#error "syscalls.def gives open no aarch64 number, but aarch64 has __NR_open"
+#endif
+#if defined(__aarch64__) && defined(__NR_arch_prctl)
+#error "syscalls.def gives arch_prctl no aarch64 number, but aarch64 has __NR_arch_prctl"
+#endif
+/* END GENERATED abi-syscalls */
 
 #define CHECK_NR(name) \
     _Static_assert(SYS_##name == __NR_##name, "SYS_" #name " differs from __NR_" #name);
 SYSCALLS(CHECK_NR)
 
 #if defined(__x86_64__)
-CHECK_NR(open)
-CHECK_NR(arch_prctl)
+SYSCALLS_X86_64_ONLY(CHECK_NR)
+#elif defined(__aarch64__)
+SYSCALLS_AARCH64_ONLY(CHECK_NR)
 #endif
+
+/* --- Errno values --- */
+
+/* The errnos of syscalls.def, without their leading E. */
+/* BEGIN GENERATED abi-errnos: from syscalls.def by tools/gensyscalls.sh */
+#define ERRNOS(X)                                                           \
+    X(PERM) X(NOENT) X(SRCH) X(INTR) X(IO) X(NXIO) X(2BIG) X(NOEXEC)        \
+    X(BADF) X(CHILD) X(AGAIN) X(NOMEM) X(ACCES) X(FAULT) X(NOTBLK) X(BUSY)  \
+    X(EXIST) X(XDEV) X(NODEV) X(NOTDIR) X(ISDIR) X(INVAL) X(NFILE) X(MFILE) \
+    X(NOTTY) X(TXTBSY) X(FBIG) X(NOSPC) X(SPIPE) X(ROFS) X(MLINK) X(PIPE)   \
+    X(DOM) X(RANGE) X(DEADLK) X(NAMETOOLONG) X(NOLCK) X(NOSYS) X(NOTEMPTY)  \
+    X(LOOP) X(WOULDBLOCK) X(NOMSG) X(IDRM) X(CHRNG) X(L2NSYNC) X(L3HLT)     \
+    X(L3RST) X(LNRNG) X(UNATCH) X(NOCSI) X(L2HLT) X(BADE) X(BADR) X(XFULL)  \
+    X(NOANO) X(BADRQC) X(BADSLT) X(DEADLOCK) X(BFONT) X(NOSTR) X(NODATA)    \
+    X(TIME) X(NOSR) X(NONET) X(NOPKG) X(REMOTE) X(NOLINK) X(ADV) X(SRMNT)   \
+    X(COMM) X(PROTO) X(MULTIHOP) X(DOTDOT) X(BADMSG) X(OVERFLOW) X(NOTUNIQ) \
+    X(BADFD) X(REMCHG) X(LIBACC) X(LIBBAD) X(LIBSCN) X(LIBMAX) X(LIBEXEC)   \
+    X(ILSEQ) X(RESTART) X(STRPIPE) X(USERS) X(NOTSOCK) X(DESTADDRREQ)       \
+    X(MSGSIZE) X(PROTOTYPE) X(NOPROTOOPT) X(PROTONOSUPPORT)                 \
+    X(SOCKTNOSUPPORT) X(OPNOTSUPP) X(PFNOSUPPORT) X(AFNOSUPPORT)            \
+    X(ADDRINUSE) X(ADDRNOTAVAIL) X(NETDOWN) X(NETUNREACH) X(NETRESET)       \
+    X(CONNABORTED) X(CONNRESET) X(NOBUFS) X(ISCONN) X(NOTCONN) X(SHUTDOWN)  \
+    X(TOOMANYREFS) X(TIMEDOUT) X(CONNREFUSED) X(HOSTDOWN) X(HOSTUNREACH)    \
+    X(ALREADY) X(INPROGRESS) X(STALE) X(UCLEAN) X(NOTNAM) X(NAVAIL)         \
+    X(ISNAM) X(REMOTEIO) X(DQUOT) X(NOMEDIUM) X(MEDIUMTYPE) X(CANCELED)     \
+    X(NOKEY) X(KEYEXPIRED) X(KEYREVOKED) X(KEYREJECTED) X(OWNERDEAD)        \
+    X(NOTRECOVERABLE) X(RFKILL) X(HWPOISON)
+/* END GENERATED abi-errnos */
+
+#define CHECK_ERRNO(name) \
+    _Static_assert(LC_ERR_##name == E##name, "LC_ERR_" #name " differs from E" #name);
+ERRNOS(CHECK_ERRNO)
 
 /* --- struct sigaction: rt_sigaction copies the whole struct in and out --- */
 

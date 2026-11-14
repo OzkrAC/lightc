@@ -283,7 +283,8 @@ static void test_thread_join_idempotent(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* H1 regression — MUST be first: no main-thread heap allocation may
      * precede it, or the bootstrap race it targets cannot be observed. */

@@ -256,6 +256,19 @@ static inline lc_sysret lc_kernel_read_directory(int32_t fd, void *buf, size_t c
     return lc_syscall3(SYS_getdents64, fd, (int64_t)buf, (int64_t)count);
 }
 
+/* --- Sockets --- */
+
+/*
+ * Copy the local address of socket fd into addr, which has room for
+ * *addr_length bytes, and set *addr_length to the address's full size. An
+ * address larger than that room is cut short. After a bind to port 0 this
+ * gives the port the kernel picked: pass an lc_socket_address from
+ * <lightc/socket.h>, with *addr_length = sizeof(lc_socket_address).
+ */
+static inline lc_sysret lc_kernel_getsockname(int32_t fd, void *addr, uint32_t *addr_length) {
+    return lc_syscall3(SYS_getsockname, fd, (int64_t)addr, (int64_t)addr_length);
+}
+
 /* --- Memory --- */
 
 static inline void *lc_kernel_map_memory(void *addr, size_t len, int32_t prot, int32_t flags,

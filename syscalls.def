@@ -1,0 +1,277 @@
+# lightc — the Linux syscalls and errno values lightc names
+#
+# tools/gensyscalls.sh generates these from this file:
+#
+#   include/lightc/arch/x86_64/syscall_nr.h   SYS_* for x86_64
+#   include/lightc/arch/aarch64/syscall_nr.h  SYS_* for aarch64
+#   include/lightc/result.h                   the LC_ERR_* errno values and
+#                                             their lc_error_name cases
+#   tests/abi_check.c                         its lists of the syscalls and
+#                                             errno names to check
+#
+# The generated files are checked in. After editing this file, run
+#
+#   sh tools/gensyscalls.sh
+#
+# and commit what it changes with the edit. CI runs the same command and fails
+# when that changes any file, so a syscalls.def edit committed without its
+# regenerated files fails, and so does a hand edit of a generated line. CI
+# also compiles tests/abi_check.c against the kernel UAPI headers of each
+# arch, which checks every number and errno value here, and checks that the
+# errnos here are exactly those of each arch's asm/errno.h.
+#
+# "#" starts a comment. The other lines are one of:
+#
+#   syscall NAME X86_64 AARCH64 ARGS
+#     NAME is the kernel's name, as in __NR_NAME; the headers define SYS_NAME.
+#     X86_64 and AARCH64 are its numbers, from
+#     arch/x86/entry/syscalls/syscall_64.tbl and
+#     include/uapi/asm-generic/unistd.h, or "-" when that arch has no such
+#     syscall. ARGS is how many arguments it takes, 0 to 6, as in the
+#     kernel's SYSCALL_DEFINE<ARGS>. The UAPI headers do not give it, so
+#     nothing checks ARGS against the kernel: check it by hand. It only goes
+#     in a comment in syscall_nr.h.
+#
+#   errno NAME VALUE DESCRIPTION
+#     An errno of asm-generic/errno-base.h or asm-generic/errno.h, in their
+#     order. result.h gets LC_ERR_<NAME without its E> = VALUE, and
+#     lc_error_name returns "NAME" for VALUE. DESCRIPTION goes in a comment.
+#
+#   errno NAME OTHER
+#     NAME is another name for the errno OTHER, listed above it, as
+#     EWOULDBLOCK is for EAGAIN. result.h gets an LC_ERR_ name for NAME too,
+#     with OTHER's value, and lc_error_name still returns OTHER's name.
+#
+# x86_64 and aarch64 have the same errno values: the asm/errno.h of each
+# only includes asm-generic/errno.h. Arches that lightc does not support
+# differ: alpha, mips, parisc and sparc renumber many, and powerpc gives
+# EDEADLOCK its own value, 58.
+
+# --- Syscalls ---
+#
+#       name               x86_64  aarch64  args
+
+# files and memory
+syscall read               0       63       3
+syscall write              1       64       3
+syscall open               2       -        3    # aarch64 has only openat
+syscall close              3       57       1
+syscall lseek              8       62       3
+syscall mmap               9       222      6
+syscall mprotect           10      226      3
+syscall munmap             11      215      2
+syscall brk                12      214      1
+syscall ioctl              16      29       3
+syscall writev             20      66       3
+syscall openat             257     56       4
+syscall getpid             39      172      0
+syscall madvise            28      233      3
+syscall clone              56      220      5
+syscall arch_prctl         158     -        2    # x86_64 only
+syscall exit               60      93       1
+syscall gettid             186     178      0
+syscall futex              202     98       6
+syscall exit_group         231     94       1
+syscall getdents64         217     61       3
+
+# sockets
+syscall socket             41      198      3
+syscall connect            42      203      3
+syscall sendto             44      206      6
+syscall recvfrom           45      207      6
+syscall shutdown           48      210      2
+syscall bind               49      200      3
+syscall listen             50      201      2
+syscall getsockname        51      204      3
+syscall setsockopt         54      208      5
+syscall accept4            288     242      4
+
+# time
+syscall clock_gettime      228     113      2
+syscall nanosleep          35      101      2
+
+# processes
+syscall execve             59      221      3
+syscall wait4              61      260      4
+syscall pipe2              293     59       2
+syscall dup3               292     24       3
+syscall setsid             112     157      0
+
+# signals
+syscall rt_sigaction       13      134      4
+syscall rt_sigprocmask     14      135      4
+syscall kill               62      129      2
+syscall signalfd4          289     74       4
+
+# filesystems
+syscall mount              165     40       5
+syscall umount2            166     39       2
+syscall pivot_root         155     41       2
+syscall chdir              80      49       1
+syscall fstat              5       80       2
+syscall statx              332     291      5
+syscall mknodat            259     33       4
+syscall mkdirat            258     34       3
+syscall symlinkat          266     36       3
+syscall unlinkat           263     35       3
+syscall readlinkat         267     78       4
+syscall fchownat           260     54       5
+syscall fchmodat           268     53       3
+syscall fchmodat2          452     452      4
+syscall faccessat2         439     439      4
+
+# namespaces and containers
+syscall unshare            272     97       1
+syscall setns              308     268      2
+syscall sethostname        170     161      2
+syscall prctl              157     167      5
+syscall seccomp            317     277      3
+
+# credentials
+syscall getuid             102     174      0
+syscall setuid             105     146      1
+syscall setgid             106     144      1
+syscall setgroups          116     159      2
+
+# io_uring, numbered the same on every arch
+syscall io_uring_setup     425     425      2
+syscall io_uring_enter     426     426      6
+syscall io_uring_register  427     427      4
+
+# --- Errno values ---
+#
+#     name             value  description
+
+errno EPERM            1      operation not permitted
+errno ENOENT           2      no such file or directory
+errno ESRCH            3      no such process
+errno EINTR            4      interrupted system call
+errno EIO              5      I/O error
+errno ENXIO            6      no such device or address
+errno E2BIG            7      argument list too long
+errno ENOEXEC          8      exec format error
+errno EBADF            9      bad file number
+errno ECHILD           10     no child processes
+errno EAGAIN           11     try again
+errno ENOMEM           12     out of memory
+errno EACCES           13     permission denied
+errno EFAULT           14     bad address
+errno ENOTBLK          15     block device required
+errno EBUSY            16     device or resource busy
+errno EEXIST           17     file exists
+errno EXDEV            18     cross-device link
+errno ENODEV           19     no such device
+errno ENOTDIR          20     not a directory
+errno EISDIR           21     is a directory
+errno EINVAL           22     invalid argument
+errno ENFILE           23     file table overflow
+errno EMFILE           24     too many open files
+errno ENOTTY           25     not a typewriter
+errno ETXTBSY          26     text file busy
+errno EFBIG            27     file too large
+errno ENOSPC           28     no space left on device
+errno ESPIPE           29     illegal seek
+errno EROFS            30     read-only file system
+errno EMLINK           31     too many links
+errno EPIPE            32     broken pipe
+errno EDOM             33     math argument out of domain of func
+errno ERANGE           34     math result not representable
+errno EDEADLK          35     resource deadlock would occur
+errno ENAMETOOLONG     36     file name too long
+errno ENOLCK           37     no record locks available
+errno ENOSYS           38     invalid system call number
+errno ENOTEMPTY        39     directory not empty
+errno ELOOP            40     too many symbolic links encountered
+errno EWOULDBLOCK      EAGAIN
+errno ENOMSG           42     no message of desired type
+errno EIDRM            43     identifier removed
+errno ECHRNG           44     channel number out of range
+errno EL2NSYNC         45     level 2 not synchronized
+errno EL3HLT           46     level 3 halted
+errno EL3RST           47     level 3 reset
+errno ELNRNG           48     link number out of range
+errno EUNATCH          49     protocol driver not attached
+errno ENOCSI           50     no CSI structure available
+errno EL2HLT           51     level 2 halted
+errno EBADE            52     invalid exchange
+errno EBADR            53     invalid request descriptor
+errno EXFULL           54     exchange full
+errno ENOANO           55     no anode
+errno EBADRQC          56     invalid request code
+errno EBADSLT          57     invalid slot
+errno EDEADLOCK        EDEADLK
+errno EBFONT           59     bad font file format
+errno ENOSTR           60     device not a stream
+errno ENODATA          61     no data available
+errno ETIME            62     timer expired
+errno ENOSR            63     out of streams resources
+errno ENONET           64     machine is not on the network
+errno ENOPKG           65     package not installed
+errno EREMOTE          66     object is remote
+errno ENOLINK          67     link has been severed
+errno EADV             68     advertise error
+errno ESRMNT           69     srmount error
+errno ECOMM            70     communication error on send
+errno EPROTO           71     protocol error
+errno EMULTIHOP        72     multihop attempted
+errno EDOTDOT          73     RFS specific error
+errno EBADMSG          74     not a data message
+errno EOVERFLOW        75     value too large for defined data type
+errno ENOTUNIQ         76     name not unique on network
+errno EBADFD           77     file descriptor in bad state
+errno EREMCHG          78     remote address changed
+errno ELIBACC          79     can not access a needed shared library
+errno ELIBBAD          80     accessing a corrupted shared library
+errno ELIBSCN          81     .lib section in a.out corrupted
+errno ELIBMAX          82     attempting to link in too many shared libraries
+errno ELIBEXEC         83     cannot exec a shared library directly
+errno EILSEQ           84     illegal byte sequence
+errno ERESTART         85     interrupted system call should be restarted
+errno ESTRPIPE         86     streams pipe error
+errno EUSERS           87     too many users
+errno ENOTSOCK         88     socket operation on non-socket
+errno EDESTADDRREQ     89     destination address required
+errno EMSGSIZE         90     message too long
+errno EPROTOTYPE       91     protocol wrong type for socket
+errno ENOPROTOOPT      92     protocol not available
+errno EPROTONOSUPPORT  93     protocol not supported
+errno ESOCKTNOSUPPORT  94     socket type not supported
+errno EOPNOTSUPP       95     operation not supported on transport endpoint
+errno EPFNOSUPPORT     96     protocol family not supported
+errno EAFNOSUPPORT     97     address family not supported by protocol
+errno EADDRINUSE       98     address already in use
+errno EADDRNOTAVAIL    99     cannot assign requested address
+errno ENETDOWN         100    network is down
+errno ENETUNREACH      101    network is unreachable
+errno ENETRESET        102    network dropped connection because of reset
+errno ECONNABORTED     103    software caused connection abort
+errno ECONNRESET       104    connection reset by peer
+errno ENOBUFS          105    no buffer space available
+errno EISCONN          106    transport endpoint is already connected
+errno ENOTCONN         107    transport endpoint is not connected
+errno ESHUTDOWN        108    cannot send after transport endpoint shutdown
+errno ETOOMANYREFS     109    too many references: cannot splice
+errno ETIMEDOUT        110    connection timed out
+errno ECONNREFUSED     111    connection refused
+errno EHOSTDOWN        112    host is down
+errno EHOSTUNREACH     113    no route to host
+errno EALREADY         114    operation already in progress
+errno EINPROGRESS      115    operation now in progress
+errno ESTALE           116    stale file handle
+errno EUCLEAN          117    structure needs cleaning
+errno ENOTNAM          118    not a XENIX named type file
+errno ENAVAIL          119    no XENIX semaphores available
+errno EISNAM           120    is a named type file
+errno EREMOTEIO        121    remote I/O error
+errno EDQUOT           122    quota exceeded
+errno ENOMEDIUM        123    no medium found
+errno EMEDIUMTYPE      124    wrong medium type
+errno ECANCELED        125    operation canceled
+errno ENOKEY           126    required key not available
+errno EKEYEXPIRED      127    key has expired
+errno EKEYREVOKED      128    key has been revoked
+errno EKEYREJECTED     129    key was rejected by service
+errno EOWNERDEAD       130    owner died
+errno ENOTRECOVERABLE  131    state not recoverable
+errno ERFKILL          132    operation not possible due to RF-kill
+errno EHWPOISON        133    memory page has hardware error

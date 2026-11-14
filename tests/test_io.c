@@ -414,7 +414,8 @@ static void test_file_read_all_proc(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* Writer lifecycle */
     TEST_RUN(test_writer_create_destroy);

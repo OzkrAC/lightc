@@ -6,9 +6,11 @@
 #
 # Format: one "suite count" pair per line; "#" starts a comment.
 
-# qemu-user has no io_uring, so these suites skip as a whole.
-test_async      1
-test_lightio    1
+# qemu-user has no io_uring, so every test in these suites skips, one SKIP:
+# line each. Adding a test to either suite adds one here. The job's
+# LIGHTC_TEST_ALLOW_SKIP names both, so tests/run.sh lets them skip every test.
+test_async      7
+test_lightio    3
 
 # The tmpfs mount case: unshare(CLONE_NEWUSER) fails in a threaded process,
 # and qemu-user runs threads of its own. The fchmodat case's check of the

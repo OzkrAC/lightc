@@ -1,8 +1,8 @@
 /*
  * test_lightio.c — tests for the lightio async event loop.
  *
- * lightio needs io_uring (kernel 5.1+); if it is unavailable the whole suite
- * skips, mirroring test_async. These exercise the accept -> coroutine ->
+ * lightio needs io_uring (kernel 5.1+); if it is unavailable every test
+ * skips, as in test_async. These exercise the accept -> coroutine ->
  * lio_read/lio_write -> completion -> slot-cleanup path end to end (previously
  * untested), which is exactly the path the H4 submission-handling and
  * slot-rollback fixes touch.
@@ -16,6 +16,10 @@
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
+
+/* Set by main's probe; without io_uring each test skips. */
+static bool io_uring_available;
+#define NO_IO_URING "io_uring not available (kernel 5.1+ required)"
 
 /* ===== Echo handler + server thread ===== */
 
@@ -63,6 +67,8 @@ static bool echo_once(uint16_t port, const char *msg, size_t len) {
 /* ===== Test: single echo round-trip ===== */
 
 static void test_lightio_echo_roundtrip(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     const uint16_t port = 19910;
 
     lio_loop *loop = lio_loop_create();
@@ -89,6 +95,8 @@ static void test_lightio_echo_roundtrip(void) {
  * recycling well past any small-slot boundary.
  */
 static void test_lightio_sequential_reuse(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     const uint16_t port = 19911;
 
     lio_loop *loop = lio_loop_create();
@@ -129,6 +137,8 @@ static int32_t client_thread(void *arg) {
 }
 
 static void test_lightio_concurrent_clients(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     const uint16_t port = 19912;
 
     lio_loop *loop = lio_loop_create();
@@ -159,20 +169,12 @@ static void test_lightio_concurrent_clients(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
-    /* Skip the whole suite if io_uring is unavailable (kernel < 5.1). */
-    {
-        lc_result_ptr probe = lc_async_ring_create(4);
-        if (lc_ptr_is_err(probe)) {
-            _test_print_text("SKIP: io_uring not available (kernel 5.1+ required)\n");
-            _test_print_text("\n========================================\n");
-            _test_print_text("Tests run:    0\nTests passed: 0\nTests failed: 0\n");
-            _test_print_text("========================================\nRESULT: PASS\n");
-            return 0;
-        }
-        lc_async_ring_destroy(probe.value);
-    }
+    lc_result_ptr probe = lc_async_ring_create(4);
+    io_uring_available = lc_ptr_is_ok(probe);
+    if (io_uring_available) lc_async_ring_destroy(probe.value);
 
     TEST_RUN(test_lightio_echo_roundtrip);
     TEST_RUN(test_lightio_sequential_reuse);

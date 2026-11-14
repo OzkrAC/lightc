@@ -56,7 +56,7 @@ if (lc_ptr_is_err(r)) return 1;   // r.error holds the LC_ERR_* code
 uint8_t *buf = r.value;           // valid only on the ok path
 ```
 
-**Error codes.** `error` is `0` for success or a positive `LC_ERR_*` constant otherwise. The codes mirror common `errno` values.
+**Error codes.** `error` is `0` for success or a positive `LC_ERR_*` constant otherwise. `result.h` has an `LC_ERR_*` constant for every Linux errno, named after it and with its value: `LC_ERR_BADF` is `EBADF` (9), `LC_ERR_OPNOTSUPP` is `EOPNOTSUPP` (95). `lc_error_name` returns the errno's name, such as `"EBADF"`. lightc's own codes start at 4096.
 
 | Code | Meaning |
 |---|---|

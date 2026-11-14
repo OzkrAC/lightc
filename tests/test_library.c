@@ -1,7 +1,10 @@
 /*
  * test_library.c — tests for lightc dynamic library loading.
  *
- * Requires build/test_plugin.so to exist (built by the project).
+ * Loads test_plugin.so from the suite's own directory, the one argv[0]
+ * names. The build puts the plugin beside the suite, so build/test_library
+ * opens build/test_plugin.so from any current directory, and building the
+ * suite builds the plugin.
  * The plugin exports: int plugin_add(int a, int b)
  */
 
@@ -10,8 +13,43 @@
 #include <lightc/syscall.h>
 #include <lightc/heap.h>
 
-#define PLUGIN_PATH "build/test_plugin.so"
-#define TMP_PATH    "build/malformed_plugin.so"
+/* Set by main: the plugin, and the scratch file the malformed copies of it
+ * are written to, both in the suite's directory. */
+static char plugin_path[4096];
+static char malformed_path[4096];
+#define PLUGIN_PATH plugin_path
+#define TMP_PATH    malformed_path
+
+/* Length of `path`'s directory, up to and including its last '/'; 0 if it
+ * has none. */
+static size_t directory_length(const char *path) {
+    size_t length = 0;
+    for (size_t i = 0; path[i] != '\0'; i++)
+        if (path[i] == '/') length = i + 1;
+    return length;
+}
+
+/* Set `out` to argv[0]'s directory, up to its last '/', followed by `name`.
+ * An argv[0] with no '/', as when a shell found the suite through PATH, gives
+ * the directory of /proc/self/exe instead. A path too long for `out`, or no
+ * directory at all, gives `name` alone, in the current directory. */
+static void path_beside_suite(char *out, size_t size, const char *argv0, const char *name) {
+    static char exe[4096];
+    const char *self = argv0;
+    size_t dir_length = directory_length(argv0);
+    if (dir_length == 0) {
+        lc_sysret n = lc_kernel_readlinkat(AT_FDCWD, "/proc/self/exe", exe, sizeof exe);
+        if (n > 0 && (size_t)n < sizeof exe) {
+            exe[n] = '\0';
+            self = exe;
+            dir_length = directory_length(exe);
+        }
+    }
+    size_t name_length = lc_string_length(name);
+    if (dir_length + name_length >= size) dir_length = 0;
+    lc_bytes_copy(out, self, dir_length);
+    lc_bytes_copy(out + dir_length, name, name_length + 1);
+}
 
 /* ===== test_library_open_close ===== */
 
@@ -30,13 +68,13 @@ typedef int (*plugin_add_fn)(int, int);
 
 static void test_library_find_symbol(void) {
     lc_result_ptr lib_r = lc_library_open(PLUGIN_PATH);
-    TEST_ASSERT_PTR_OK(lib_r);
+    TEST_REQUIRE_PTR_OK(lib_r);
 
     lc_library *lib = (lc_library *)lib_r.value;
 
     lc_result_ptr sym_r = lc_library_find_symbol(lib, "plugin_add");
-    TEST_ASSERT_PTR_OK(sym_r);
-    TEST_ASSERT_NOT_NULL(sym_r.value);
+    TEST_REQUIRE_PTR_OK(sym_r);
+    TEST_REQUIRE_NOT_NULL(sym_r.value);
 
     plugin_add_fn add = (plugin_add_fn)sym_r.value;
     int result = add(2, 3);
@@ -164,7 +202,7 @@ static uint64_t find_phdr(const uint8_t *buf, size_t len, uint32_t pt) {
 static void test_library_roundtrip_control(void) {
     uint8_t *buf = NULL;
     size_t len = load_plugin_bytes(&buf);
-    TEST_ASSERT(len > 0);
+    TEST_REQUIRE(len > 0);
     TEST_ASSERT(write_tmp(buf, len));
 
     lc_result_ptr r = lc_library_open(TMP_PATH);
@@ -180,7 +218,7 @@ static void test_library_roundtrip_control(void) {
 static void test_library_bad_phentsize(void) {
     uint8_t *buf = NULL;
     size_t len = load_plugin_bytes(&buf);
-    TEST_ASSERT(len > 0);
+    TEST_REQUIRE(len > 0);
 
     wr_u16(buf + EH_PHENTSIZE, 55);  /* not 56 */
     TEST_ASSERT(write_tmp(buf, len));
@@ -197,7 +235,7 @@ static void test_library_bad_phentsize(void) {
 static void test_library_oversized_filesz(void) {
     uint8_t *buf = NULL;
     size_t len = load_plugin_bytes(&buf);
-    TEST_ASSERT(len > 0);
+    TEST_REQUIRE(len > 0);
 
     uint64_t load = find_phdr(buf, len, PT_LOAD_);
     TEST_ASSERT(load != 0);
@@ -218,7 +256,7 @@ static void test_library_oversized_filesz(void) {
 static void test_library_dynamic_out_of_range(void) {
     uint8_t *buf = NULL;
     size_t len = load_plugin_bytes(&buf);
-    TEST_ASSERT(len > 0);
+    TEST_REQUIRE(len > 0);
 
     uint64_t dyn = find_phdr(buf, len, PT_DYNAMIC_);
     TEST_ASSERT(dyn != 0);
@@ -239,7 +277,7 @@ static void test_library_dynamic_out_of_range(void) {
 static void test_library_truncated_phdrs(void) {
     uint8_t *buf = NULL;
     size_t len = load_plugin_bytes(&buf);
-    TEST_ASSERT(len > 0);
+    TEST_REQUIRE(len > 0);
     TEST_ASSERT(len > 64);
 
     TEST_ASSERT(write_tmp(buf, 64));  /* only the 64-byte ELF header */
@@ -254,7 +292,12 @@ static void test_library_truncated_phdrs(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
+
+    const char *argv0 = argc > 0 ? argv[0] : "";
+    path_beside_suite(plugin_path, sizeof plugin_path, argv0, "test_plugin.so");
+    path_beside_suite(malformed_path, sizeof malformed_path, argv0, "malformed_plugin.so");
 
     TEST_RUN(test_library_open_close);
     TEST_RUN(test_library_find_symbol);

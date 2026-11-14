@@ -1,91 +1,82 @@
 #ifndef LIGHTC_SYSCALL_NR_X86_64_H
 #define LIGHTC_SYSCALL_NR_X86_64_H
 
-/* x86_64 syscall numbers — from arch/x86/entry/syscalls/syscall_64.tbl */
+/*
+ * x86_64 syscall numbers, from arch/x86/entry/syscalls/syscall_64.tbl,
+ * in number order, each with the number of arguments it takes.
+ *
+ * Generated from syscalls.def by tools/gensyscalls.sh: edit syscalls.def,
+ * not this file, then run sh tools/gensyscalls.sh.
+ */
 
-#define SYS_read        0
-#define SYS_write       1
-#define SYS_open        2
-#define SYS_close       3
-#define SYS_lseek       8
-#define SYS_mmap        9
-#define SYS_mprotect    10
-#define SYS_munmap      11
-#define SYS_brk         12
-#define SYS_ioctl       16
-#define SYS_writev      20
-#define SYS_openat      257
-#define SYS_getpid      39
-#define SYS_madvise     28
-#define SYS_clone       56
-#define SYS_arch_prctl  158
-#define SYS_exit        60
-#define SYS_gettid      186
-#define SYS_futex       202
-#define SYS_exit_group  231
-#define SYS_getdents64  217
-
-/* socket */
-#define SYS_socket      41
-#define SYS_connect     42
-#define SYS_sendto      44
-#define SYS_recvfrom    45
-#define SYS_shutdown    48
-#define SYS_bind        49
-#define SYS_listen      50
-#define SYS_setsockopt  54
-#define SYS_accept4     288
-
-/* time */
-#define SYS_clock_gettime 228
-#define SYS_nanosleep     35
-
-/* process */
-#define SYS_execve      59
-#define SYS_wait4       61
-#define SYS_pipe2       293
-#define SYS_dup3        292
-#define SYS_setsid      112
-
-/* signals */
-#define SYS_rt_sigaction   13
-#define SYS_rt_sigprocmask 14
-#define SYS_kill           62
-#define SYS_signalfd4      289
-
-/* filesystem */
-#define SYS_mount       165
-#define SYS_umount2     166
-#define SYS_pivot_root  155
-#define SYS_chdir       80
-#define SYS_fstat       5
-#define SYS_statx       332
-#define SYS_mknodat     259
-#define SYS_mkdirat     258
-#define SYS_symlinkat   266
-#define SYS_unlinkat    263
-#define SYS_readlinkat  267
-#define SYS_fchownat    260
-#define SYS_fchmodat    268
-#define SYS_fchmodat2   452
-#define SYS_faccessat2  439
-
-/* namespaces / containers */
-#define SYS_unshare      272
-#define SYS_setns        308
-#define SYS_sethostname  170
-#define SYS_prctl        157
-#define SYS_seccomp      317
-
-/* credentials */
-#define SYS_getuid    102
-#define SYS_setuid    105
-#define SYS_setgid    106
-#define SYS_setgroups 116
-
-/* io_uring (unified numbers across all architectures) */
-#define SYS_io_uring_setup    425
-#define SYS_io_uring_enter    426
-#define SYS_io_uring_register 427
+#define SYS_read              0    /* 3 args */
+#define SYS_write             1    /* 3 args */
+#define SYS_open              2    /* 3 args */
+#define SYS_close             3    /* 1 arg */
+#define SYS_fstat             5    /* 2 args */
+#define SYS_lseek             8    /* 3 args */
+#define SYS_mmap              9    /* 6 args */
+#define SYS_mprotect          10   /* 3 args */
+#define SYS_munmap            11   /* 2 args */
+#define SYS_brk               12   /* 1 arg */
+#define SYS_rt_sigaction      13   /* 4 args */
+#define SYS_rt_sigprocmask    14   /* 4 args */
+#define SYS_ioctl             16   /* 3 args */
+#define SYS_writev            20   /* 3 args */
+#define SYS_madvise           28   /* 3 args */
+#define SYS_nanosleep         35   /* 2 args */
+#define SYS_getpid            39   /* 0 args */
+#define SYS_socket            41   /* 3 args */
+#define SYS_connect           42   /* 3 args */
+#define SYS_sendto            44   /* 6 args */
+#define SYS_recvfrom          45   /* 6 args */
+#define SYS_shutdown          48   /* 2 args */
+#define SYS_bind              49   /* 3 args */
+#define SYS_listen            50   /* 2 args */
+#define SYS_getsockname       51   /* 3 args */
+#define SYS_setsockopt        54   /* 5 args */
+#define SYS_clone             56   /* 5 args */
+#define SYS_execve            59   /* 3 args */
+#define SYS_exit              60   /* 1 arg */
+#define SYS_wait4             61   /* 4 args */
+#define SYS_kill              62   /* 2 args */
+#define SYS_chdir             80   /* 1 arg */
+#define SYS_getuid            102  /* 0 args */
+#define SYS_setuid            105  /* 1 arg */
+#define SYS_setgid            106  /* 1 arg */
+#define SYS_setsid            112  /* 0 args */
+#define SYS_setgroups         116  /* 2 args */
+#define SYS_pivot_root        155  /* 2 args */
+#define SYS_prctl             157  /* 5 args */
+#define SYS_arch_prctl        158  /* 2 args */
+#define SYS_mount             165  /* 5 args */
+#define SYS_umount2           166  /* 2 args */
+#define SYS_sethostname       170  /* 2 args */
+#define SYS_gettid            186  /* 0 args */
+#define SYS_futex             202  /* 6 args */
+#define SYS_getdents64        217  /* 3 args */
+#define SYS_clock_gettime     228  /* 2 args */
+#define SYS_exit_group        231  /* 1 arg */
+#define SYS_openat            257  /* 4 args */
+#define SYS_mkdirat           258  /* 3 args */
+#define SYS_mknodat           259  /* 4 args */
+#define SYS_fchownat          260  /* 5 args */
+#define SYS_unlinkat          263  /* 3 args */
+#define SYS_symlinkat         266  /* 3 args */
+#define SYS_readlinkat        267  /* 4 args */
+#define SYS_fchmodat          268  /* 3 args */
+#define SYS_unshare           272  /* 1 arg */
+#define SYS_accept4           288  /* 4 args */
+#define SYS_signalfd4         289  /* 4 args */
+#define SYS_dup3              292  /* 3 args */
+#define SYS_pipe2             293  /* 2 args */
+#define SYS_setns             308  /* 2 args */
+#define SYS_seccomp           317  /* 3 args */
+#define SYS_statx             332  /* 5 args */
+#define SYS_io_uring_setup    425  /* 2 args */
+#define SYS_io_uring_enter    426  /* 6 args */
+#define SYS_io_uring_register 427  /* 4 args */
+#define SYS_faccessat2        439  /* 4 args */
+#define SYS_fchmodat2         452  /* 4 args */
 
 #endif /* LIGHTC_SYSCALL_NR_X86_64_H */

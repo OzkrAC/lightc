@@ -237,7 +237,8 @@ static void test_fchmodat_symlink_nofollow(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     TEST_RUN(test_mount_tmpfs);
     TEST_RUN(test_fchmodat_symlink_nofollow);

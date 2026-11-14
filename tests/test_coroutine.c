@@ -372,7 +372,8 @@ static void test_coroutine_scheduler_oom(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* M2: yield with no scheduler — FIRST, before any scheduler runs here */
     TEST_RUN(test_coroutine_yield_no_scheduler);

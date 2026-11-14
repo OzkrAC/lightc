@@ -485,7 +485,8 @@ static void test_heap_reallocate_large_inplace(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* lc_heap_allocate — basic */
     TEST_RUN(test_heap_allocate_basic);

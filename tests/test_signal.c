@@ -74,7 +74,8 @@ static void test_signal_delivery_roundtrip(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     TEST_RUN(test_signal_handle_register);
     TEST_RUN(test_signal_block_unblock);

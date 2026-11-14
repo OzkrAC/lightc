@@ -7,9 +7,16 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 
+/* Every test needs io_uring (kernel 5.1+). main probes for it once, and
+ * without it each test skips. */
+static bool io_uring_available;
+#define NO_IO_URING "io_uring not available (kernel 5.1+ required)"
+
 /* ===== lc_async_ring_create / destroy ===== */
 
 static void test_async_ring_create_destroy(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     lc_result_ptr r = lc_async_ring_create(8);
     TEST_ASSERT_PTR_OK(r);
     TEST_ASSERT_NOT_NULL(r.value);
@@ -21,6 +28,8 @@ static void test_async_ring_create_destroy(void) {
 /* ===== Submit read/write via pipe ===== */
 
 static void test_async_submit_read_write(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     /* Create a pipe: fds[0] = read end, fds[1] = write end */
     int32_t fds[2];
     lc_sysret pipe_ret = lc_kernel_create_pipe(fds, 0);
@@ -61,6 +70,8 @@ static void test_async_submit_read_write(void) {
 /* ===== Tag matching across multiple ops ===== */
 
 static void test_async_tag_matching(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     int32_t fds1[2], fds2[2];
     lc_sysret r1 = lc_kernel_create_pipe(fds1, 0);
     lc_sysret r2 = lc_kernel_create_pipe(fds2, 0);
@@ -113,6 +124,8 @@ static void test_async_tag_matching(void) {
 /* ===== Peek with no pending ops returns 0 ===== */
 
 static void test_async_peek_empty(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     lc_result_ptr rp = lc_async_ring_create(8);
     TEST_ASSERT_PTR_OK(rp);
     lc_async_ring *ring = (lc_async_ring *)rp.value;
@@ -127,6 +140,8 @@ static void test_async_peek_empty(void) {
 /* ===== Flush returns count of submitted ops ===== */
 
 static void test_async_flush_count(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     int32_t fds[2];
     lc_sysret pr = lc_kernel_create_pipe(fds, 0);
     TEST_ASSERT(pr >= 0);
@@ -166,6 +181,8 @@ static void test_async_flush_count(void) {
 /* ===== Free slots decrease after submissions ===== */
 
 static void test_async_free_slots(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     lc_result_ptr rp = lc_async_ring_create(8);
     TEST_ASSERT_PTR_OK(rp);
     lc_async_ring *ring = (lc_async_ring *)rp.value;
@@ -213,6 +230,8 @@ static void test_async_free_slots(void) {
  * be fully reconciled (free slots back to the initial full count).
  */
 static void test_async_multiflush_accounting(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
     int32_t fds[2];
     lc_sysret pr = lc_kernel_create_pipe(fds, 0);
     TEST_ASSERT(pr >= 0);
@@ -269,20 +288,12 @@ static void test_async_multiflush_accounting(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
-    /* Check if io_uring is available — skip all tests if not */
-    {
-        lc_result_ptr probe = lc_async_ring_create(4);
-        if (lc_ptr_is_err(probe)) {
-            _test_print_text("SKIP: io_uring not available (kernel 5.1+ required)\n");
-            _test_print_text("\n========================================\n");
-            _test_print_text("Tests run:    0\nTests passed: 0\nTests failed: 0\n");
-            _test_print_text("========================================\nRESULT: PASS\n");
-            return 0;
-        }
-        lc_async_ring_destroy(probe.value);
-    }
+    lc_result_ptr probe = lc_async_ring_create(4);
+    io_uring_available = lc_ptr_is_ok(probe);
+    if (io_uring_available) lc_async_ring_destroy(probe.value);
 
     /* ring create/destroy */
     TEST_RUN(test_async_ring_create_destroy);

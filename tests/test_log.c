@@ -187,7 +187,8 @@ static void test_log_json_control_escape(void) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* lc_log_set_level / lc_log_is_enabled */
     TEST_RUN(test_log_set_level);

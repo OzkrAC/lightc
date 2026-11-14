@@ -265,7 +265,8 @@ static void test_print_double_large(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* lc_print_string */
     TEST_RUN(test_print_string);

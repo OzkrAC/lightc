@@ -294,7 +294,8 @@ static void test_runtime_page_size_parse_auxv(void) {
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
+    test_init(argc, argv);
 
     /* lc_arena_create */
     TEST_RUN(test_arena_create);

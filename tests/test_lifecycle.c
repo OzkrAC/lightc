@@ -191,6 +191,8 @@ int main(int argc, char **argv, char **envp) {
                                     MAIN_RETURN_MODE, sizeof(MAIN_RETURN_MODE) - 1))
         return main_return_child();
 
+    test_init(argc, argv);
+
     /* Run first, while the atexit table still has room for the child to register
      * its handler (test_atexit_overflow fills the table afterwards). */
     TEST_RUN(test_exit_reentrancy_guard);
