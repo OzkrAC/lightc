@@ -54,7 +54,7 @@
 #define SYS_signalfd4      289
 
 /* filesystem */
-#define SYS_mount       40
+#define SYS_mount       165
 #define SYS_umount2     166
 #define SYS_pivot_root  155
 #define SYS_chdir       80
@@ -67,6 +67,7 @@
 #define SYS_readlinkat  267
 #define SYS_fchownat    260
 #define SYS_fchmodat    268
+#define SYS_fchmodat2   452
 #define SYS_faccessat2  439
 
 /* namespaces / containers */

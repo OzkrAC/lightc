@@ -41,8 +41,18 @@ lc_sysret lc_syscall6(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3
 #define O_TRUNC     01000
 #define O_APPEND    02000
 #define O_NONBLOCK  04000
-#define O_DIRECTORY 0200000
 #define O_CLOEXEC   02000000
+
+/* These three differ per arch: arm64's asm/fcntl.h overrides the generic values */
+#if defined(__x86_64__)
+#define O_DIRECT    040000
+#define O_DIRECTORY 0200000
+#define O_NOFOLLOW  0400000
+#elif defined(__aarch64__)
+#define O_DIRECTORY 040000
+#define O_NOFOLLOW  0100000
+#define O_DIRECT    0200000
+#endif
 
 /* mmap prot */
 #define PROT_NONE   0x0
@@ -317,16 +327,16 @@ static inline lc_sysret lc_kernel_sleep(const lc_timespec *duration) {
 /* --- Signals --- */
 
 /*
- * Kernel sigaction struct — arch-conditional.
- * x86_64 has a restorer field; aarch64 does not.
- * We only use this for resetting signals to SIG_DFL (no restorer needed).
+ * Kernel sigaction struct, as rt_sigaction reads and writes it.
+ * Same layout on x86_64 and aarch64: 32 bytes, mask at offset 24. arm64
+ * defines SA_RESTORER too (for AArch32 tasks), so its struct also has the
+ * restorer slot. Only x86_64 uses it; on aarch64 restorer stays NULL and
+ * SA_RESTORER is never set.
  */
 typedef struct {
     void    *handler;
     uint64_t flags;
-#if defined(__x86_64__)
     void    *restorer;
-#endif
     uint64_t mask;
 } lc_kernel_sigaction;
 
@@ -361,9 +371,7 @@ static inline lc_sysret lc_kernel_reset_signal(int32_t signum) {
     lc_kernel_sigaction sa;
     sa.handler = SIG_DFL;
     sa.flags = 0;
-#if defined(__x86_64__)
     sa.restorer = NULL;
-#endif
     sa.mask = 0;
     return lc_syscall4(SYS_rt_sigaction, signum, (int64_t)&sa, 0, 8);
 }
@@ -403,6 +411,9 @@ static inline lc_sysret lc_kernel_send_signal(int32_t pid, int32_t signal) {
 
 /* unlinkat flags */
 #define AT_REMOVEDIR  0x200
+
+/* fchownat / fchmodat flags */
+#define AT_SYMLINK_NOFOLLOW  0x100
 
 /* faccessat2 flags */
 #define AT_EACCESS  0x200
@@ -456,8 +467,26 @@ static inline lc_sysret lc_kernel_fchownat(int32_t dirfd, const char *path,
     return lc_syscall5(SYS_fchownat, dirfd, (int64_t)path, uid, gid, flags);
 }
 
+/*
+ * Change the mode of path, relative to dirfd. With flags 0 this is fchmodat,
+ * which follows a symlink to its target. The kernel's fchmodat has no flags
+ * argument, so non-zero flags such as AT_SYMLINK_NOFOLLOW go to fchmodat2,
+ * which needs Linux 6.6. Older kernels return -ENOSYS for it, which this
+ * returns as -EOPNOTSUPP. The call never falls back to fchmodat: that would
+ * drop the flags and change the mode of the symlink's target. Linux has no
+ * symlink modes, so AT_SYMLINK_NOFOLLOW on a symlink gives -EOPNOTSUPP on
+ * every kernel.
+ *
+ * To refuse symlinks before 6.6, do what glibc does: open path with
+ * O_PATH | O_NOFOLLOW | O_CLOEXEC, fstat the fd and stop with -EOPNOTSUPP if
+ * it is a symlink, otherwise chmod "/proc/self/fd/<fd>" with flags 0 (needs
+ * /proc mounted). This header defines neither O_PATH (010000000) nor an fstat
+ * wrapper.
+ */
 static inline lc_sysret lc_kernel_fchmodat(int32_t dirfd, const char *path, int32_t mode, int32_t flags) {
-    return lc_syscall4(SYS_fchmodat, dirfd, (int64_t)path, mode, flags);
+    if (flags == 0) return lc_syscall3(SYS_fchmodat, dirfd, (int64_t)path, mode);
+    lc_sysret ret = lc_syscall4(SYS_fchmodat2, dirfd, (int64_t)path, mode, flags);
+    return ret == -LC_ERR_NOSYS ? -LC_ERR_OPNOTSUPP : ret;
 }
 
 static inline lc_sysret lc_kernel_faccessat2(int32_t dirfd, const char *path, int32_t mode, int32_t flags) {

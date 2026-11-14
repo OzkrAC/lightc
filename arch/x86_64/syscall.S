@@ -91,3 +91,6 @@ lc_syscall6:
     syscall
     ret
 .size lc_syscall6, . - lc_syscall6
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",@progbits

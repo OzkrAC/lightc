@@ -50,3 +50,6 @@ lc_coroutine_switch:
     ret
 
 .size lc_coroutine_switch, . - lc_coroutine_switch
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",@progbits

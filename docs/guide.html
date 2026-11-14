@@ -83,7 +83,7 @@ The kernel loads the static ELF and enters `_start` (hand-written assembly, `arc
 4. reads `argc`, `argv`, `envp` and calls `main(argc, argv, envp)`;
 5. passes `main`'s return value to the `exit_group` syscall.
 
-There is no C runtime, so there are no automatic constructors; `main`'s signature is `int main(int argc, char **argv, char **envp)` because there is no global `environ`.
+There is no C runtime, so nothing runs the program's own constructors or destructors and there is no static TLS (a library loaded with `lc_library_open` does get its `DT_INIT` and `.init_array` run, and `lc_library_close` runs its `.fini_array` and `DT_FINI`). A program that uses `thread_local`, or defines a function with `__attribute__((constructor))` or `__attribute__((destructor))`, fails to link with a `lightc:` message from the linker script (`lightc.ld` or `lightc-tiny.ld`; the pkg-config flags pass `lightc.ld`). Keep per-thread data in the [`lc_tls_*` keys](threads.html#tls) and call setup code from `main`. `main`'s signature is `int main(int argc, char **argv, char **envp)` because there is no global `environ`.
 
 ### Exit {#exit}
 
@@ -111,7 +111,7 @@ Run the registered handlers in last-in-first-out order, then `exit_group(code)`.
 |---|---|
 | `lc_syscall0(nr)` … `lc_syscall6(nr, a0…a5)` | raw syscall, returns `lc_sysret` (`-errno` on error) |
 
-Named wrappers follow the pattern `lc_kernel_*`: `lc_kernel_read_bytes`, `lc_kernel_write_bytes`, `lc_kernel_open_file`, `lc_kernel_close_file`, `lc_kernel_map_memory`, `lc_kernel_unmap_memory`, `lc_kernel_seek_position`, and many more. Two groups warrant explicit documentation.
+Named wrappers follow the pattern `lc_kernel_*`: `lc_kernel_read_bytes`, `lc_kernel_write_bytes`, `lc_kernel_open_file`, `lc_kernel_close_file`, `lc_kernel_map_memory`, `lc_kernel_unmap_memory`, `lc_kernel_seek_position`, and many more. Two groups warrant explicit documentation, as does `lc_kernel_fchmodat`.
 
 :::member{#lc_kernel_map_memory}
 ```c
@@ -128,6 +128,15 @@ lc_sysret lc_kernel_read_all (int32_t fd, void *buf, size_t count);
 lc_sysret lc_kernel_read_retry(int32_t fd, void *buf, size_t count);
 ```
 EINTR- and partial-transfer-safe I/O. `write_all` writes the whole buffer, retrying on `EINTR` and looping over short writes; `read_all` reads until the buffer is full or EOF; `read_retry` performs one read, retrying only `EINTR`. Each returns the byte count, or a negative errno. Prefer these over bare `lc_kernel_read_bytes`/`write_bytes` for buffered and whole-object I/O so a signal never silently drops data.
+:::
+
+:::member{#lc_kernel_fchmodat}
+```c
+lc_sysret lc_kernel_fchmodat(int32_t dirfd, const char *path, int32_t mode, int32_t flags);
+```
+Change the mode of `path`, relative to `dirfd` (`AT_FDCWD` for the working directory). With `flags` 0 this is `fchmodat`, which follows a symlink to its target. The kernel's `fchmodat` takes no flags, so non-zero `flags` such as `AT_SYMLINK_NOFOLLOW` go to `fchmodat2`, which needs **Linux 6.6**. Older kernels report `-ENOSYS` for it, returned as `-EOPNOTSUPP` (`-LC_ERR_OPNOTSUPP`). The call never falls back to `fchmodat`, which would drop the flags and change the mode of the link's target. Linux has no symlink modes, so `AT_SYMLINK_NOFOLLOW` on a symlink returns `-EOPNOTSUPP` on every kernel.
+
+To refuse symlinks on kernels before 6.6, use glibc's `O_PATH` fallback: open `path` with `O_PATH | O_NOFOLLOW | O_CLOEXEC`, `fstat` the descriptor and stop with `-EOPNOTSUPP` if it is a symlink, otherwise call `lc_kernel_fchmodat(AT_FDCWD, "/proc/self/fd/<fd>", mode, 0)` and close it. This needs `/proc` mounted. `syscall.h` defines neither `O_PATH` (`010000000`) nor an `fstat` wrapper.
 :::
 
 **Constants.** `syscall.h` also defines the flags and file descriptors the wrappers take: `STDIN` (0), `STDOUT` (1), `STDERR` (2); open flags `O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`; protection `PROT_READ`, `PROT_WRITE`, `PROT_EXEC`; mapping `MAP_PRIVATE`, `MAP_SHARED`, `MAP_ANONYMOUS`, `MAP_FIXED`.

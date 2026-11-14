@@ -8,6 +8,7 @@
 
 #include "test.h"
 #include <lightc/print.h>
+#include <lightc/format.h>
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 
@@ -218,6 +219,49 @@ static void test_print_newline(void) {
     lc_kernel_close_file(rfd);
 }
 
+/* ===== lc_print_double ===== */
+
+/* Helper: print value to a pipe and check what comes back: expected_len
+ * bytes, no NUL, nothing outside "-0123456789.", the same text that
+ * lc_format_add_double produces in a buffer big enough for any double,
+ * and, when exact is not NULL, exactly that text. */
+static void check_print_double(double value, size_t expected_len, const char *exact) {
+    int32_t rfd, wfd;
+    TEST_ASSERT_EQ(pipe_create(&rfd, &wfd), 0);
+
+    lc_print_double(wfd, value);
+    lc_kernel_close_file(wfd);
+
+    char buf[512];
+    size_t n = raw_read(rfd, buf, sizeof(buf));
+    lc_kernel_close_file(rfd);
+    TEST_ASSERT_EQ(n, expected_len);
+
+    size_t nul = 0, other = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = buf[i];
+        if (c == '\0') nul++;
+        else if (!((c >= '0' && c <= '9') || c == '.' || (c == '-' && i == 0))) other++;
+    }
+    TEST_ASSERT_EQ(nul, 0);
+    TEST_ASSERT_EQ(other, 0);
+
+    char want[512];
+    lc_format fmt = lc_format_start(want, sizeof(want));
+    lc_format_add_double(&fmt, value);
+    size_t want_len = lc_format_finish(&fmt);
+    TEST_ASSERT_STR_EQ(buf, n, want, want_len);
+    if (exact != NULL) TEST_ASSERT_STR_EQ(buf, n, exact, lc_string_length(exact));
+}
+
+/* Doubles >= 2^64 print as their exact integer, which can run to 317
+ * characters; all of it must come from the formatted text. */
+static void test_print_double_large(void) {
+    check_print_double(1e25, 33, "10000000000000000905969664.000000");
+    check_print_double(1e300, 308, NULL);   /* 301 integer digits + ".000000" */
+    check_print_double(-1e308, 317, NULL);  /* '-' + 309 integer digits + ".000000" */
+}
+
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
@@ -248,6 +292,9 @@ int main(int argc, char **argv, char **envp) {
 
     /* lc_print_newline */
     TEST_RUN(test_print_newline);
+
+    /* lc_print_double */
+    TEST_RUN(test_print_double_large);
 
     return test_main();
 }

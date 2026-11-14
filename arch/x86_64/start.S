@@ -16,7 +16,7 @@
  *   auxv[]          (ELF auxiliary vector)
  *
  * We extract argc, argv, envp and call main(argc, argv, envp).
- * Then we call exit(retval).
+ * Then we call exit_group(retval), which ends every thread in the process.
  */
 
 .section .text
@@ -54,9 +54,15 @@ _start:
 
     call    main
 
-    /* exit(retval) — retval is in %eax */
+    /* exit_group(retval) — retval is in %eax. Not SYS_exit: that ends only
+     * this thread, so a process with other threads would keep running.
+     * exit_group does not return; hlt faults if it ever did. */
     movl    %eax, %edi
-    movl    $60, %eax       /* SYS_exit */
+    movl    $231, %eax      /* SYS_exit_group */
     syscall
+    hlt
 
 .size _start, . - _start
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",@progbits

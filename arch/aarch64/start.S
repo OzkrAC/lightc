@@ -33,8 +33,14 @@ _start:
 
     bl      main
 
-    /* exit(retval) — retval is in w0 */
-    mov     x8, #93        /* SYS_exit */
+    /* exit_group(retval) — retval is in w0. Not SYS_exit: that ends only
+     * this thread, so a process with other threads would keep running.
+     * exit_group does not return; brk traps if it ever did. */
+    mov     x8, #94        /* SYS_exit_group */
     svc     #0
+    brk     #0
 
 .size _start, . - _start
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",%progbits

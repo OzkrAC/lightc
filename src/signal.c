@@ -73,9 +73,7 @@ lc_result lc_signal_reset(int signo) {
     lc_kernel_sigaction sa = {0};
     sa.handler = SIG_DFL;
     sa.flags   = 0;
-#if defined(__x86_64__)
     sa.restorer = NULL;
-#endif
     sa.mask = 0;
     return lc_result_from_sysret(lc_syscall4(SYS_rt_sigaction, signo, (int64_t)&sa, 0, 8));
 }

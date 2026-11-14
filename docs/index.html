@@ -112,8 +112,16 @@ int main(int argc, char **argv, char **envp) {
 ```
 
 ```sh
-gcc -ffreestanding -nostdlib -nostartfiles -Iinclude \
+gcc -ffreestanding -fno-stack-protector -nostdlib -nostartfiles -Iinclude \
     hello.c build/liblightc.a -T lightc.ld -static -no-pie -o hello
 ```
+
+`ninja install` puts the library, the headers, `lightc.pc` and both linker scripts (in `lib/lightc/`) under `/usr/local`, below `$DESTDIR` if set. pkg-config then gives the same flags, with `-mno-outline-atomics` added on aarch64:
+
+```sh
+gcc $(pkg-config --cflags lightc) hello.c $(pkg-config --libs lightc) -o hello
+```
+
+The `--libs` flags name `lightc.ld`; `pkg-config --variable=ldscript_tiny lightc` prints the path of `lightc-tiny.ld` to pass to `-T` instead.
 
 See [Core & conventions](guide.html) for the startup sequence, the error model and the syscall layer.

@@ -78,9 +78,10 @@ void lc_print_byte_hex(int32_t fd, uint8_t value) {
 }
 
 void lc_print_double(int32_t fd, double value) {
-    char buf[32];
+    char buf[352]; /* '-' + 309 integer digits + '.' + 18 fraction digits, rounded up */
     lc_format fmt = lc_format_start(buf, sizeof(buf));
     lc_format_add_double(&fmt, value);
     size_t len = lc_format_finish(&fmt);
+    if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;
     lc_kernel_write_all(fd, buf, len);
 }

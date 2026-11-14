@@ -1,0 +1,133 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-debug:
+    name: Debug (build + test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
+      - name: Build (debug)
+        run: ./configure debug && ninja
+      # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
+      # and test_syscall then skips its tmpfs mount. Lift that so it runs.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run tests
+        run: ninja test
+
+  build-release:
+    name: Release (build + test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
+      - name: Build (release)
+        run: ./configure release && ninja
+      # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
+      # and test_syscall then skips its tmpfs mount. Lift that so it runs.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run tests
+        run: ninja test
+
+  build-tiny:
+    name: Tiny (build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
+      - name: Build (tiny)
+        run: ./configure tiny && ninja
+
+  aarch64-qemu:
+    name: aarch64 under qemu-user (debug build + test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu qemu-user-static binfmt-support
+      # ninja test runs the aarch64 suites directly, so the kernel must hand
+      # aarch64 ELF files to qemu-aarch64-static.
+      - name: Check the aarch64 binfmt handler
+        run: |
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+          grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
+      # Debug, because release and tiny strip with the host's strip. Only the
+      # suites and the plugin test_library loads are built: the default target
+      # also builds examples/bench_heap.c, which uses the x86-only rdtsc.
+      - name: Build (aarch64 debug, tests only)
+        run: |
+          ARCH=aarch64 CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar ./configure debug
+          ninja build/test_plugin.so tests
+      # As in the x86_64 jobs, so the user namespace case skips only because
+      # qemu-user cannot create one.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # ninja streams the suites' output (configure puts the test edge in the
+      # console pool), so if a suite hangs, the log shows which one.
+      - name: Run tests
+        run: |
+          set -o pipefail
+          ninja test 2>&1 | tee build/test.log
+      # Cases qemu-user cannot run print SKIP: instead. Count the SKIP: lines
+      # of each suite and fail unless the counts equal ci/qemu-skips.txt, so a
+      # skip that appears or goes away fails the job.
+      - name: Compare skips with ci/qemu-skips.txt
+        run: |
+          suites=$(sed -n 's/^build tests: phony //p' build.ninja | wc -w)
+          ran=$(grep -c '^--- build/test_[a-z0-9_]* ---$' build/test.log || true)
+          echo "$ran of $suites suites ran"
+          test "$ran" -eq "$suites"
+          awk '/^--- build\/test_[a-z0-9_]* ---$/ { suite = $2; sub(/^build\//, "", suite); next }
+               /^[ \t]*SKIP:/ { skips[suite]++ }
+               END { for (s in skips) print s, skips[s] }' build/test.log | sort > build/skips.actual
+          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 { print $1, $2 }' | sort > build/skips.expected
+          echo "SKIP: lines per suite in this run:"
+          cat build/skips.actual
+          if ! diff -u build/skips.expected build/skips.actual; then
+            echo "The SKIP: counts differ from ci/qemu-skips.txt (-: the list, +: this run)."
+            exit 1
+          fi
+
+  abi-check:
+    name: UAPI ABI check (x86_64 + aarch64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc linux-libc-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      - name: Check x86_64
+        run: gcc -std=c2x -ffreestanding -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only tests/abi_check.c
+      - name: Check aarch64
+        run: aarch64-linux-gnu-gcc -std=c2x -ffreestanding -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only tests/abi_check.c
+
+  pkg-config-consumer:
+    name: pkg-config consumer (install + link)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc pkg-config
+      - name: Configure (release)
+        run: ./configure release
+      # Installs into a temporary DESTDIR, then builds with only the installed
+      # lightc.pc's flags: hello must be a static EXEC that runs and exits 0,
+      # and a thread_local program must fail to link.
+      - name: Install and build consumers with pkg-config
+        run: sh ci/consumer.sh

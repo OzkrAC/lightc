@@ -1,0 +1,16 @@
+# SKIP: lines per test suite when the aarch64 debug build runs under
+# qemu-user, in the aarch64-qemu job of .github/workflows/build.yml.
+# The job counts the SKIP: lines each suite prints and fails unless every
+# count equals the one here, so a skip that appears or goes away fails it.
+# Suites that print no SKIP: line are not listed; a count of 0 means the same.
+#
+# Format: one "suite count" pair per line; "#" starts a comment.
+
+# qemu-user has no io_uring, so these suites skip as a whole.
+test_async      1
+test_lightio    1
+
+# The tmpfs mount case: unshare(CLONE_NEWUSER) fails in a threaded process,
+# and qemu-user runs threads of its own. The fchmodat case's check of the
+# pre-6.6 ENOSYS path: qemu-user does not implement seccomp.
+test_syscall    2

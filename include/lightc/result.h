@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /*
  * Result types for error handling.
@@ -40,6 +41,8 @@ enum {
     LC_ERR_INVAL       = 22,   /* EINVAL   — invalid argument */
     LC_ERR_NOSPC       = 28,   /* ENOSPC   — no space left on device */
     LC_ERR_PIPE        = 32,   /* EPIPE    — broken pipe */
+    LC_ERR_NOSYS       = 38,   /* ENOSYS   — syscall not implemented */
+    LC_ERR_OPNOTSUPP   = 95,   /* EOPNOTSUPP — operation not supported */
     LC_ERR_ADDRINUSE   = 98,   /* EADDRINUSE */
     LC_ERR_CONNREFUSED = 111,  /* ECONNREFUSED */
     LC_ERR_CONNRESET   = 104,  /* ECONNRESET */
@@ -126,6 +129,8 @@ static inline const char *lc_error_name(int32_t error) {
     case LC_ERR_INVAL:       return "EINVAL";
     case LC_ERR_NOSPC:       return "ENOSPC";
     case LC_ERR_PIPE:        return "EPIPE";
+    case LC_ERR_NOSYS:       return "ENOSYS";
+    case LC_ERR_OPNOTSUPP:   return "EOPNOTSUPP";
     case LC_ERR_OVERFLOW:    return "EOVERFLOW";
     case LC_ERR_ADDRINUSE:   return "EADDRINUSE";
     case LC_ERR_CONNREFUSED: return "ECONNREFUSED";

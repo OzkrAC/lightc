@@ -66,6 +66,7 @@
 #define SYS_readlinkat  78
 #define SYS_fchownat    54
 #define SYS_fchmodat    53
+#define SYS_fchmodat2   452
 #define SYS_faccessat2  439
 
 /* namespaces / containers */

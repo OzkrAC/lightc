@@ -58,3 +58,6 @@ lc_kernel_clone:
     svc     #0
 
 .size lc_kernel_clone, . - lc_kernel_clone
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",%progbits

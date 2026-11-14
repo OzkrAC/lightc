@@ -53,3 +53,6 @@ lc_thread_start:
     svc     #0
 
 .size lc_thread_start, . - lc_thread_start
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",%progbits

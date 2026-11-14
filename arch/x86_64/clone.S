@@ -62,3 +62,6 @@ lc_kernel_clone:
     syscall
 
 .size lc_kernel_clone, . - lc_kernel_clone
+
+/* No executable stack: without this note, ld assumes this object needs one. */
+.section .note.GNU-stack,"",@progbits
