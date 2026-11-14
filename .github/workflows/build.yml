@@ -77,16 +77,28 @@ jobs:
       # qemu-user cannot create one.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # ninja streams the suites' output (configure puts the test edge in the
-      # console pool), so if a suite hangs, the log shows which one.
+      # Every suite in the tests target runs, even after one fails, so a single
+      # run shows every aarch64 failure; ninja test stops at the first failing
+      # suite. Each suite gets 120 s, so a hung one fails with status 124 and
+      # the log shows which one, instead of the job's 15 minutes running out.
       - name: Run tests
         run: |
-          set -o pipefail
-          ninja test 2>&1 | tee build/test.log
+          : > build/failed.txt
+          for t in $(sed -n 's/^build tests: phony //p' build.ninja | sed 's/\$builddir/build/g'); do
+            echo "--- $t ---"
+            timeout 120 "$t" || echo "${t#build/} exited with status $?" >> build/failed.txt
+          done 2>&1 | tee build/test.log
+          if [ -s build/failed.txt ]; then
+            echo "Failed suites:"
+            cat build/failed.txt
+            exit 1
+          fi
       # Cases qemu-user cannot run print SKIP: instead. Count the SKIP: lines
       # of each suite and fail unless the counts equal ci/qemu-skips.txt, so a
-      # skip that appears or goes away fails the job.
+      # skip that appears or goes away fails the job. This also runs when a
+      # suite failed, so one run reports both.
       - name: Compare skips with ci/qemu-skips.txt
+        if: ${{ !cancelled() }}
         run: |
           suites=$(sed -n 's/^build tests: phony //p' build.ninja | wc -w)
           ran=$(grep -c '^--- build/test_[a-z0-9_]* ---$' build/test.log || true)

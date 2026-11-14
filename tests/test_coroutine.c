@@ -115,31 +115,43 @@ static void test_coroutine_yield_interleaved(void) {
  *
  * AAPCS64 makes the low 64 bits of v8-v15 callee-saved. Two coroutines each pin
  * a distinct bit pattern into d8-d15, yield (letting the other overwrite those
- * physical registers), then read them back. Because the values are placed by
- * inline asm the compiler doesn't track them as live, so it won't preserve them
- * around the yield itself — only lc_coroutine_switch can. If the switch dropped
- * d8-d15, each coroutine would read the OTHER's pattern.
+ * physical registers), then read them back. If the switch dropped d8-d15, each
+ * coroutine would read the OTHER's pattern.
+ *
+ * The load, the call to lc_coroutine_yield and the store are one asm statement,
+ * so no compiler-generated code runs between them and only lc_coroutine_switch
+ * can keep the pattern alive. Separate load and store helpers do not work: a
+ * helper that loads d8-d15 must restore them for its caller, so its epilogue
+ * undoes the load before the yield. That is what happens at -O0, where nothing
+ * is inlined. The clobbers name every register the call may change, so the
+ * compiler keeps the two pointers in callee-saved registers and saves the
+ * caller's d8-d15 itself.
  *
  * x86_64 SysV has no callee-saved SIMD registers, so this concern is aarch64
  * only; elsewhere the test is a no-op that trivially passes.
  */
 #if defined(__aarch64__)
-static void fp_load8(const double *v) {  /* v[0..7] -> d8..d15 */
+static void fp_pin_yield_read(const double *want, double *got) {
     __asm__ volatile(
-        "ldr d8,  [%0, #0]\n\t"  "ldr d9,  [%0, #8]\n\t"
-        "ldr d10, [%0, #16]\n\t" "ldr d11, [%0, #24]\n\t"
-        "ldr d12, [%0, #32]\n\t" "ldr d13, [%0, #40]\n\t"
-        "ldr d14, [%0, #48]\n\t" "ldr d15, [%0, #56]\n\t"
-        : : "r"(v)
-        : "d8","d9","d10","d11","d12","d13","d14","d15");
-}
-static void fp_store8(double *v) {  /* d8..d15 -> v[0..7] */
-    __asm__ volatile(
-        "str d8,  [%0, #0]\n\t"  "str d9,  [%0, #8]\n\t"
-        "str d10, [%0, #16]\n\t" "str d11, [%0, #24]\n\t"
-        "str d12, [%0, #32]\n\t" "str d13, [%0, #40]\n\t"
-        "str d14, [%0, #48]\n\t" "str d15, [%0, #56]\n\t"
-        : : "r"(v) : "memory");
+        "ldp d8,  d9,  [%0, #0]\n\t"
+        "ldp d10, d11, [%0, #16]\n\t"
+        "ldp d12, d13, [%0, #32]\n\t"
+        "ldp d14, d15, [%0, #48]\n\t"
+        "bl  lc_coroutine_yield\n\t"     /* the other coroutine runs here */
+        "stp d8,  d9,  [%1, #0]\n\t"
+        "stp d10, d11, [%1, #16]\n\t"
+        "stp d12, d13, [%1, #32]\n\t"
+        "stp d14, d15, [%1, #48]"
+        :
+        : "r"(want), "r"(got)
+        : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+          "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18",
+          "x30",
+          "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7",
+          "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15",
+          "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
+          "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31",
+          "cc", "memory");
 }
 
 static const double fp_a_want[8] = { 11, 12, 13, 14, 15, 16, 17, 18 };
@@ -149,15 +161,11 @@ static double fp_b_got[8];
 
 static void fp_coro_a(void *arg) {
     (void)arg;
-    fp_load8(fp_a_want);    /* d8-d15 = A's pattern */
-    lc_coroutine_yield();   /* B runs, sets d8-d15 = B's pattern, yields back */
-    fp_store8(fp_a_got);    /* must still read A's pattern */
+    fp_pin_yield_read(fp_a_want, fp_a_got);  /* must read back A's pattern */
 }
 static void fp_coro_b(void *arg) {
     (void)arg;
-    fp_load8(fp_b_want);
-    lc_coroutine_yield();
-    fp_store8(fp_b_got);
+    fp_pin_yield_read(fp_b_want, fp_b_got);
 }
 #endif
 
