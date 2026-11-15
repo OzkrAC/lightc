@@ -6,17 +6,40 @@ on:
   pull_request:
     branches: [main, master]
 
+# Branch protection should require the check of every job here except the
+# two with continue-on-error, clang and regress-pending, which report
+# without gating. A matrix job gives one check per cell, with its name:
+# line filled in, such as "x86_64 gcc 13 debug". Renaming a job renames its
+# check, and branch protection then waits for a check that never comes.
 jobs:
-  build-debug:
-    name: Debug (build + test)
+  # Every build mode on x86_64, with GCC 13 (the runner's gcc) and GCC 14.
+  # Each cell builds the default target, then runs the suites and the gating
+  # regress programs. tiny runs them too: the aarch64-cross job also builds
+  # tiny, with its linker script, -Os and stripped section headers, but it
+  # cannot run what it builds, and only running the binaries shows that
+  # they work. ubsan makes every -fsanitize=undefined
+  # check a trap, so a program that hits undefined behavior dies with
+  # SIGILL and its suite fails.
+  x86_64:
+    name: x86_64 gcc ${{ matrix.gcc }} ${{ matrix.mode }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: [13, 14]
+        mode: [debug, release, tiny, ubsan]
+    env:
+      CC: gcc-${{ matrix.gcc }}
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
-      - name: Build (debug)
-        run: ./configure debug && ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-${{ matrix.gcc }}
+      - name: Build
+        run: |
+          "$CC" --version | head -n 1
+          ./configure ${{ matrix.mode }}
+          ninja
       # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
       - name: Allow unprivileged user namespaces
@@ -28,39 +51,88 @@ jobs:
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: ninja regress
+      # When a fault or trap kills a program, as a ubsan trap does, the
+      # summary says only "killed by signal N". The kernel logged where it
+      # stopped: print that, with the source line in debug and ubsan builds.
+      # A suite that timed out leaves no such report.
+      - name: Show where crashed programs stopped
+        if: ${{ failure() }}
+        run: sudo dmesg | sh ci/crash-report.sh
 
-  build-release:
-    name: Release (build + test)
-    runs-on: ubuntu-24.04
+  # debug and release on a native aarch64 runner. These are the aarch64
+  # checks of record: they run every case on a real arm64 kernel.
+  # aarch64-qemu stays beside them as a smoke lane, and its check is
+  # required too. The runner's kernel has io_uring, user namespaces and
+  # seccomp, so no case may skip. As on x86_64, LIGHTC_TEST_ALLOW_SKIP
+  # stays unset, so a suite that skips every test fails, and the steps
+  # below also fail on any single SKIP: line.
+  aarch64-native:
+    name: aarch64 native ${{ matrix.mode }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [debug, release]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
-      - name: Build (release)
-        run: ./configure release && ninja
-      # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
-      # and test_syscall then skips its tmpfs mount. Lift that so it runs.
+      # What an aarch64 failure can depend on, so the log alone can explain
+      # one: the kernel, the toolchain, the CPU and its features, the page
+      # size, and whether io_uring and user namespaces are allowed.
+      - name: Describe the runner
+        run: |
+          uname -a
+          gcc --version | head -n 1
+          ld --version | head -n 1
+          echo "page size: $(getconf PAGESIZE)"
+          lscpu
+          for name in kernel.io_uring_disabled kernel.apparmor_restrict_unprivileged_userns debug.exception-trace; do
+            sysctl "$name" || true
+          done
+      - name: Build
+        run: |
+          ./configure ${{ matrix.mode }}
+          grep -qx 'arch = aarch64' build.ninja
+          ninja
+      # As on x86_64, so test_syscall's tmpfs mount case runs.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run tests
-        run: ninja test
-      # The programs of the fixed defects that tests/regress/manifest marks
-      # gating. This also runs when a suite failed, so one run reports both.
+        id: tests
+        run: |
+          set -o pipefail
+          ninja test 2>&1 | tee build/test.log
+      # tests/run.sh fails only a suite that skips every test, so one case
+      # that skips, such as test_syscall's tmpfs mount, would go unseen.
+      # Print each SKIP: line with its suite, and fail on any. This also
+      # runs when a suite failed, so one run reports both.
+      - name: Check that no case skipped
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: |
+          awk '/^--- build\/test_[a-z0-9_]* ---$/ { suite = $2; sub(/^build\//, "", suite); next }
+               /^[ \t]*SKIP:/ { sub(/^[ \t]*/, ""); print suite ": " $0; skips++ }
+               END {
+                   if (skips) { print "Cases skipped: " skips ". On this runner every case must run."; exit 1 }
+                   print "No case skipped."
+               }' build/test.log
+      # As in the aarch64-qemu job: no gating regress program may skip.
       - name: Run regress programs
         if: ${{ !cancelled() }}
-        run: ninja regress
-
-  build-tiny:
-    name: Tiny (build)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
-      - name: Build (tiny)
-        run: ./configure tiny && ninja
+        run: |
+          set -o pipefail
+          ninja regress 2>&1 | tee build/regress.log
+          if grep -E '^[[:space:]]*SKIP:' build/regress.log; then
+            echo "A gating regress program skipped a test."
+            exit 1
+          fi
+      # On aarch64 the kernel logs the registers of a program a fault or
+      # trap killed: this prints them, with the source line of pc and lr in
+      # debug (release binaries are stripped, so there it prints ??).
+      - name: Show where crashed programs stopped
+        if: ${{ failure() }}
+        run: sudo dmesg | sh ci/crash-report.sh
 
   # The pending ids in tests/regress/manifest are defects not fixed yet, so
   # their programs are expected to fail. This job prints each id with PASS or
@@ -80,8 +152,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc
       - name: Configure (debug)
         run: ./configure debug
-      # As in the debug and release jobs, so a pending program that passes
-      # here also passes there once its id is gating.
+      # As in the jobs that run ninja regress, so a pending program that
+      # passes here also passes there once its id is gating.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # While a pending program does not build, ninja runs none of them;
@@ -93,6 +165,10 @@ jobs:
           sh tests/regress/pending.sh $(awk '{ sub(/#.*/, "") } $2 == "pending" { print "build/regress/" $1 }' tests/regress/manifest)
           exit 1
 
+  # The aarch64 suites under qemu-user on an x86_64 runner: a smoke lane
+  # beside the aarch64-native jobs, which are the aarch64 checks of record.
+  # Its check is required too. It also pins the skips qemu-user causes, in
+  # ci/qemu-skips.txt.
   aarch64-qemu:
     name: aarch64 under qemu-user (debug build + test)
     runs-on: ubuntu-24.04
@@ -109,14 +185,14 @@ jobs:
           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
       # configure takes the arch from CC and ar from CC's prefix, so CC alone
       # sets up the cross build. Debug, so lightc's safety checks run; the
-      # aarch64-cross job builds release and tiny. Only the suites and the
-      # plugin test_library loads are built: the default target also builds
-      # examples/bench_heap.c, which uses the x86-only rdtsc.
-      - name: Build (aarch64 debug, tests only)
+      # aarch64-cross job builds release and tiny. This builds the default
+      # target, as the other jobs do, and the suites, with the plugin
+      # test_library loads.
+      - name: Build (aarch64 debug)
         run: |
           CC=aarch64-linux-gnu-gcc ./configure debug
           grep -qx 'arch = aarch64' build.ninja
-          ninja build/test_plugin.so tests
+          ninja all tests
       # As in the x86_64 jobs, so the user namespace case skips only because
       # qemu-user cannot create one.
       - name: Allow unprivileged user namespaces
@@ -176,15 +252,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu
       # Ubuntu's own strip and objcopy handle only x86_64, so these links pass
       # only with the aarch64-linux-gnu- tools configure takes from CC's
-      # prefix. Every suite must then be an aarch64 binary with no symbol
-      # table, and in tiny mode with no section headers.
-      - name: Build (aarch64 release and tiny, tests only)
+      # prefix. Each mode builds the default target and the suites. Every
+      # suite must then be an aarch64 binary with no symbol table, and in
+      # tiny mode with no section headers.
+      - name: Build (aarch64 release and tiny)
         run: |
           for mode in release tiny; do
             ./configure clean
             CC=aarch64-linux-gnu-gcc ./configure "$mode"
             grep -qx 'arch = aarch64' build.ninja
-            ninja build/liblightc.a tests
+            ninja all tests
             for t in $(sed -n 's/^build tests: phony //p' build.ninja | sed 's/\$builddir/build/g'); do
               readelf -h "$t" | grep -q 'Machine: *AArch64$' || { echo "$t is not an aarch64 binary"; exit 1; }
               if [ "$mode" = tiny ]; then
@@ -274,3 +351,58 @@ jobs:
       # and a thread_local program must fail to link.
       - name: Install and build consumers with pkg-config
         run: sh ci/consumer.sh
+
+  # Each public header compiled alone, as C23 with -Wpedantic -Werror and
+  # as C17: see ci/headers.sh, which finds the headers in the tree, so a new
+  # one is checked too. gcc is GCC 13, which takes -std=c2x, gcc-14 takes
+  # -std=c23, and with aarch64-linux-gnu-gcc <lightc/syscall.h> includes
+  # the aarch64 syscall numbers. Only headers are compiled, so the warnings
+  # of files in src/ and examples/ cannot fail this job.
+  headers:
+    name: Public headers (each alone, C23 + C17)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc gcc-14 gcc-aarch64-linux-gnu
+      - name: Compile each public header alone
+        run: sh ci/headers.sh gcc gcc-14 aarch64-linux-gnu-gcc
+
+  # lightc is written for GCC. This builds and tests it with the runner's
+  # clang, to show where it does not build or pass, and gates nothing: the
+  # check goes red, and continue-on-error keeps the workflow green. The
+  # steps after the build also run when one before them failed, so one run
+  # shows everything.
+  clang:
+    name: clang ${{ matrix.mode }} (not gating)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [debug, release]
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      - name: Build
+        run: |
+          clang --version | head -n 1
+          ./configure ${{ matrix.mode }}
+          ninja
+      - name: Allow unprivileged user namespaces
+        if: ${{ !cancelled() }}
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run tests
+        if: ${{ !cancelled() }}
+        run: ninja test
+      - name: Run regress programs
+        if: ${{ !cancelled() }}
+        run: ninja regress
+      - name: Compile each public header alone
+        if: ${{ !cancelled() && matrix.mode == 'debug' }}
+        run: sh ci/headers.sh clang

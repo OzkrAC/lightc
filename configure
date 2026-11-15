@@ -6,6 +6,7 @@
 #   ./configure              — release (default)
 #   ./configure debug        — debug symbols, no optimization
 #   ./configure tiny         — minimal binary size, stripped
+#   ./configure ubsan        — undefined behavior traps, debug symbols
 #   ./configure clean        — remove build artifacts
 #
 # Environment (an empty value counts as unset):
@@ -23,9 +24,9 @@
 #   ARCH     — deprecated, kept for older callers. It must equal CC's target
 #              arch, or configure stops: it cannot pick another compiler.
 #
-# A cross build for aarch64, which builds named targets because plain ninja
-# also builds examples/bench_heap.c, which is x86-only:
-#   CC=aarch64-linux-gnu-gcc ./configure release && ninja build/liblightc.a tests
+# A cross build for aarch64, which also builds the test suites without
+# running them:
+#   CC=aarch64-linux-gnu-gcc ./configure release && ninja all tests
 
 set -e
 
@@ -100,6 +101,22 @@ case "$MODE" in
         STRIP_CMD="$STRIP \$out && $OBJCOPY --strip-section-headers \$out"
         DESC="tiny (minimal binary size)"
         ;;
+    # Undefined behavior checks. -fsanitize-trap=all makes each failed check
+    # a trap instruction (ud2 on x86_64, brk on aarch64) instead of a call
+    # into a sanitizer runtime, which a freestanding library has none of: the
+    # program stops at the check with SIGILL or SIGTRAP. Not stripped and
+    # with -g, so addr2line maps the trap's address to its source line, and
+    # without NDEBUG, so lightc's safety checks stay on as in debug. Links
+    # use lightc.ld, as in debug and release. The installed lightc.pc is the
+    # same in every mode: a program that links this liblightc.a needs no
+    # sanitizer flags, and its own code is checked only if it adds them.
+    ubsan)
+        MODE_CFLAGS="$CSTD -O1 -g -Wall -Wextra -Wpedantic -fsanitize=undefined -fsanitize-trap=all"
+        MODE_LDFLAGS="-static -no-pie"
+        LDSCRIPT="lightc.ld"
+        STRIP_CMD=""
+        DESC="ubsan (undefined behavior traps, debug symbols)"
+        ;;
     clean)
         echo "Cleaning ${BUILDDIR}/"
         rm -rf "$BUILDDIR"
@@ -107,7 +124,7 @@ case "$MODE" in
         ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Usage: $0 [debug|release|tiny|clean]"
+        echo "Usage: $0 [debug|release|tiny|ubsan|clean]"
         exit 1
         ;;
 esac

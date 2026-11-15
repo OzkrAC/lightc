@@ -86,6 +86,7 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 | `./configure debug` | `-O0 -g3`, safety checks on |
 | `./configure release` | `-O2 -DNDEBUG`, stripped (default) |
 | `./configure tiny` | `-Os`, smallest binary |
+| `./configure ubsan` | `-O1 -g -fsanitize=undefined -fsanitize-trap=all`, safety checks on |
 
 | Target | Builds |
 |---|---|
@@ -96,12 +97,14 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 
 The output links statically with lightc's own linker script (`lightc.ld`, or `lightc-tiny.ld` in tiny mode), no-PIE, with no interpreter and no dynamic dependencies.
 
-`configure` builds for the target of `CC` (default `gcc`): the arch is the first field of `$CC -dumpmachine`, x86_64 or aarch64. `AR`, `STRIP` and `OBJCOPY` default to the tools with `CC`'s prefix, or to the plain names when those are not installed, so `CC=aarch64-linux-gnu-gcc` alone sets up a cross build. `CFLAGS` and `LDFLAGS` are added after configure's own flags, and `SYSROOT` is passed as `--sysroot`. `ARCH` is still read for older callers, but it must equal the compiler's arch, or `configure` stops. On aarch64, plain `ninja` also builds `examples/bench_heap.c`, which is x86-only, so name the targets:
+`configure` builds for the target of `CC` (default `gcc`): the arch is the first field of `$CC -dumpmachine`, x86_64 or aarch64. `AR`, `STRIP` and `OBJCOPY` default to the tools with `CC`'s prefix, or to the plain names when those are not installed, so `CC=aarch64-linux-gnu-gcc` alone sets up a cross build. `CFLAGS` and `LDFLAGS` are added after configure's own flags, and `SYSROOT` is passed as `--sysroot`. `ARCH` is still read for older callers, but it must equal the compiler's arch, or `configure` stops. A cross build can build the test suites without running them with `ninja tests`:
 
 ```sh
 CC=aarch64-linux-gnu-gcc ./configure release
-ninja build/liblightc.a tests
+ninja all tests
 ```
+
+In ubsan mode each undefined behavior check is a trap instruction, so no sanitizer runtime is linked: a program that hits one stops with SIGILL on x86_64 or SIGTRAP on aarch64. The binaries are not stripped, so `addr2line` maps the `ip` or `pc` that the kernel logs for it to the check's source line. ubsan links with `lightc.ld`, and the installed `lightc.pc` is the same in every mode.
 
 ## Example {#example}
 

@@ -8,8 +8,8 @@
 #
 #   gating   The defect is fixed. ninja regress runs the program through
 #            tests/run.sh, as ninja test runs the suites, and fails unless
-#            it passes. CI runs ninja regress in its debug, release and
-#            aarch64-qemu jobs.
+#            it passes. CI runs ninja regress in every job that runs
+#            ninja test.
 #   pending  The defect is not fixed yet, so the program fails for now.
 #            ninja regress-pending runs it and prints the id with PASS or
 #            FAIL, and does not fail on the result. It must still build:

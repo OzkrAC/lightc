@@ -12,6 +12,7 @@ Requires GCC and ninja.
 ./configure debug    # -O0, debug symbols, safety checks on
 ./configure release  # -O2 -DNDEBUG, stripped
 ./configure tiny     # -Os, minimal binary size
+./configure ubsan    # -O1, undefined behavior checks that trap, safety checks on
 
 ninja                # build everything
 ninja test           # run all tests (171 tests across 10 suites)
@@ -19,14 +20,18 @@ ninja regress        # run the regress programs of fixed defects (tests/regress/
 ninja bench          # run benchmarks
 ```
 
-`configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where plain `ninja` stops in the x86-only `examples/bench_heap.c`:
+`configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where `ninja all tests` builds everything, the test suites included, without running anything:
 
 ```sh
 CC=aarch64-linux-gnu-gcc ./configure release
-ninja build/liblightc.a tests
+ninja all tests
 ```
 
+The ubsan mode compiles every check of `-fsanitize=undefined` to a trap instruction (`-fsanitize-trap=all`), so it needs no sanitizer runtime: a program that hits undefined behavior stops at once with SIGILL on x86_64 or SIGTRAP on aarch64. Its binaries are not stripped, and like every lightc binary they are static and not PIE, so the address the kernel logs for the trap maps straight to the check's source line: `sudo dmesg | sh ci/crash-report.sh` prints that line for each program in `build/` that a fault or trap killed (a timed-out suite, which timeout(1) stops with a signal, leaves no report). ubsan links with `lightc.ld`, as debug and release do, and `ninja install` writes the same `lightc.pc` in every mode.
+
 The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensyscalls.sh` generates `include/lightc/arch/*/syscall_nr.h`, the `LC_ERR_*` errno lines of `include/lightc/result.h` and the lists `tests/abi_check.c` checks from it. Run it after editing `syscalls.def` and commit the files it changes with the edit: CI runs it too and fails when it changes a file.
+
+`sh ci/headers.sh` compiles each public header alone, as C23 with `-Wpedantic -Werror` and as C17 with `-Werror`, so a header that uses something it does not include fails. CI runs it with GCC 13, GCC 14 and the aarch64 cross compiler.
 
 ## Modules
 

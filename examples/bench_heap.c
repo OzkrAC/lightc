@@ -7,21 +7,33 @@
  *   - Mixed sizes (random-ish pattern)
  *   - Multi-threaded (4 threads)
  *
- * Uses rdtsc for cycle-accurate timing on x86_64.
+ * Uses rdtsc for cycle-accurate timing on x86_64. aarch64 user space
+ * usually cannot read a cycle counter, and an allocation often takes less
+ * than one tick of its generic timer, which would print 0 per op, so there
+ * the times are nanoseconds from the monotonic clock.
  */
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/print.h>
 #include <lightc/heap.h>
 #include <lightc/thread.h>
+#include <lightc/time.h>
 
 #define S(literal) literal, sizeof(literal) - 1
 
-static inline uint64_t rdtsc(void) {
+#if defined(__x86_64__)
+static inline uint64_t timestamp(void) {
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
 }
+#define UNIT " cycles/op"
+#else
+static inline uint64_t timestamp(void) {
+    return (uint64_t)lc_time_now_monotonic();
+}
+#define UNIT " ns/op"
+#endif
 
 /* --- Benchmarks --- */
 
@@ -38,17 +50,17 @@ static void bench_alloc_free(const char *label, size_t label_len, size_t size) {
     }
 
     /* Measure alloc+free pairs */
-    uint64_t start = rdtsc();
+    uint64_t start = timestamp();
     for (int i = 0; i < ITERS; i++) {
         lc_result_ptr rp = lc_heap_allocate(size);
         void *p = rp.value;
         *(volatile char *)p = 0; /* prevent optimization */
         lc_heap_free(p);
     }
-    uint64_t elapsed = rdtsc() - start;
+    uint64_t elapsed = timestamp() - start;
 
     lc_print_unsigned(STDOUT, elapsed / ITERS);
-    lc_print_line(STDOUT, S(" cycles/op"));
+    lc_print_line(STDOUT, S(UNIT));
 }
 
 static void bench_batch(const char *label, size_t label_len, size_t size) {
@@ -62,18 +74,18 @@ static void bench_batch(const char *label, size_t label_len, size_t size) {
 
     /* Measure: allocate a batch, then free the batch */
     int rounds = ITERS / BATCH_SIZE;
-    uint64_t start = rdtsc();
+    uint64_t start = timestamp();
     for (int r = 0; r < rounds; r++) {
         for (int i = 0; i < BATCH_SIZE; i++)
             ptrs[i] = lc_heap_allocate(size).value;
         for (int i = 0; i < BATCH_SIZE; i++)
             lc_heap_free(ptrs[i]);
     }
-    uint64_t elapsed = rdtsc() - start;
+    uint64_t elapsed = timestamp() - start;
     uint64_t ops = (uint64_t)rounds * BATCH_SIZE * 2; /* alloc + free */
 
     lc_print_unsigned(STDOUT, elapsed / ops);
-    lc_print_line(STDOUT, S(" cycles/op"));
+    lc_print_line(STDOUT, S(UNIT));
 }
 
 static void bench_mixed(void) {
@@ -89,18 +101,18 @@ static void bench_mixed(void) {
     for (int i = 0; i < BATCH_SIZE; i++) lc_heap_free(ptrs[i]);
 
     int rounds = ITERS / BATCH_SIZE;
-    uint64_t start = rdtsc();
+    uint64_t start = timestamp();
     for (int r = 0; r < rounds; r++) {
         for (int i = 0; i < BATCH_SIZE; i++)
             ptrs[i] = lc_heap_allocate(sizes[i % nsizes]).value;
         for (int i = 0; i < BATCH_SIZE; i++)
             lc_heap_free(ptrs[i]);
     }
-    uint64_t elapsed = rdtsc() - start;
+    uint64_t elapsed = timestamp() - start;
     uint64_t ops = (uint64_t)rounds * BATCH_SIZE * 2;
 
     lc_print_unsigned(STDOUT, elapsed / ops);
-    lc_print_line(STDOUT, S(" cycles/op"));
+    lc_print_line(STDOUT, S(UNIT));
 }
 
 /* --- Multi-threaded benchmark --- */
@@ -115,14 +127,14 @@ static int32_t thread_bench(void *arg) {
     void *ptrs[BATCH_SIZE];
     int rounds = ITERS / BATCH_SIZE;
 
-    uint64_t start = rdtsc();
+    uint64_t start = timestamp();
     for (int r = 0; r < rounds; r++) {
         for (int i = 0; i < BATCH_SIZE; i++)
             ptrs[i] = lc_heap_allocate(64).value;
         for (int i = 0; i < BATCH_SIZE; i++)
             lc_heap_free(ptrs[i]);
     }
-    uint64_t elapsed = rdtsc() - start;
+    uint64_t elapsed = timestamp() - start;
 
     result->cycles = elapsed;
     result->ops = (uint64_t)rounds * BATCH_SIZE * 2;
@@ -150,9 +162,9 @@ static void bench_threaded(int nthreads) {
         if (results[i].cycles > max_cycles) max_cycles = results[i].cycles;
     }
 
-    /* cycles/op = max wall time / total ops across all threads */
+    /* per op: the longest thread's time / total ops across all threads */
     lc_print_unsigned(STDOUT, max_cycles / total_ops);
-    lc_print_string(STDOUT, S(" cycles/op ("));
+    lc_print_string(STDOUT, S(UNIT " ("));
     lc_print_unsigned(STDOUT, total_ops / 1000000);
     lc_print_line(STDOUT, S("M ops total)"));
 }
