@@ -356,8 +356,11 @@ jobs:
   # as C17: see ci/headers.sh, which finds the headers in the tree, so a new
   # one is checked too. gcc is GCC 13, which takes -std=c2x, gcc-14 takes
   # -std=c23, and with aarch64-linux-gnu-gcc <lightc/syscall.h> includes
-  # the aarch64 syscall numbers. Only headers are compiled, so the warnings
-  # of files in src/ and examples/ cannot fail this job.
+  # the aarch64 syscall numbers. The headers use C23 [[attribute]] syntax,
+  # which GCC 13 (gcc and aarch64-linux-gnu-gcc here) rejects in C17, so
+  # gcc-14 and, in the clang job, clang check C17. Only headers are
+  # compiled, so the warnings of files in src/ and examples/ cannot fail
+  # this job.
   headers:
     name: Public headers (each alone, C23 + C17)
     runs-on: ubuntu-24.04

@@ -3,12 +3,15 @@
 #
 # Compiles each public header alone, as the one #include of a translation
 # unit of its own, so a header that uses something it does not include
-# fails. Each header is compiled twice with -ffreestanding -Wall -Wextra
-# -Werror:
+# fails. Each header is compiled with -ffreestanding -Wall -Wextra -Werror:
 #
 #   - as C23 (-std=c2x on compilers older than GCC 14) with -Wpedantic;
-#   - as C17 without -Wpedantic, which there flags every [[attribute]]: GCC
-#     takes that C23 syntax in C17 as an extension.
+#   - as C17 without -Wpedantic, with a compiler that takes C23's
+#     [[attribute]] syntax in C17 as an extension, as GCC 14 and clang do.
+#
+# The headers use that syntax, so a C17 program needs such a compiler:
+# GCC 13 rejects [[...]] before C23. A compiler that rejects it gets only
+# the C23 compile, and the script says so.
 #
 # The headers are every *.h under include/, found when this runs, so a new
 # header is checked too, also in a new directory. The syscall_nr.h files
@@ -47,10 +50,22 @@ for cc in "$@"; do
     else
         c23=-std=c2x
     fi
+    # Does $cc take [[attribute]] syntax in C17?
+    printf '[[gnu::const]] int probe(void);\n' > "$work/probe.c"
+    if $cc -std=c17 -ffreestanding -Wall -Wextra -Werror \
+            -c "$work/probe.c" -o "$work/probe.o" >/dev/null 2>&1; then
+        c17=-std=c17 compiles=2
+    else
+        c17= compiles=1
+        echo "$cc: rejects [[attributes]] in C17, so it compiles the headers as C23 only"
+    fi
     failed=0
     for header in $headers; do
         printf '#include <%s>\n' "${header#include/}" > "$work/tu.c"
-        for std in "$c23 -Wpedantic" "-std=c17"; do
+        for std in "$c23 -Wpedantic" "$c17"; do
+            if [ -z "$std" ]; then
+                continue
+            fi
             # $cc and $std are split into words, as configure splits CC.
             if ! $cc $std -ffreestanding -Wall -Wextra -Werror -Iinclude \
                     -c "$work/tu.c" -o "$work/tu.o" > "$work/out" 2>&1; then
@@ -61,9 +76,9 @@ for cc in "$@"; do
         done
     done
     if [ "$failed" -eq 0 ]; then
-        echo "$cc: all $count headers compile alone as $c23 -Wpedantic and as -std=c17"
+        echo "$cc: all $count headers compile alone as $c23 -Wpedantic${c17:+ and as $c17}"
     else
-        echo "$cc: $failed of $((count * 2)) compiles of $count headers failed"
+        echo "$cc: $failed of $((count * compiles)) compiles of $count headers failed"
         status=1
     fi
 done
