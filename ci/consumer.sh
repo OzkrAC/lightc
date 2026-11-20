@@ -6,8 +6,9 @@
 # lightc.pc:
 #
 #   - examples/hello.c, built in one step and with separate compile and link
-#     steps, must be a static EXEC with no INTERP, GNU_STACK RW and no PT_TLS,
-#     and must run and exit 0;
+#     steps, must be a static EXEC with no INTERP, must pass ci/elfcheck.sh
+#     (GNU_STACK RW, no PT_TLS, no RWX header, text and data on pages of
+#     their own), and must run and exit 0;
 #   - a program with a thread_local variable must compile, then fail to link
 #     with the linker script's "lightc: thread_local" message.
 #
@@ -17,7 +18,8 @@
 
 set -eu
 
-cd "$(dirname "$0")/.."
+# CDPATH= keeps cd from looking up "ci/.." in the caller's CDPATH.
+CDPATH= cd -- "$(dirname -- "$0")/.."
 
 CC=${CC:-gcc}
 
@@ -67,21 +69,20 @@ for flag in $cflags $libs; do
     esac
 done
 
-# --- hello: static EXEC, no INTERP, GNU_STACK RW, no PT_TLS, exits 0 ---
+# --- hello: static EXEC, no INTERP, passes ci/elfcheck.sh, exits 0 ---
 
+# ci/elfcheck.sh checks the program headers: GNU_STACK, TLS, RWX and the
+# pages of the segments. It checks a PIE as it checks an EXEC, so the ELF
+# type and the INTERP header, which mark a binary built some other way
+# than lightc.pc says, are checked here.
 check_hello() {
     exe=$1
     elf_type=$(readelf -h "$exe" | awk '$1 == "Type:" { print $2 }')
     [ "$elf_type" = EXEC ] || fail "$exe: ELF type is ${elf_type:-unknown}, want EXEC"
-    phdrs=$(readelf -lW "$exe")
-    if printf '%s\n' "$phdrs" | grep -q '^ *INTERP '; then
+    if readelf -lW "$exe" | grep -q '^ *INTERP '; then
         fail "$exe has a PT_INTERP header"
     fi
-    if printf '%s\n' "$phdrs" | grep -q '^ *TLS '; then
-        fail "$exe has a PT_TLS header"
-    fi
-    stack=$(printf '%s\n' "$phdrs" | awk '$1 == "GNU_STACK" { print $7 }')
-    [ "$stack" = RW ] || fail "$exe: GNU_STACK flags are '${stack:-missing}', want RW"
+    sh ci/elfcheck.sh "$exe" || fail "$exe did not pass ci/elfcheck.sh"
 
     status=0
     out=$("$exe") || status=$?

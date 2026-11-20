@@ -19,7 +19,8 @@ jobs:
   # cannot run what it builds, and only running the binaries shows that
   # they work. ubsan makes every -fsanitize=undefined
   # check a trap, so a program that hits undefined behavior dies with
-  # SIGILL and its suite fails.
+  # SIGILL and its suite fails. Then ci/elfcheck.sh checks the program
+  # headers of every binary the cell built.
   x86_64:
     name: x86_64 gcc ${{ matrix.gcc }} ${{ matrix.mode }}
     runs-on: ubuntu-24.04
@@ -51,6 +52,15 @@ jobs:
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: ninja regress
+      # Every ELF executable and shared object in build/, which by now holds
+      # the default target, the suites and the regress programs: no RWX
+      # header and a GNU_STACK RW header, and in an executable no PT_TLS
+      # and no 4 KiB page that code and data share (see ci/elfcheck.sh).
+      # This also runs when a step above failed, so a program that died at
+      # its start because of its layout is explained here.
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck.sh build
       # When a fault or trap kills a program, as a ubsan trap does, the
       # summary says only "killed by signal N". The kernel logged where it
       # stopped: print that, with the source line in debug and ubsan builds.
@@ -127,6 +137,14 @@ jobs:
             echo "A gating regress program skipped a test."
             exit 1
           fi
+      # As on x86_64, but an executable's R E and RW PT_LOAD must not share
+      # a 64 KiB page. On a 4 KiB page kernel, such as Ubuntu's arm64
+      # kernel, a binary that breaks this still runs and passes its tests.
+      # On a 16 or 64 KiB page kernel the RW mapping replaces the page it
+      # shares with the code, and the program faults.
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck.sh build
       # On aarch64 the kernel logs the registers of a program a fault or
       # trap killed: this prints them, with the source line of pc and lr in
       # debug (release binaries are stripped, so there it prints ??).
@@ -164,6 +182,17 @@ jobs:
           ninja -k 0 regress-pending && exit 0
           sh tests/regress/pending.sh $(awk '{ sub(/#.*/, "") } $2 == "pending" { print "build/regress/" $1 }' tests/regress/manifest)
           exit 1
+      # The pending regress programs are the only binaries this job links,
+      # so with no pending id there is nothing to check, and elfcheck would
+      # fail on a build/ with no binary.
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -z "$(awk '{ sub(/#.*/, "") } $2 == "pending" { print $1 }' tests/regress/manifest)" ]; then
+            echo "No pending regress programs, so no binary to check."
+            exit 0
+          fi
+          sh ci/elfcheck.sh build
 
   # The aarch64 suites under qemu-user on an x86_64 runner: a smoke lane
   # beside the aarch64-native jobs, which are the aarch64 checks of record.
@@ -241,6 +270,11 @@ jobs:
             echo "A gating regress program skipped a test under qemu-user."
             exit 1
           fi
+      # As in the aarch64-native job. The runner's x86_64 readelf reads
+      # aarch64 binaries too.
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck.sh build
 
   aarch64-cross:
     name: aarch64 cross builds (release + tiny)
@@ -249,14 +283,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc gcc-aarch64-linux-gnu
       # Ubuntu's own strip and objcopy handle only x86_64, so these links pass
       # only with the aarch64-linux-gnu- tools configure takes from CC's
       # prefix. Each mode builds the default target and the suites. Every
       # suite must then be an aarch64 binary with no symbol table, and in
-      # tiny mode with no section headers.
+      # tiny mode with no section headers, and every binary must pass
+      # ci/elfcheck.sh. A mode that fails elfcheck fails the step only after
+      # the other mode is built and checked too.
       - name: Build (aarch64 release and tiny)
         run: |
+          elfcheck_failed=
           for mode in release tiny; do
             ./configure clean
             CC=aarch64-linux-gnu-gcc ./configure "$mode"
@@ -272,7 +309,12 @@ jobs:
               fi
             done
             echo "$mode: every suite is a stripped aarch64 binary"
+            sh ci/elfcheck.sh build || elfcheck_failed="$elfcheck_failed $mode"
           done
+          if [ -n "$elfcheck_failed" ]; then
+            echo "ci/elfcheck.sh failed in:$elfcheck_failed"
+            exit 1
+          fi
       # lightbox still configures lightc with ARCH set. ARCH must equal CC's
       # target arch: lightbox's line builds, and an ARCH that names another
       # arch stops configure.
@@ -285,6 +327,15 @@ jobs:
             echo "configure accepted ARCH=x86_64 with an aarch64 compiler"
             exit 1
           fi
+      # ci/elfcheck-test.sh links small x86_64 and aarch64 programs that
+      # each break one rule of ci/elfcheck.sh, one of them with lightc
+      # 0.1.0's ALIGN(4096) before .data, and checks that elfcheck fails
+      # each on that rule alone and passes the good ones, among them a
+      # shared object with PT_TLS. It runs whether or not a step above
+      # failed.
+      - name: Check that ci/elfcheck.sh catches bad binaries
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck-test.sh gcc aarch64-linux-gnu-gcc
 
   abi-check:
     name: UAPI ABI check (x86_64 + aarch64)
@@ -347,8 +398,9 @@ jobs:
       - name: Configure (release)
         run: ./configure release
       # Installs into a temporary DESTDIR, then builds with only the installed
-      # lightc.pc's flags: hello must be a static EXEC that runs and exits 0,
-      # and a thread_local program must fail to link.
+      # lightc.pc's flags: hello must be a static EXEC that passes
+      # ci/elfcheck.sh, runs and exits 0, and a thread_local program must
+      # fail to link.
       - name: Install and build consumers with pkg-config
         run: sh ci/consumer.sh
 
@@ -406,6 +458,9 @@ jobs:
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: ninja regress
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck.sh build
       - name: Compile each public header alone
         if: ${{ !cancelled() && matrix.mode == 'debug' }}
         run: sh ci/headers.sh clang

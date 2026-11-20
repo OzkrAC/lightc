@@ -33,6 +33,8 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 
 `sh ci/headers.sh` compiles each public header alone, as C23 with `-Wpedantic -Werror` and as C17 with `-Werror`, so a header that uses something it does not include fails. The headers use C23's `[[attribute]]` syntax, so a program compiled as C17 needs a compiler that takes it there as an extension, GCC 14 or newer or clang; GCC 13 rejects it before C23, and the script then compiles as C23 only. CI runs it with GCC 13, GCC 14, the aarch64 cross compiler (GCC 13) and clang.
 
+`sh ci/elfcheck.sh build` reads the program headers of every ELF executable and shared object under `build/`, found by their ELF header, not their names. An executable fails on a writable and executable header, a missing or executable `PT_GNU_STACK` (kernels before 5.8 make every readable mapping executable when it is missing), a `PT_TLS` header, or an R E and an RW `PT_LOAD` that touch the same page: 64 KiB on aarch64, where kernels use 4, 16 or 64 KiB pages, and 4 KiB on x86_64. A shared object fails only on the first two, so it may have `PT_TLS`. Each failure names the file and the rule, and the script also fails on a file it cannot read and when it finds no binary. CI runs it on the binaries of every job that builds lightc and on the pkg-config consumer's hello, and `sh ci/elfcheck-test.sh gcc aarch64-linux-gnu-gcc` checks that it fails binaries that break each rule, for that rule, and passes good ones.
+
 ## Modules
 
 ### Core (`include/lightc/`)
