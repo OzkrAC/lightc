@@ -13,14 +13,15 @@ on:
 # check, and branch protection then waits for a check that never comes.
 jobs:
   # Every build mode on x86_64, with GCC 13 (the runner's gcc) and GCC 14.
-  # Each cell builds the default target, then runs the suites and the gating
-  # regress programs. tiny runs them too: the aarch64-cross job also builds
-  # tiny, with its linker script, -Os and stripped section headers, but it
-  # cannot run what it builds, and only running the binaries shows that
-  # they work. ubsan makes every -fsanitize=undefined
-  # check a trap, so a program that hits undefined behavior dies with
-  # SIGILL and its suite fails. Then ci/elfcheck.sh checks the program
-  # headers of every binary the cell built.
+  # Each cell builds the default target, then runs the suites, the gating
+  # regress programs and the examples that check their own results. tiny
+  # runs them too: the aarch64-cross job also builds tiny, with its linker
+  # script, -Os and stripped section headers, but it cannot run what it
+  # builds, and only running the binaries shows that they work. ubsan makes
+  # every -fsanitize=undefined check a trap, so a program that hits
+  # undefined behavior dies with SIGILL and its suite fails. Then
+  # ci/elfcheck.sh checks the program headers of every binary the cell
+  # built.
   x86_64:
     name: x86_64 gcc ${{ matrix.gcc }} ${{ matrix.mode }}
     runs-on: ubuntu-24.04
@@ -52,6 +53,14 @@ jobs:
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: ninja regress
+      # The examples that check their own results, and lightio_test: a
+      # failed check makes its program exit 1 (see examples/checks.h).
+      # heap.example skips its heap_pages_reclaimed check in release and
+      # tiny, which keep no heap statistics. This also runs when a step
+      # above failed.
+      - name: Run examples
+        if: ${{ !cancelled() }}
+        run: ninja smoke
       # Every ELF executable and shared object in build/, which by now holds
       # the default target, the suites and the regress programs: no RWX
       # header and a GNU_STACK RW header, and in an executable no PT_TLS
@@ -75,7 +84,8 @@ jobs:
   # required too. The runner's kernel has io_uring, user namespaces and
   # seccomp, so no case may skip. As on x86_64, LIGHTC_TEST_ALLOW_SKIP
   # stays unset, so a suite that skips every test fails, and the steps
-  # below also fail on any single SKIP: line.
+  # below also fail on any single SKIP: line, but for the one check that
+  # release builds skip (see Run examples).
   aarch64-native:
     name: aarch64 native ${{ matrix.mode }}
     runs-on: ubuntu-24.04-arm
@@ -137,6 +147,30 @@ jobs:
             echo "A gating regress program skipped a test."
             exit 1
           fi
+      # The examples that check their own results, and lightio_test. An
+      # example prints a skipped check as "NAME SKIP: REASON", and this
+      # fails on any such line but one: release keeps no heap statistics
+      # (LC_STATS), so there heap.example skips heap_pages_reclaimed.
+      - name: Run examples
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          ninja smoke 2>&1 | tee build/smoke.log
+          awk -v mode='${{ matrix.mode }}' '
+              /^--- build\/[^ ]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
+              /(^|[ \t])SKIP:/ {
+                  if (mode == "release" && prog == "heap.example" && $1 == "heap_pages_reclaimed") {
+                      print prog ": " $0 " (release has no LC_STATS)"
+                      allowed++
+                      next
+                  }
+                  print prog ": " $0
+                  skips++
+              }
+              END {
+                  if (skips) { print "Checks skipped: " skips ". On this runner every check must run."; exit 1 }
+                  print (allowed ? "No other check skipped." : "No check skipped.")
+              }' build/smoke.log
       # As on x86_64, but an executable's R E and RW PT_LOAD must not share
       # a 64 KiB page. On a 4 KiB page kernel, such as Ubuntu's arm64
       # kernel, a binary that breaks this still runs and passes its tests.
@@ -270,6 +304,26 @@ jobs:
             echo "A gating regress program skipped a test under qemu-user."
             exit 1
           fi
+      # The examples that check their own results, and lightio_test.
+      # qemu-user has no io_uring, so async.example and lightio_test skip
+      # every check, as test_async and test_lightio skip every test, and
+      # only here LIGHTC_TEST_ALLOW_SKIP lets them. Every check of the other
+      # programs must run and pass. This debug build keeps heap statistics,
+      # so heap.example's heap_pages_reclaimed runs too, and the step fails
+      # on a SKIP: line of any other program. The output goes to
+      # build/smoke.log, so these skips are not counted against
+      # ci/qemu-skips.txt.
+      - name: Run examples
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          LIGHTC_TEST_ALLOW_SKIP="async.example lightio_test" ninja smoke 2>&1 | tee build/smoke.log
+          awk '/^--- build\/[^ ]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
+               /(^|[ \t])SKIP:/ && prog != "async.example" && prog != "lightio_test" { print prog ": " $0; skips++ }
+               END {
+                   if (skips) { print "Checks skipped: " skips ". Under qemu-user only the io_uring programs may skip."; exit 1 }
+                   print "No program but async.example and lightio_test skipped a check."
+               }' build/smoke.log
       # As in the aarch64-native job. The runner's x86_64 readelf reads
       # aarch64 binaries too.
       - name: Check the program headers of every binary
@@ -458,6 +512,9 @@ jobs:
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: ninja regress
+      - name: Run examples
+        if: ${{ !cancelled() }}
+        run: ninja smoke
       - name: Check the program headers of every binary
         if: ${{ !cancelled() }}
         run: sh ci/elfcheck.sh build

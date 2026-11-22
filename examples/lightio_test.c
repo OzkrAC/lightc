@@ -1,12 +1,14 @@
 #include <lightio/lightio.h>
 #include <lightc/print.h>
 #include <lightc/string.h>
-#include <lightc/format.h>
+#include <lightc/async.h>
 #include <lightc/syscall.h>
 #include <lightc/socket.h>
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
+
+#include "checks.h"
 
 #define S(literal) literal, sizeof(literal) - 1
 
@@ -277,48 +279,29 @@ int main(int argc, char **argv, char **envp) {
     lc_print_line(STDOUT, S("lightio self-test"));
     lc_print_line(STDOUT, S("================="));
 
-    int32_t passed = 0;
-    int32_t failed = 0;
+    /* lightio runs on io_uring. Without it every test skips: ENOSYS when
+     * the kernel has none, nor has qemu-user, EPERM when this process may
+     * not use it (kernel.io_uring_disabled, or a seccomp filter). */
+    lc_result_ptr probe = lc_async_ring_create(4);
+    const char *no_io_uring = NULL;
+    if (probe.error == LC_ERR_NOSYS) no_io_uring = "no io_uring here (ENOSYS)";
+    if (probe.error == LC_ERR_PERM) no_io_uring = "io_uring is not allowed here (EPERM)";
+    if (lc_ptr_is_ok(probe)) lc_async_ring_destroy(probe.value);
 
     /* Test 1: basic echo */
-    lc_print_string(STDOUT, S("echo_roundtrip ... "));
-    if (test_echo()) {
-        lc_print_line(STDOUT, S("PASS"));
-        passed++;
-    } else {
-        lc_print_line(STDOUT, S("FAIL"));
-        failed++;
-    }
+    lc_print_string(STDOUT, S("echo_roundtrip"));
+    if (no_io_uring) say_skip(no_io_uring);
+    else say_pass_fail(test_echo());
 
     /* Test 2: concurrent clients */
-    lc_print_string(STDOUT, S("concurrent_echo ... "));
-    if (test_concurrent()) {
-        lc_print_line(STDOUT, S("PASS"));
-        passed++;
-    } else {
-        lc_print_line(STDOUT, S("FAIL"));
-        failed++;
-    }
+    lc_print_string(STDOUT, S("concurrent_echo"));
+    if (no_io_uring) say_skip(no_io_uring);
+    else say_pass_fail(test_concurrent());
 
     /* Test 3: multi-threaded server */
-    lc_print_string(STDOUT, S("threaded_echo ... "));
-    if (test_threaded()) {
-        lc_print_line(STDOUT, S("PASS"));
-        passed++;
-    } else {
-        lc_print_line(STDOUT, S("FAIL"));
-        failed++;
-    }
+    lc_print_string(STDOUT, S("threaded_echo"));
+    if (no_io_uring) say_skip(no_io_uring);
+    else say_pass_fail(test_threaded());
 
-    /* Summary */
-    lc_print_newline(STDOUT);
-    char msg[128];
-    lc_format fmt = lc_format_start(msg, sizeof(msg));
-    lc_format_add_unsigned(&fmt, (uint64_t)passed);
-    lc_format_add_text(&fmt, " passed, ");
-    lc_format_add_unsigned(&fmt, (uint64_t)failed);
-    lc_format_add_text(&fmt, " failed");
-    lc_print_line(STDOUT, msg, lc_format_finish(&fmt));
-
-    return failed > 0 ? 1 : 0;
+    return checks_summary();
 }

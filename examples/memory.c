@@ -6,15 +6,9 @@
 #include <lightc/print.h>
 #include <lightc/memory.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed) {
-        lc_print_line(STDOUT, S(" PASS"));
-    } else {
-        lc_print_line(STDOUT, S(" FAIL"));
-    }
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -27,7 +21,7 @@ int main(int argc, char **argv, char **envp) {
 
     lc_print_string(STDOUT, S("free_pages"));
     lc_free_pages(pages, 2);
-    lc_print_line(STDOUT, S(" PASS"));
+    say_pass_fail(true);
 
     /* --- Arena create --- */
     lc_arena arena = lc_arena_create(4096);
@@ -99,6 +93,5 @@ int main(int argc, char **argv, char **envp) {
     lc_arena_destroy(&arena);
     say_pass_fail(arena.base == NULL && arena.capacity == 0 && arena.used == 0);
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

@@ -30,4 +30,5 @@
 RT-main-exit            gating
 RT-fchmodat-flags       gating
 FMT-print-double-oob    gating
+IO-dirent-align         gating
 TIME-sleep-eintr        pending

@@ -6,12 +6,9 @@
 #include <lightc/print.h>
 #include <lightc/format.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed) lc_print_line(STDOUT, S(" PASS"));
-    else lc_print_line(STDOUT, S(" FAIL"));
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 /* Helper: format, finish, and check result matches expected string */
 static bool check(lc_format *fmt, const char *expected) {
@@ -205,6 +202,5 @@ int main(int argc, char **argv, char **envp) {
     lc_print_string(STDOUT, S("  "));
     lc_print_string(STDOUT, buf, len);
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

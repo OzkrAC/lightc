@@ -358,6 +358,11 @@ lc_result lc_file_get_size(const char *path) {
 /*
  * The kernel's getdents64 returns entries in this format.
  * We define it here rather than importing kernel headers.
+ *
+ * Only its offsets are used. getdents64 starts each record at a multiple
+ * of 8 from the start of the buffer, but lc_directory's buffer follows an
+ * int32_t, at offset 4, so every record is 4 bytes off this struct's
+ * alignment and must not be read through a pointer to it (IO-dirent-align).
  */
 struct linux_dirent64 {
     uint64_t d_ino;
@@ -386,17 +391,19 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
     for (;;) {
         /* If we have data in the buffer, return the next entry */
         if (dir->position < dir->filled) {
-            struct linux_dirent64 *d = (struct linux_dirent64 *)(dir->buffer + dir->position);
+            const uint8_t *record = dir->buffer + dir->position;
+            uint16_t reclen;
+            lc_bytes_copy(&reclen, record + offsetof(struct linux_dirent64, d_reclen), sizeof(reclen));
             /* Guard against a corrupt record: d_reclen == 0 would spin forever,
              * and a record claiming to extend past the filled bytes would read
              * out of bounds. Either means the stream is unusable — stop. */
-            if (d->d_reclen == 0 || dir->position + d->d_reclen > dir->filled) {
+            if (reclen == 0 || dir->position + reclen > dir->filled) {
                 dir->done = true;
                 return false;
             }
-            entry->name = d->d_name;
-            entry->type = d->d_type;
-            dir->position += d->d_reclen;
+            entry->name = (const char *)record + offsetof(struct linux_dirent64, d_name);
+            entry->type = record[offsetof(struct linux_dirent64, d_type)];
+            dir->position += reclen;
             return true;
         }
 

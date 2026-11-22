@@ -7,12 +7,9 @@
 #include <lightc/format.h>
 #include <lightc/time.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed) lc_print_line(STDOUT, S(" PASS"));
-    else lc_print_line(STDOUT, S(" FAIL"));
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -124,6 +121,5 @@ int main(int argc, char **argv, char **envp) {
     lc_print_newline(STDOUT);
 
     lc_print_newline(STDOUT);
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

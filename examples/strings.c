@@ -4,12 +4,10 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 
+#include "checks.h"
+
 static void say(const char *s) {
     lc_kernel_write_bytes(STDOUT, s, lc_string_length(s));
-}
-
-static void say_pass_fail(bool passed) {
-    say(passed ? " PASS\n" : " FAIL\n");
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -90,6 +88,5 @@ int main(int argc, char **argv, char **envp) {
     say_pass_fail(lc_bytes_compare("abc", "abc", 3) == 0
                && lc_bytes_compare("abc", "abd", 3) < 0);
 
-    say("all passed\n");
-    return 0;
+    return checks_summary();
 }

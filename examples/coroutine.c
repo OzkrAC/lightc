@@ -6,14 +6,9 @@
 #include <lightc/print.h>
 #include <lightc/coroutine.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed)
-        lc_print_line(STDOUT, S(" PASS"));
-    else
-        lc_print_line(STDOUT, S(" FAIL"));
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 /* ===================================================================
  * Test 1: basic_yield — two coroutines interleave via yield
@@ -327,6 +322,5 @@ int main(int argc, char **argv, char **envp) {
     lc_print_string(STDOUT, S("argument_passing"));
     say_pass_fail(test_argument_passing());
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

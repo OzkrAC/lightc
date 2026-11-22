@@ -9,14 +9,9 @@
 #include <lightc/time.h>
 #include <stdatomic.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed)
-        lc_print_line(STDOUT, S(" PASS"));
-    else
-        lc_print_line(STDOUT, S(" FAIL"));
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 /* ================================================================
  * Free ports and bounded waits, for all three exchanges
@@ -530,6 +525,5 @@ int main(int argc, char **argv, char **envp) {
     }
     say_pass_fail(ok);
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

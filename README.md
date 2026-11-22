@@ -17,8 +17,11 @@ Requires GCC and ninja.
 ninja                # build everything
 ninja test           # run all tests (171 tests across 10 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
+ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
 ```
+
+`ninja smoke` runs the examples that check their own results, and `lightio_test`, through `tests/run.sh`, as `ninja test` runs the suites. Each prints a line per check that ends in `PASS`, `FAIL` or `SKIP:` and a reason, then the summary of `tests/test.h` (see `examples/checks.h`), and exits 1 when a check fails. Without io_uring, `async.example` and `lightio_test` skip every check, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names them, as in `LIGHTC_TEST_ALLOW_SKIP="async.example lightio_test"`. Release and tiny builds keep no heap statistics (`LC_STATS`), so there `heap.example` skips its `heap_pages_reclaimed` check. The other examples (`hello`, `syscalls`, `print`, `heapviz`, the servers `httpd`, `lightio_echo` and `lightio_http`, and the benchmarks) print or serve without checking anything, so smoke does not run them.
 
 `configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where `ninja all tests` builds everything, the test suites included, without running anything:
 

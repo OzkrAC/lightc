@@ -3,12 +3,9 @@
 #include <lightc/print.h>
 #include <lightc/library.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed) lc_print_line(STDOUT, S(" PASS"));
-    else lc_print_line(STDOUT, S(" FAIL"));
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -95,6 +92,5 @@ int main(int argc, char **argv, char **envp) {
     lc_result_ptr bad_r = lc_library_open("/nonexistent/path.so");
     say_pass_fail(lc_ptr_is_err(bad_r));
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

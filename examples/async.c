@@ -8,16 +8,11 @@
 #include <lightc/heap.h>
 #include <lightc/io.h>
 #include <lightc/async.h>
+#include <lightc/time.h>
+
+#include "checks.h"
 
 #define S(literal) literal, sizeof(literal) - 1
-
-static void say_pass_fail(bool passed) {
-    if (passed) {
-        lc_print_line(STDOUT, S(" PASS"));
-    } else {
-        lc_print_line(STDOUT, S(" FAIL"));
-    }
-}
 
 static const char *test_read_file  = "/tmp/lightc_async_read.txt";
 static const char *test_write_file = "/tmp/lightc_async_write.txt";
@@ -36,6 +31,14 @@ int main(int argc, char **argv, char **envp) {
 
     lc_print_string(STDOUT, S("ring_create"));
     lc_result_ptr ring_r = lc_async_ring_create(8);
+    /* ENOSYS: the kernel has no io_uring, nor has qemu-user. EPERM: this
+     * process may not use it (kernel.io_uring_disabled, or a seccomp
+     * filter). Either way there is nothing to run. */
+    if (ring_r.error == LC_ERR_NOSYS || ring_r.error == LC_ERR_PERM) {
+        say_skip(ring_r.error == LC_ERR_NOSYS ? "no io_uring here (ENOSYS)"
+                                              : "io_uring is not allowed here (EPERM)");
+        return checks_summary();
+    }
     lc_async_ring *ring = ring_r.value;
     ok = !lc_ptr_is_err(ring_r);
     say_pass_fail(ok);
@@ -193,9 +196,12 @@ int main(int argc, char **argv, char **envp) {
     /* Flush to kernel so the operation actually runs */
     lc_async_flush(ring);
 
-    /* Poll until we get the completion */
+    /* Poll until we get the completion. The kernel may hand the read to a
+     * worker thread, which a busy machine can hold back, so poll for up to
+     * a second rather than a number of times. */
     uint32_t peek_count = 0;
-    for (int attempts = 0; attempts < 100000; attempts++) {
+    int64_t poll_start = lc_time_start_timer();
+    while (lc_time_elapsed_milliseconds(poll_start) < 1000) {
         peek_count = lc_async_peek(ring, results, 8);
         if (peek_count > 0) break;
     }
@@ -301,6 +307,5 @@ int main(int argc, char **argv, char **envp) {
     lc_async_ring_destroy(NULL);
     say_pass_fail(true);
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    return checks_summary();
 }

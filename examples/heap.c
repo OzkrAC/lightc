@@ -6,15 +6,9 @@
 #include <lightc/print.h>
 #include <lightc/heap.h>
 
-#define S(literal) literal, sizeof(literal) - 1
+#include "checks.h"
 
-static void say_pass_fail(bool passed) {
-    if (passed) {
-        lc_print_line(STDOUT, S(" PASS"));
-    } else {
-        lc_print_line(STDOUT, S(" FAIL"));
-    }
-}
+#define S(literal) literal, sizeof(literal) - 1
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -28,12 +22,12 @@ int main(int argc, char **argv, char **envp) {
 
     lc_print_string(STDOUT, S("heap_free_basic"));
     lc_heap_free(num);
-    lc_print_line(STDOUT, S(" PASS"));
+    say_pass_fail(true);
 
     /* --- Free NULL is safe --- */
     lc_print_string(STDOUT, S("heap_free_null"));
     lc_heap_free(NULL);
-    lc_print_line(STDOUT, S(" PASS"));
+    say_pass_fail(true);
 
     /* --- Allocate zeroed --- */
     lc_print_string(STDOUT, S("heap_allocate_zeroed"));
@@ -120,7 +114,7 @@ int main(int argc, char **argv, char **envp) {
 
     lc_print_string(STDOUT, S("heap_large_free"));
     lc_heap_free(big);
-    lc_print_line(STDOUT, S(" PASS"));
+    say_pass_fail(true);
 
     /* --- Reallocate: grow within same bucket --- */
     lc_print_string(STDOUT, S("heap_reallocate_same_bucket"));
@@ -227,38 +221,53 @@ int main(int argc, char **argv, char **envp) {
     for (int i = 0; i < MULTI_COUNT; i++) lc_heap_free(multi[i]);
     say_pass_fail(ok);
 
-    /* --- Reclamation: verify memory returns to OS --- */
+    /* --- Reclamation: emptied pages go back to the OS --- */
     lc_print_string(STDOUT, S("heap_reclamation"));
     /* Allocate a large number of blocks across many pages */
     #define RECLAIM_COUNT 8000
     void *rptrs[RECLAIM_COUNT];
-    ok = true;
-    for (int i = 0; i < RECLAIM_COUNT; i++) {
+    int allocated = 0;
+    while (allocated < RECLAIM_COUNT) {
         lc_result_ptr r = lc_heap_allocate(100);
-        rptrs[i] = r.value;
-        if (lc_ptr_is_err(r)) { ok = false; break; }
-        lc_bytes_fill(rptrs[i], 0xDD, 100);
+        if (lc_ptr_is_err(r)) break;
+        rptrs[allocated] = r.value;
+        lc_bytes_fill(rptrs[allocated], 0xDD, 100);
+        allocated++;
     }
-    /* Free all — pages should be reclaimed via madvise */
-    for (int i = 0; i < RECLAIM_COUNT; i++) lc_heap_free(rptrs[i]);
-    /* Allocate again — if reclamation worked, the OS gave back
-     * physical pages via madvise and the new allocations get
-     * fresh zero pages from the kernel. */
-    for (int i = 0; i < RECLAIM_COUNT; i++) {
+    ok = allocated == RECLAIM_COUNT;
+    /* Free all. Each page that empties goes back to the OS through
+     * madvise, except one per size class, which the heap keeps for the
+     * next allocation. */
+    lc_heap_stats before, after;
+    lc_heap_get_stats(&before);
+    for (int i = 0; i < allocated; i++) lc_heap_free(rptrs[i]);
+    lc_heap_get_stats(&after);
+    /* Allocate again, from the page kept and the pages given back. As
+     * with any reused block, a block may still hold old bytes, so this
+     * checks only that every allocation succeeds. Free just the blocks
+     * it got. */
+    allocated = 0;
+    while (allocated < RECLAIM_COUNT) {
         lc_result_ptr r = lc_heap_allocate(100);
-        rptrs[i] = r.value;
-        if (lc_ptr_is_err(r)) { ok = false; break; }
-        /* After madvise + re-mmap touch, kernel gives zero pages.
-         * Verify the old 0xDD fill is gone. */
-        uint8_t *p = rptrs[i];
-        if (p[0] != 0 || p[50] != 0 || p[99] != 0) {
-            ok = false;
-            break;
-        }
+        if (lc_ptr_is_err(r)) break;
+        rptrs[allocated++] = r.value;
     }
-    for (int i = 0; i < RECLAIM_COUNT; i++) lc_heap_free(rptrs[i]);
+    ok = ok && allocated == RECLAIM_COUNT;
+    for (int i = 0; i < allocated; i++) lc_heap_free(rptrs[i]);
     say_pass_fail(ok);
 
-    lc_print_line(STDOUT, S("all passed"));
-    return 0;
+    /* --- The heap statistics count the pages given back --- */
+    lc_print_string(STDOUT, S("heap_pages_reclaimed"));
+#if LC_STATS
+    say_pass_fail(after.heap_pages_reclaimed > before.heap_pages_reclaimed);
+    lc_print_string(STDOUT, S("  pages given back: "));
+    lc_print_unsigned(STDOUT, after.heap_pages_reclaimed - before.heap_pages_reclaimed);
+    lc_print_newline(STDOUT);
+#else
+    /* LC_STATS is off when NDEBUG is defined, as in release and tiny
+     * builds, and lc_heap_get_stats then zeroes every counter. */
+    say_skip("LC_STATS is off, so the heap counts no reclaimed pages");
+#endif
+
+    return checks_summary();
 }

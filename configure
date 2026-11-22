@@ -9,6 +9,13 @@
 #   ./configure ubsan        — undefined behavior traps, debug symbols
 #   ./configure clean        — remove build artifacts
 #
+# Then, in the tree root:
+#   ninja                    — build the library and the examples
+#   ninja test               — run the test suites
+#   ninja regress            — run the regress programs of fixed defects
+#   ninja smoke              — run the examples that check their own results
+#   ninja bench              — run the benchmarks
+#
 # Environment (an empty value counts as unset):
 #   CC       — the compiler (default gcc). It sets the target: the arch is
 #              the first field of `$CC -dumpmachine`, x86_64 or aarch64.
@@ -471,6 +478,18 @@ rule run_tests
   pool = console
 
 build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so tests/run.sh
+
+# --- Smoke tests: the examples that check their own results ---
+
+# ninja smoke runs them and lightio_test through tests/run.sh, as ninja
+# test runs the suites. Each prints a summary in the format of tests/test.h
+# (see examples/checks.h) and exits 1 when a check fails. library.example
+# loads build/test_plugin.so, by a path relative to the tree root, where
+# ninja runs it. Without io_uring, async.example and lightio_test skip
+# every check, which fails the run unless LIGHTC_TEST_ALLOW_SKIP names
+# them, as in LIGHTC_TEST_ALLOW_SKIP="async.example lightio_test".
+build smoke: run_tests \$builddir/async.example \$builddir/containers.example \$builddir/coroutine.example \$builddir/format.example \$builddir/heap.example \$builddir/io.example \$builddir/library.example \$builddir/log.example \$builddir/memory.example \$builddir/socket.example \$builddir/strings \$builddir/thread.example \$builddir/time.example \$builddir/lightio_test | \$builddir/test_plugin.so tests/run.sh
+  description = Running examples
 
 # --- Regress programs ---
 
