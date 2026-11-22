@@ -2,7 +2,7 @@
 
 A freestanding C runtime for Linux. No libc, no linker scripts from the system, no external dependencies. Everything from `_start` to `exit` is implemented from scratch using raw Linux syscalls.
 
-Targets x86_64 and aarch64. A tiny hello-world binary is 415 bytes.
+Targets x86_64 and aarch64. Built with `./configure tiny`, the hello-world example is a static binary of 4640 bytes in CI's `x86_64 gcc 14 tiny` job: a measured size, not a limit (see below for where it comes from).
 
 ## Building
 
@@ -14,16 +14,19 @@ Requires GCC and ninja.
 ./configure tiny     # -Os, minimal binary size
 ./configure ubsan    # -O1, undefined behavior checks that trap, safety checks on
 
-ninja                # build everything
-ninja test           # run all tests (171 tests across 10 suites)
+ninja                # build the library and the examples, not the test suites
+ninja tests          # build the test suites without running them
+ninja test           # build and run the test suites (274 tests in 20 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
 ```
 
+The size of the tiny hello above and the test count in this block are measured, and CI reports both again on every run as notices, which the run's summary page and the annotations of each job's check run show. Every `x86_64 gcc N MODE` job gives the totals of `ninja test`, from the summary of `tests/run.sh`, and the `x86_64 gcc 13 tiny`, `x86_64 gcc 14 tiny` and `aarch64 cross builds (release + tiny)` jobs give the size in bytes of `build/hello`. The size quoted is that of the `x86_64 gcc 14 tiny` job, built by Ubuntu 24.04's GCC 14.2 and binutils 2.42. That GCC turns on `-fcf-protection` by default, which adds `endbr64` instructions to the code, so a GCC 14 without that default, such as upstream GCC, builds a smaller hello; another compiler, binutils or change to the sources also gives another size. The count is that of the x86_64 jobs, the same in every mode and with either GCC; on aarch64, `test_harness` leaves out its one x86_64-only test.
+
 `ninja smoke` runs the examples that check their own results, and `lightio_test`, through `tests/run.sh`, as `ninja test` runs the suites. Each prints a line per check that ends in `PASS`, `FAIL` or `SKIP:` and a reason, then the summary of `tests/test.h` (see `examples/checks.h`), and exits 1 when a check fails. Without io_uring, `async.example` and `lightio_test` skip every check, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names them, as in `LIGHTC_TEST_ALLOW_SKIP="async.example lightio_test"`. Release and tiny builds keep no heap statistics (`LC_STATS`), so there `heap.example` skips its `heap_pages_reclaimed` check. The other examples (`hello`, `syscalls`, `print`, `heapviz`, the servers `httpd`, `lightio_echo` and `lightio_http`, and the benchmarks) print or serve without checking anything, so smoke does not run them.
 
-`configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where `ninja all tests` builds everything, the test suites included, without running anything:
+`configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where `ninja all tests` builds the default target and the test suites without running anything:
 
 ```sh
 CC=aarch64-linux-gnu-gcc ./configure release
@@ -47,7 +50,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | Header | Description |
 |---|---|
 | `syscall.h` | Raw Linux syscall wrappers (inline assembly) |
-| `types.h` | `uint8_t`, `size_t`, `bool`, etc. with no `<stdint.h>` |
+| `types.h` | `uint8_t`, `size_t` and the like, from the compiler's own freestanding `<stdint.h>` and `<stddef.h>` (not libc's); `lc_sysret`, the version (`LC_VERSION_*`, `lc_version()`), and `result.h` |
 | `string.h` | String ops (`length`, `find`, `compare`) and byte ops (`copy`, `fill`, `compare`) via `__builtin_*` |
 | `memory.h` | Arena allocator (bump allocation, reset, inline fast path) and raw page allocation |
 | `heap.h` | General-purpose heap allocator with bucket allocator, large block cache, per-thread pages, optional statistics |
@@ -73,18 +76,24 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `ringbuf.h` | Fixed-capacity ring buffer |
 | `list.h` | Intrusive doubly-linked list |
 
+### Async I/O framework (`include/lightio/`)
+
+| Header | Description |
+|---|---|
+| `lightio.h` | Event loop over `io_uring` that runs one coroutine per TCP connection, with read, write and sleep calls that suspend only that coroutine, and a threaded mode with a ring per worker |
+
 ### Heap allocator
 
 The heap uses a segment/page architecture with thread-local ownership:
 
 - **Small allocations** (<=4096 bytes): bitmap-based bucket allocator across 29 size classes with ~1.25x geometric spacing. Each thread owns pages exclusively -- allocation and same-thread free require no locks. Cross-thread free uses a lock-free atomic push to a per-page remote free list.
-- **Large allocations** (>4096 bytes): direct `mmap`/`munmap` with a 16-entry LRU cache to avoid repeated syscalls.
+- **Large allocations** (>4096 bytes): direct `mmap`/`munmap`, with a 16-entry cache of freed mappings to avoid repeated syscalls. A request takes the smallest cached mapping that fits (best fit). When the cache is full, the smaller of the freed mapping and the smallest cached one is unmapped, so the cache keeps the largest.
 - **Debug mode** (`LC_HEAP_DEBUG`): double-free detection via magic validation, use-after-free detection via 0xCC poison fill.
 - **Statistics** (`LC_STATS`): optional per-allocation tracking with atomic counters (allocation counts, active bytes, peaks, large cache hit rate).
 
 ### Coroutines
 
-Stackful coroutines with per-coroutine `mmap`'d stacks and a guard page at the bottom. Context switching saves/restores only callee-saved registers (7 on x86_64, 13 on aarch64) via hand-written assembly. A yield between two coroutines takes ~5ns.
+Stackful coroutines with per-coroutine `mmap`'d stacks and a guard page at the bottom. Context switching saves/restores only callee-saved registers via hand-written assembly: 7 on x86_64 (rbx, rbp, r12-r15, rsp) and 21 on aarch64 (x19-x28, x29, x30, sp, d8-d15). A yield between two coroutines takes ~5ns.
 
 ## Build modes and compile-time flags
 

@@ -15,7 +15,8 @@
  *   lc_log(LC_LOG_INFO, "server started");
  *
  * Formatted (begin/commit pattern):
- *   lc_log_entry entry = lc_log_begin(LC_LOG_INFO);
+ *   lc_log_entry entry;
+ *   lc_log_begin(&entry, LC_LOG_INFO);
  *   lc_format_add_text(&entry.fmt, "port ");
  *   lc_format_add_unsigned(&entry.fmt, 8080);
  *   lc_log_commit(&entry);
@@ -23,6 +24,12 @@
  * Output:
  *   [INFO  tid:1234] server started
  *   [INFO  tid:1234] port 8080
+ *
+ * Do not copy the entry between begin and commit. lc_log_begin points
+ * entry.fmt at entry.buffer, so a copy's fmt still points into the
+ * original: text added through it goes to the original's buffer, or to
+ * dead stack once the original is out of scope, and committing the copy
+ * writes the copy's own buffer, which does not hold that text.
  */
 
 typedef enum {

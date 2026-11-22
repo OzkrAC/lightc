@@ -21,7 +21,9 @@ jobs:
   # every -fsanitize=undefined check a trap, so a program that hits
   # undefined behavior dies with SIGILL and its suite fails. Then
   # ci/elfcheck.sh checks the program headers of every binary the cell
-  # built.
+  # built. Each cell also reports, as notices, the numbers README.md and
+  # docs/index.html quote: the test totals, and in tiny the size of
+  # build/hello.
   x86_64:
     name: x86_64 gcc ${{ matrix.gcc }} ${{ matrix.mode }}
     runs-on: ubuntu-24.04
@@ -46,8 +48,50 @@ jobs:
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The output also goes to build/test.log, for the step below.
       - name: Run tests
-        run: ninja test
+        run: |
+          set -o pipefail
+          ninja test 2>&1 | tee build/test.log
+      # The numbers README.md and docs/index.html quote, as notices, which
+      # the run's summary page and the check run's annotations show to
+      # anyone: the totals of the last summary of tests/run.sh, and in tiny
+      # the size in bytes of build/hello, each with the compiler, and the
+      # linker for the size. A missing number gives a warning instead. This
+      # also runs when an earlier step failed or did not run, so a tiny cell
+      # reports its size even when no test ran, and it always exits 0, so it
+      # never fails the job.
+      - name: Report the measured numbers
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          cc=$("$CC" --version | head -n 1)
+          if [ -f build/test.log ]; then
+            awk -v cc="$cc" -v mode='${{ matrix.mode }}' '
+                /^Suites: [0-9]/ { suites = $0 }
+                /^Tests: +[0-9]/ { tests = $0 }
+                END {
+                    if (suites == "" || tests == "") {
+                        print "::warning title=Test totals::build/test.log has no summary of tests/run.sh"
+                        exit
+                    }
+                    gsub(/ +/, " ", suites)
+                    gsub(/ +/, " ", tests)
+                    print "::notice title=Test totals::" tests ". " suites ". (" mode ", " cc ")"
+                }' build/test.log
+          else
+            echo "::warning title=Test totals::no build/test.log"
+          fi
+          if [ '${{ matrix.mode }}' = tiny ]; then
+            if [ -f build/hello ]; then
+              size=$(wc -c < build/hello | tr -d ' ')
+              ld=$("$CC" -print-prog-name=ld)
+              echo "::notice title=Tiny hello size::build/hello is $size bytes (tiny, x86_64, $cc, $("$ld" --version | head -n 1))"
+            else
+              echo "::warning title=Tiny hello size::no build/hello"
+            fi
+          fi
+          exit 0
       # The programs of the fixed defects that tests/regress/manifest marks
       # gating. This also runs when a suite failed, so one run reports both.
       - name: Run regress programs
@@ -369,6 +413,25 @@ jobs:
             echo "ci/elfcheck.sh failed in:$elfcheck_failed"
             exit 1
           fi
+      # As in the x86_64 tiny jobs, a notice with the size in bytes of
+      # build/hello, here from the aarch64 tiny build the step above made
+      # last, before the step below cleans it. When build/ holds no aarch64
+      # tiny build, it gives a warning instead. This also runs when an
+      # earlier step failed or did not run, and it always exits 0, so it
+      # never fails the job.
+      - name: Report the measured numbers
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          cc=aarch64-linux-gnu-gcc
+          if [ -f build/hello ] && grep -q '^# Mode: tiny' build.ninja && grep -qx 'arch = aarch64' build.ninja; then
+            size=$(wc -c < build/hello | tr -d ' ')
+            ld=$("$cc" -print-prog-name=ld)
+            echo "::notice title=Tiny hello size::build/hello is $size bytes (tiny, aarch64, $("$cc" --version | head -n 1), $("$ld" --version | head -n 1))"
+          else
+            echo "::warning title=Tiny hello size::build/ holds no aarch64 tiny build/hello"
+          fi
+          exit 0
       # lightbox still configures lightc with ARCH set. ARCH must equal CC's
       # target arch: lightbox's line builds, and an ARCH that names another
       # arch stops configure.

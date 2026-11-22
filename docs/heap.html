@@ -52,7 +52,7 @@ A block freed by a thread other than its owner is pushed onto the page's remote-
 
 ### Large blocks {#large}
 
-A request whose block exceeds 4096 bytes gets its own `mmap`, with the true page count stored ahead of the header so `free` releases the exact extent. A freed large mapping goes into a 16-entry cache and is reused by the next large request of equal-or-larger size (best fit), avoiding the `mmap`/`munmap` round trip; when the cache is full the smallest entry is evicted and unmapped.
+A request whose block exceeds 4096 bytes gets its own `mmap`, with the true page count stored ahead of the header so `free` releases the exact extent. A freed large mapping goes into a 16-entry cache and is reused by the next large request it can hold, the smallest cached mapping that fits (best fit), avoiding the `mmap`/`munmap` round trip; when the cache is full, the smaller of the freed mapping and the smallest cached one is unmapped.
 
 ### Reclamation {#reclaim}
 

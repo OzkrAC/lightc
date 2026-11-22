@@ -150,7 +150,7 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 
 ## Types and strings {#types}
 
-`types.h` defines the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t`, `bool`/`true`/`false` and `NULL` **without** including `<stdint.h>` or `<stddef.h>` — the freestanding compiler builtins suffice. `lc_sysret` is an `int64_t`.
+`types.h` takes the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t` and `NULL` from `<stdint.h>` and `<stddef.h>`, which with `-ffreestanding` are the compiler's own headers, not libc's. `bool`, `true` and `false` are C23 keywords, and `result.h`, which `types.h` includes, also includes `<stdbool.h>`. `lc_sysret` is an `int64_t`.
 
 `string.h` provides string and byte operations that lower to the compiler's `__builtin_*` routines; lengths are explicit, so no API assumes NUL termination.
 

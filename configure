@@ -234,7 +234,7 @@ cat > build.ninja << EOF
 # Arch: ${ARCH_DIR}
 #
 # Usage:
-#   ninja          — build everything
+#   ninja          — build the library and the examples, not the tests
 #   ninja clean    — remove build artifacts
 
 arch = ${ARCH_DIR}
