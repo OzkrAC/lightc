@@ -4,6 +4,7 @@
 #include <lightc/string.h>
 #include <lightc/thread.h>
 #include <stdatomic.h>
+#include "kernel.h"          /* ARCH_SET_FS */
 
 /*
  * Block header — sits right before the pointer we return.
@@ -316,8 +317,6 @@ static void drain_remote_frees(lc_heap_page *page) {
  * x86_64: FS register points to lc_heap_local, %fs:0 reads self-pointer.
  * aarch64: TPIDR_EL0 holds lc_heap_local pointer directly.
  */
-
-#define ARCH_SET_FS 0x1002
 
 /*
  * Read/write the per-thread TLS pointer.

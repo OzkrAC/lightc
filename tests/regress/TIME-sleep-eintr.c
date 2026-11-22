@@ -18,13 +18,6 @@
 #include <lightc/syscall.h>
 #include <lightc/time.h>
 
-#ifndef SYS_setitimer
-#if defined(__x86_64__)
-#define SYS_setitimer 38
-#elif defined(__aarch64__)
-#define SYS_setitimer 103
-#endif
-#endif
 #define ITIMER_REAL 0
 
 #define SLEEP_MS    50

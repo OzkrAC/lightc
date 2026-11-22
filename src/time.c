@@ -219,8 +219,8 @@ void lc_time_sleep_milliseconds(int64_t ms) {
     ts.seconds     = ms / 1000;
     ts.nanoseconds = (ms % 1000) * 1000000;
 
-    /* Retry if interrupted by a signal (EINTR = -4) */
-    while (lc_kernel_sleep(&ts) == -4) {
+    /* Retry if interrupted by a signal */
+    while (lc_kernel_sleep(&ts) == -LC_ERR_INTR) {
         /* ts is not modified by our wrapper, but the kernel would update
          * the remaining time in the second argument. We pass 0 for that,
          * so just retry with the original duration. For short sleeps
@@ -233,7 +233,7 @@ void lc_time_sleep_microseconds(int64_t us) {
     ts.seconds     = us / 1000000;
     ts.nanoseconds = (us % 1000000) * 1000;
 
-    while (lc_kernel_sleep(&ts) == -4) {
+    while (lc_kernel_sleep(&ts) == -LC_ERR_INTR) {
         /* retry on EINTR */
     }
 }

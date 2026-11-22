@@ -38,6 +38,7 @@
 #define SYS_unshare           97   /* 1 arg */
 #define SYS_futex             98   /* 6 args */
 #define SYS_nanosleep         101  /* 2 args */
+#define SYS_setitimer         103  /* 3 args */
 #define SYS_clock_gettime     113  /* 2 args */
 #define SYS_kill              129  /* 2 args */
 #define SYS_rt_sigaction      134  /* 4 args */

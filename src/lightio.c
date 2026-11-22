@@ -9,13 +9,7 @@
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
-
-/* ========================================================================
- * io_uring opcodes needed by lightio
- * ======================================================================== */
-
-#define IORING_OP_TIMEOUT  11
-#define IORING_OP_ACCEPT   13
+#include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, lio_kernel_timespec */
 
 /* ========================================================================
  * Constants
@@ -54,12 +48,6 @@ typedef struct {
     lio_handler          handler;
     lio_stream           stream;
 } lio_slot;
-
-/* Kernel timespec layout for IORING_OP_TIMEOUT */
-typedef struct {
-    int64_t tv_sec;
-    int64_t tv_nsec;
-} lio_kernel_timespec;
 
 /* The event loop */
 struct lio_loop {

@@ -25,6 +25,7 @@
 #define SYS_writev            20   /* 3 args */
 #define SYS_madvise           28   /* 3 args */
 #define SYS_nanosleep         35   /* 2 args */
+#define SYS_setitimer         38   /* 3 args */
 #define SYS_getpid            39   /* 0 args */
 #define SYS_socket            41   /* 3 args */
 #define SYS_connect           42   /* 3 args */

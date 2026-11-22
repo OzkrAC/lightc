@@ -29,8 +29,9 @@
 #     include/uapi/asm-generic/unistd.h, or "-" when that arch has no such
 #     syscall. ARGS is how many arguments it takes, 0 to 6, as in the
 #     kernel's SYSCALL_DEFINE<ARGS>. The UAPI headers do not give it, so
-#     nothing checks ARGS against the kernel: check it by hand. It only goes
-#     in a comment in syscall_nr.h.
+#     nothing checks ARGS against the kernel: check it by hand. It goes in a
+#     comment in syscall_nr.h, and ci/abilint.sh fails on each call
+#     lc_syscallN(SYS_NAME, ...) whose N is not ARGS.
 #
 #   errno NAME VALUE DESCRIPTION
 #     An errno of asm-generic/errno-base.h or asm-generic/errno.h, in their
@@ -89,6 +90,7 @@ syscall accept4            288     242      4
 # time
 syscall clock_gettime      228     113      2
 syscall nanosleep          35      101      2
+syscall setitimer          38      103      3    # only tests/regress uses it
 
 # processes
 syscall execve             59      221      3

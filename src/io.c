@@ -2,6 +2,7 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/heap.h>
+#include "kernel.h"          /* struct linux_dirent64 */
 
 /* ========================================================================
  * Buffered Writer
@@ -356,21 +357,13 @@ lc_result lc_file_get_size(const char *path) {
  * ======================================================================== */
 
 /*
- * The kernel's getdents64 returns entries in this format.
- * We define it here rather than importing kernel headers.
- *
- * Only its offsets are used. getdents64 starts each record at a multiple
- * of 8 from the start of the buffer, but lc_directory's buffer follows an
- * int32_t, at offset 4, so every record is 4 bytes off this struct's
- * alignment and must not be read through a pointer to it (IO-dirent-align).
+ * getdents64 returns entries in the format of struct linux_dirent64
+ * (kernel.h). Only its offsets are used. getdents64 starts each record at
+ * a multiple of 8 from the start of the buffer, but lc_directory's buffer
+ * follows an int32_t, at offset 4, so every record is 4 bytes off this
+ * struct's alignment and must not be read through a pointer to it
+ * (IO-dirent-align).
  */
-struct linux_dirent64 {
-    uint64_t d_ino;
-    int64_t  d_off;
-    uint16_t d_reclen;
-    uint8_t  d_type;
-    char     d_name[];
-};
 
 lc_result lc_directory_open(lc_directory *dir, const char *path) {
     /* O_DIRECTORY makes the kernel reject a non-directory at open (-ENOTDIR),

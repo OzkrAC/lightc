@@ -1,14 +1,12 @@
 #include <lightc/memory.h>
 #include <lightc/syscall.h>
+#include "kernel.h"          /* LC_AT_NULL, LC_AT_PAGESZ */
 
 static size_t align_up(size_t value, size_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
 /* --- Runtime page size (AT_PAGESZ) --- */
-
-#define LC_AT_NULL    0
-#define LC_AT_PAGESZ  6
 
 /* Defaults to the compile-time assumption; lc_runtime_init overwrites it with
  * the kernel's real page size at startup. Reads after startup are single-writer

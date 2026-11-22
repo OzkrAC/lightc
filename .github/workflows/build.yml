@@ -401,8 +401,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc linux-libc-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       # abi_check.c checks every syscall number and errno value of
       # syscalls.def, through the headers generated from it and the lists
-      # generated into it. Each check also runs when one above failed, so
-      # one run reports every failure.
+      # generated into it, every macro of the public headers and of
+      # src/kernel.h that has a UAPI value, and the size and field offsets
+      # of every struct lightc shares with the kernel. Each check also runs
+      # when one above failed, so one run reports every failure.
       - name: Check x86_64
         run: gcc -std=c2x -ffreestanding -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only tests/abi_check.c
       - name: Check aarch64
@@ -440,6 +442,19 @@ jobs:
             echo "Run sh tools/gensyscalls.sh and commit the files it changes."
             exit 1
           fi
+      # Each lc_syscallN(SYS_name, ...) call in the tree must have the N
+      # that syscalls.def gives name, and each macro of the public headers
+      # and of src/kernel.h must be in one of the lists of abi_check.c,
+      # which check it or give the reason nothing can: see ci/abilint.sh.
+      - name: Check lc_syscallN arities and that every macro is checked
+        if: ${{ !cancelled() }}
+        run: sh ci/abilint.sh
+      # ci/abilint-test.sh plants wrong calls, unlisted macros and stale
+      # list entries in copies of the tree, and checks that the lint fails
+      # on each with the FAIL: lines expected, here under dash and mawk.
+      - name: Check that ci/abilint.sh catches planted mistakes
+        if: ${{ !cancelled() }}
+        run: sh ci/abilint-test.sh
 
   pkg-config-consumer:
     name: pkg-config consumer (install + link)

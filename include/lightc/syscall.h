@@ -123,7 +123,7 @@ static inline int32_t lc_kernel_get_process_id(void) {
 
 /* Fork the current process. Returns 0 in child, child pid in parent. */
 static inline lc_sysret lc_kernel_fork(void) {
-    return lc_syscall5(SYS_clone, 17 /* SIGCHLD */, 0, 0, 0, 0);
+    return lc_syscall5(SYS_clone, SIGCHLD, 0, 0, 0, 0);
 }
 
 /*
@@ -311,12 +311,17 @@ static inline int32_t lc_kernel_get_thread_id(void) {
 #define FUTEX_WAIT  0
 #define FUTEX_WAKE  1
 
+/*
+ * futex takes six arguments: uaddr, op, val, timeout, uaddr2 and val3.
+ * FUTEX_WAIT reads only the first four, FUTEX_WAKE the first three, and
+ * the rest are passed as 0. A NULL timeout waits with no time limit.
+ */
 static inline lc_sysret lc_kernel_futex_wait(int32_t *addr, int32_t expected) {
-    return lc_syscall4(SYS_futex, (int64_t)addr, FUTEX_WAIT, expected, 0);
+    return lc_syscall6(SYS_futex, (int64_t)addr, FUTEX_WAIT, expected, 0, 0, 0);
 }
 
 static inline lc_sysret lc_kernel_futex_wake(int32_t *addr, int32_t count) {
-    return lc_syscall3(SYS_futex, (int64_t)addr, FUTEX_WAKE, count);
+    return lc_syscall6(SYS_futex, (int64_t)addr, FUTEX_WAKE, count, 0, 0, 0);
 }
 
 /* --- Time --- */

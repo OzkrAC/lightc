@@ -1,6 +1,7 @@
 #include <lightc/thread.h>
 #include <lightc/syscall.h>
 #include <lightc/memory.h>
+#include "kernel.h"          /* CLONE_* */
 
 /*
  * clone flags for thread creation:
@@ -12,18 +13,8 @@
  *   CLONE_SYSVSEM       — share SysV semaphore undo
  *   CLONE_PARENT_SETTID — kernel stores tid at parent_tid before returning to parent
  *   CLONE_CHILD_CLEARTID — kernel clears child_tid to 0 on exit + futex wake
+ *   CLONE_SETTLS        — kernel sets the child's TLS register
  */
-#define CLONE_VM              0x00000100
-#define CLONE_FS              0x00000200
-#define CLONE_FILES           0x00000400
-#define CLONE_SIGHAND         0x00000800
-#define CLONE_THREAD          0x00010000
-#define CLONE_SYSVSEM         0x00040000
-#define CLONE_PARENT_SETTID   0x00100000
-#define CLONE_CHILD_CLEARTID  0x00200000
-
-#define CLONE_SETTLS          0x00080000
-
 #define CLONE_THREAD_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | \
                             CLONE_THREAD | CLONE_SYSVSEM | \
                             CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | \

@@ -1,8 +1,6 @@
 #include <lightc/signal.h>
 #include <lightc/syscall.h>
-
-/* SA_RESTORER flag — required on x86_64, not used on aarch64 */
-#define SA_RESTORER 0x04000000
+#include "kernel.h"          /* SA_RESTORER */
 
 /*
  * x86_64 requires a restorer trampoline that calls rt_sigreturn.
