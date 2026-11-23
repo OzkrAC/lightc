@@ -64,6 +64,9 @@ int64_t lc_time_elapsed_milliseconds(int64_t start);
 
 /* --- Formatting --- */
 
+/* YYYY is the year zero-padded to four digits, with a minus sign first for a
+ * year before 0: 0042, 2026, 10000, -0001, -10000. */
+
 /* Format date/time as "YYYY-MM-DD HH:MM:SS" into buf. Returns length written. */
 [[gnu::nonnull(1, 2)]]
 size_t lc_time_format(const lc_date_time *dt, char *buf, size_t buf_size);

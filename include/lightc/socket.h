@@ -88,7 +88,7 @@ lc_socket_address lc_socket_address_any(uint16_t port);
 
 /* --- Socket operations --- */
 
-/* Create a socket. value = fd on success. */
+/* Create a socket, close-on-exec. value = fd on success. */
 [[nodiscard]] lc_result lc_socket_create(int32_t type);
 
 /* Close a socket. */
@@ -103,13 +103,15 @@ void lc_socket_close(int32_t socket_fd);
 /* Start listening for connections (TCP). */
 [[nodiscard]] lc_result lc_socket_listen(int32_t socket_fd, int32_t backlog);
 
-/* Accept a connection (TCP). value = new fd, fills client_addr if non-NULL. */
+/* Accept a connection (TCP). value = new fd, close-on-exec; fills client_addr
+ * if non-NULL. */
 [[nodiscard]] lc_result lc_socket_accept(int32_t socket_fd, lc_socket_address *client_addr);
 
 /* Connect to a remote address (TCP client). */
 [[nodiscard]] lc_result lc_socket_connect(int32_t socket_fd, const lc_socket_address *addr);
 
-/* Send data on a connected socket. value = bytes sent. */
+/* Send data on a connected socket. value = bytes sent. A peer that closed
+ * gives LC_ERR_PIPE instead of a SIGPIPE. */
 [[nodiscard]] lc_result lc_socket_send(int32_t socket_fd, const void *buf, size_t count);
 
 /* Receive data from a connected socket. value = bytes received (0 on close). */

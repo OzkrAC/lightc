@@ -1,22 +1,25 @@
 /*
  * test_library.c — tests for lightc dynamic library loading.
  *
- * Loads test_plugin.so from the suite's own directory, the one argv[0]
- * names. The build puts the plugin beside the suite, so build/test_library
- * opens build/test_plugin.so from any current directory, and building the
- * suite builds the plugin.
- * The plugin exports: int plugin_add(int a, int b)
+ * Loads test_plugin.so and plugins/page64k.so from the suite's own
+ * directory, the one argv[0] names. The build puts the plugins beside the
+ * suite, so build/test_library opens build/test_plugin.so from any current
+ * directory, and building the suite builds the plugins.
+ * test_plugin.so exports: int plugin_add(int a, int b)
  */
 
 #include "test.h"
 #include <lightc/library.h>
 #include <lightc/syscall.h>
 #include <lightc/heap.h>
+#include <lightc/io.h>
 
-/* Set by main: the plugin, and the scratch file the malformed copies of it
- * are written to, both in the suite's directory. */
+/* Set by main: the plugin, the scratch file the malformed copies of it
+ * are written to, and the plugin of the RELRO test, all in the suite's
+ * directory. */
 static char plugin_path[4096];
 static char malformed_path[4096];
+static char relro_plugin_path[4096];
 #define PLUGIN_PATH plugin_path
 #define TMP_PATH    malformed_path
 
@@ -105,6 +108,79 @@ static void test_library_missing_symbol(void) {
 static void test_library_open_nonexistent(void) {
     lc_result_ptr r = lc_library_open("/nonexistent.so");
     TEST_ASSERT_PTR_ERR(r);
+}
+
+/* ===== test_library_relro_read_only ===== */
+
+/* Parses the hex number at *p, up to `end`, and moves *p past it. */
+static uint64_t parse_hex(const char **p, const char *end) {
+    uint64_t value = 0;
+    for (; *p < end; (*p)++) {
+        char c = **p;
+        if (c >= '0' && c <= '9')      value = value * 16 + (uint64_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') value = value * 16 + (uint64_t)(c - 'a' + 10);
+        else break;
+    }
+    return value;
+}
+
+/* Copies the permissions, such as "r-xp", of the mapping that holds
+ * `address` from /proc/self/maps into `perms`; false if no mapping does. */
+static bool mapping_permissions(const void *address, char perms[4]) {
+    uint8_t *data = NULL;
+    size_t size = 0;
+    if (lc_file_read_all("/proc/self/maps", &data, &size).error) return false;
+
+    bool found = false;
+    const char *p = (const char *)data, *end = p + size;
+    while (p < end && !found) {
+        /* "start-end perms offset dev inode path" */
+        uint64_t start = parse_hex(&p, end);
+        if (p < end && *p == '-') p++;
+        uint64_t stop = parse_hex(&p, end);
+        if (p < end && *p == ' ') p++;
+        if ((uintptr_t)address >= start && (uintptr_t)address < stop && end - p >= 4) {
+            lc_bytes_copy(perms, p, 4);
+            found = true;
+        }
+        while (p < end && *p++ != '\n') {}
+    }
+    lc_heap_free(data);
+    return found;
+}
+
+/* PT_GNU_RELRO is read-only once the loader has relocated it. The pointer
+ * table plugin_const_table is in it, filled by a RELATIVE relocation, and
+ * plugin_data is writable data after it. page64k.so is linked so that its
+ * RELRO ends on a page boundary for any page size up to 64 KiB, so on every
+ * kernel the table's page is RELRO alone. */
+static void test_library_relro_read_only(void) {
+    lc_result_ptr r = lc_library_open(relro_plugin_path);
+    TEST_REQUIRE_PTR_OK(r);
+    lc_library *lib = (lc_library *)r.value;
+
+    lc_result_ptr table = lc_library_find_symbol(lib, "plugin_const_table");
+    lc_result_ptr data = lc_library_find_symbol(lib, "plugin_data");
+    lc_result_ptr one = lc_library_find_symbol(lib, "plugin_one_address");
+    TEST_REQUIRE_PTR_OK(table);
+    TEST_REQUIRE_PTR_OK(data);
+    TEST_REQUIRE_PTR_OK(one);
+
+    char perms[4];
+    TEST_REQUIRE(mapping_permissions(table.value, perms));
+    TEST_ASSERT_STR_EQ(perms, 4, "r--p", 4);
+    TEST_REQUIRE(mapping_permissions(data.value, perms));
+    TEST_ASSERT_STR_EQ(perms, 4, "rw-p", 4);
+
+    /* The table was relocated before it was made read-only: its entry is
+     * the address of the plugin's one(), which plugin_one_address gives. */
+    typedef int (*one_fn)(void);
+    one_fn (*one_address)(void);
+    lc_bytes_copy(&one_address, &one.value, sizeof one_address);
+    const one_fn *entry = table.value;
+    TEST_ASSERT(*entry == one_address());
+
+    lc_library_close(lib);
 }
 
 /* ========================================================================
@@ -298,11 +374,13 @@ int main(int argc, char **argv, char **envp) {
     const char *argv0 = argc > 0 ? argv[0] : "";
     path_beside_suite(plugin_path, sizeof plugin_path, argv0, "test_plugin.so");
     path_beside_suite(malformed_path, sizeof malformed_path, argv0, "malformed_plugin.so");
+    path_beside_suite(relro_plugin_path, sizeof relro_plugin_path, argv0, "plugins/page64k.so");
 
     TEST_RUN(test_library_open_close);
     TEST_RUN(test_library_find_symbol);
     TEST_RUN(test_library_missing_symbol);
     TEST_RUN(test_library_open_nonexistent);
+    TEST_RUN(test_library_relro_read_only);
 
     /* Malformed-ELF hardening (C6) */
     TEST_RUN(test_library_roundtrip_control);

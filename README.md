@@ -16,15 +16,18 @@ Requires GCC and ninja.
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
-ninja test           # build and run the test suites (274 tests in 20 suites)
+ninja test           # build and run the test suites (277 tests in 20 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
+ninja api-check      # check that api/ is the snapshot of the public API
 ```
 
 The size of the tiny hello above and the test count in this block are measured, and CI reports both again on every run as notices, which the run's summary page and the annotations of each job's check run show. Every `x86_64 gcc N MODE` job gives the totals of `ninja test`, from the summary of `tests/run.sh`, and the `x86_64 gcc 13 tiny`, `x86_64 gcc 14 tiny` and `aarch64 cross builds (release + tiny)` jobs give the size in bytes of `build/hello`. The size quoted is that of the `x86_64 gcc 14 tiny` job, built by Ubuntu 24.04's GCC 14.2 and binutils 2.42. That GCC turns on `-fcf-protection` by default, which adds `endbr64` instructions to the code, so a GCC 14 without that default, such as upstream GCC, builds a smaller hello; another compiler, binutils or change to the sources also gives another size. The count is that of the x86_64 jobs, the same in every mode and with either GCC; on aarch64, `test_harness` leaves out its one x86_64-only test.
 
 `ninja smoke` runs the examples that check their own results, and `lightio_test`, through `tests/run.sh`, as `ninja test` runs the suites. Each prints a line per check that ends in `PASS`, `FAIL` or `SKIP:` and a reason, then the summary of `tests/test.h` (see `examples/checks.h`), and exits 1 when a check fails. Without io_uring, `async.example` and `lightio_test` skip every check, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names them, as in `LIGHTC_TEST_ALLOW_SKIP="async.example lightio_test"`. Release and tiny builds keep no heap statistics (`LC_STATS`), so there `heap.example` skips its `heap_pages_reclaimed` check. The other examples (`hello`, `syscalls`, `print`, `heapviz`, the servers `httpd`, `lightio_echo` and `lightio_http`, and the benchmarks) print or serve without checking anything, so smoke does not run them.
+
+`ninja regress` runs its programs through `tests/run.sh` too. `HEAP-tid-reuse-tls` waits for the kernel's thread ids to wrap round, which takes seconds at a `kernel.pid_max` of 32768 and minutes at the 4194304 that systemd sets by default, so above 32768 it skips, which fails the run. Lower it with `sudo sysctl -w kernel.pid_max=32768`, as CI does, or set `LIGHTC_TEST_ALLOW_SKIP=HEAP-tid-reuse-tls`.
 
 `configure` builds for the target of `CC` (default `gcc`), x86_64 or aarch64, and takes `ar`, `strip` and `objcopy` with `CC`'s prefix when those are installed. It reads `CC`, `AR`, `STRIP`, `OBJCOPY`, `CFLAGS`, `LDFLAGS` and `SYSROOT` from the environment; the comment at the top of `configure` says what each does. `ARCH` is still read, but it must equal the compiler's arch. A cross build for aarch64, where `ninja all tests` builds the default target and the test suites without running anything:
 
@@ -38,6 +41,8 @@ The ubsan mode compiles every check of `-fsanitize=undefined` to a trap instruct
 The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensyscalls.sh` generates `include/lightc/arch/*/syscall_nr.h`, the `LC_ERR_*` errno lines of `include/lightc/result.h` and the lists `tests/abi_check.c` checks from it. Run it after editing `syscalls.def` and commit the files it changes with the edit: CI runs it too and fails when it changes a file.
 
 `tests/abi_check.c` is only compiled, once per arch against that arch's Linux UAPI headers, and each `_Static_assert` in it compares lightc with the kernel: every syscall number and errno value of `syscalls.def`, every macro of the public headers and of `src/kernel.h` (the kernel structs and constants that only the library's sources use) that a UAPI header defines, and, for every struct lightc shares with the kernel, its size and the offset and size of each field. A macro that no UAPI header can check is listed there with the reason, and so is each of lightc's own. `sh ci/abilint.sh` fails when a header under `include/` or `src/` defines a macro that none of those lists names, and when a call `lc_syscallN(SYS_name, ...)` has another N than the argument count `syscalls.def` gives `name`, or names a syscall `syscalls.def` does not list; an `lc_syscallN` it cannot read as such a call fails too. CI runs both, and `sh ci/abilint-test.sh` checks that the lint catches such mistakes.
+
+`api/` is a snapshot of the public API, one item per line: `symbols.txt` lists the global symbols `liblightc.a` defines, `decls.txt` each declaration of the public headers but not their macros, and `layout-x86_64.txt` and `layout-aarch64.txt` the size and alignment of each public struct and the offset, size and type of each field. `sh tools/api-snapshot.sh` writes it, with GCC for both arches (`gcc` and `aarch64-linux-gnu-gcc`, or `CC_X86_64` and `CC_AARCH64`), and the comment at its top says how. `ninja api-check` writes the snapshot of the tree to `build/api` and fails with a diff when it differs from `api/`, and CI runs it: after an intended change to the API, run `sh tools/api-snapshot.sh` and commit `api/` with the change. `api/v0.1.1/` is the snapshot of the 0.1.1 release, and each release adds its own, written with `sh tools/api-snapshot.sh -o api/vX.Y.Z`. `ninja api-additive` fails when the API removes or changes a line of the newest of them, so only additions pass, and a renamed parameter or an added attribute changes a line too; it is to gate 0.2.x and 0.3.x once 0.2.0, which changes the API on purpose, is out, and until then CI does not run it.
 
 `sh ci/headers.sh` compiles each public header alone, as C23 with `-Wpedantic -Werror` and as C17 with `-Werror`, so a header that uses something it does not include fails. The headers use C23's `[[attribute]]` syntax, so a program compiled as C17 needs a compiler that takes it there as an extension, GCC 14 or newer or clang; GCC 13 rejects it before C23, and the script then compiles as C23 only. CI runs it with GCC 13, GCC 14, the aarch64 cross compiler (GCC 13) and clang.
 
@@ -65,7 +70,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `log.h` | Leveled logging with plain text and JSON output |
 | `signal.h` | Signal handling (portable across x86_64/aarch64) |
 | `lifecycle.h` | `atexit` handler chain with SIGTERM integration |
-| `library.h` | Runtime shared library loading (ELF parser) |
+| `library.h` | Runtime shared library loading (ELF parser; self-contained libraries without TLS) |
 
 ### Data structures (`include/lightdata/`)
 

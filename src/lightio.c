@@ -169,8 +169,11 @@ static void init_coroutine_for_slot(lio_loop *loop, int32_t slot) {
 #if defined(__x86_64__)
     uint64_t *stack_top = (uint64_t *)((uint8_t *)s->stack_base + LIO_STACK_SIZE);
 
-    /* Push trampoline as return address */
-    stack_top--;
+    /* Reserve 16 bytes and put the trampoline "return address" in the low
+     * slot, as coroutine.c does: context.rsp stays 16-byte aligned, so the
+     * `ret` of lc_coroutine_switch enters the trampoline with rsp ≡ 8 mod 16,
+     * as the System V ABI requires. */
+    stack_top -= 2;
     *stack_top = (uint64_t)connection_trampoline;
 
     s->context.rsp = (uint64_t)stack_top;

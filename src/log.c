@@ -1,18 +1,12 @@
 #include <lightc/log.h>
 #include <lightc/syscall.h>
 #include <lightc/string.h>
-#include <lightc/thread.h>
 #include <lightc/format.h>
+#include "kernel.h"          /* struct iovec */
 
 /* Global state */
 static lc_log_level  log_min_level = LC_LOG_DEBUG;
 static int32_t       log_fd = 2;  /* STDERR */
-/* Serializes log writes so lines from different threads do not interleave.
- * NOTE: this is a non-reentrant spinlock. Logging from a signal handler that
- * interrupted a thread already inside a log call on the same thread would
- * deadlock. Async-signal-safe logging is out of scope here; do not log from
- * signal handlers. */
-static lc_spinlock   log_lock = LC_SPINLOCK_INIT;
 static lc_log_format log_format = LC_LOG_FORMAT_TEXT;
 
 static const char *level_tags[] = {
@@ -96,7 +90,8 @@ static void format_add_json_escaped(lc_format *fmt, const char *msg, size_t len,
 }
 
 /*
- * Write a JSON-formatted log line atomically.
+ * Write a JSON-formatted log line, built whole in one buffer, with one
+ * write: lc_kernel_write_all writes the rest only after a short write.
  * {"ts":<seconds>,"level":"...","msg":"...","tid":<tid>}
  */
 static void write_json_line(lc_log_level level, const char *message, size_t msg_len) {
@@ -124,15 +119,17 @@ static void write_json_line(lc_log_level level, const char *message, size_t msg_
     size_t len = lc_format_finish(&fmt);
     if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;
 
-    /* Write atomically under the spinlock */
-    lc_spinlock_acquire(&log_lock);
     lc_kernel_write_all(log_fd, buf, len);
-    lc_spinlock_release(&log_lock);
 }
 
 /*
- * Write a complete log line atomically.
- * Lock ensures no interleaving between threads.
+ * Write a complete log line: prefix, message and newline in one writev,
+ * with no lock. Linux does not mix another thread's or process's bytes
+ * into a pipe write of at most PIPE_BUF bytes, or into a write to an
+ * O_APPEND regular file. A short write (a terminal, a socket, a full
+ * non-blocking pipe, a signal) leaves a tail, written after it, and
+ * another line can come in between. An error, or a writev that writes
+ * nothing, drops the line.
  */
 static void write_log_line(lc_log_level level, const char *message, size_t msg_len) {
     if (log_format == LC_LOG_FORMAT_JSON) {
@@ -144,12 +141,31 @@ static void write_log_line(lc_log_level level, const char *message, size_t msg_l
     char prefix[48];
     size_t prefix_len = build_prefix(prefix, sizeof(prefix), level);
 
-    /* Write atomically: prefix + message + newline */
-    lc_spinlock_acquire(&log_lock);
-    lc_kernel_write_all(log_fd, prefix, prefix_len);
-    lc_kernel_write_all(log_fd, message, msg_len);
-    lc_kernel_write_all(log_fd, "\n", 1);
-    lc_spinlock_release(&log_lock);
+    int32_t fd = log_fd;     /* the tail goes where the line went */
+    struct iovec line[] = {
+        { prefix, prefix_len }, { message, msg_len }, { "\n", 1 },
+    };
+    size_t parts = sizeof(line) / sizeof(line[0]);
+    lc_sysret written;
+    do {
+        written = lc_syscall3(SYS_writev, fd, (int64_t)line, (int64_t)parts);
+    } while (written == -LC_ERR_INTR);
+    if (written <= 0) return;
+
+    /* After a short write, write the rest of the part it stopped in and the
+     * parts after it, and stop at the first that does not go out whole. */
+    size_t done = (size_t)written;
+    for (size_t i = 0; i < parts; i++) {
+        if (done >= line[i].iov_len) {
+            done -= line[i].iov_len;
+            continue;
+        }
+        size_t rest = line[i].iov_len - done;
+        if (lc_kernel_write_all(fd, (const char *)line[i].iov_base + done, rest)
+            != (lc_sysret)rest)
+            return;
+        done = 0;
+    }
 }
 
 /* --- Simple logging --- */
@@ -176,7 +192,10 @@ void lc_log_begin(lc_log_entry *entry, lc_log_level level) {
 }
 
 void lc_log_commit(lc_log_entry *entry) {
-    if (entry->level < log_min_level) return;
+    /* lc_log_begin filtered the entry: its zero-length builder has a NULL
+     * buffer and stored nothing, so write nothing, even if the level has
+     * been lowered since. */
+    if (entry->fmt.buffer == NULL || entry->level < log_min_level) return;
 
     size_t msg_len = lc_format_finish(&entry->fmt);
     /* Clamp to buffer if overflow */

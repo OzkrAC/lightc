@@ -65,8 +65,8 @@ static void bench_writer_string(bench_state *b) {
     for (int64_t i = 0; i < b->iterations; i++) {
         lc_writer_put_string(&w, "hello world\n", 12);
     }
-    lc_writer_flush(&w);
-    lc_writer_destroy(&w);
+    (void)lc_writer_flush(&w);
+    (void)lc_writer_destroy(&w);
     lc_kernel_close_file(fd);
 }
 

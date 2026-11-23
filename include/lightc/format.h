@@ -95,7 +95,8 @@ void lc_format_add_bool(lc_format *fmt, bool value);
 void lc_format_add_unsigned_padded(lc_format *fmt, uint64_t value,
                                    uint32_t width, char pad);
 
-/* Add signed integer, right-aligned in a field of `width` characters. */
+/* Add signed integer, right-aligned in a field of `width` characters. With
+ * pad '0' the sign goes before the zeros, as with printf's %06d: "-00042". */
 void lc_format_add_signed_padded(lc_format *fmt, int64_t value,
                                  uint32_t width, char pad);
 
@@ -117,7 +118,8 @@ void lc_format_add_string_right(lc_format *fmt, const char *str, size_t length,
 /* Add a double with default precision (6 decimal places). */
 void lc_format_add_double(lc_format *fmt, double value);
 
-/* Add a double with custom precision (decimal places). */
+/* Add a double with custom precision (decimal places). Precision 0 rounds to
+ * the nearest integer, a tie to the even one, as printf's %.0f does. */
 void lc_format_add_double_precision(lc_format *fmt, double value, uint32_t precision);
 
 #endif /* LIGHTC_FORMAT_H */

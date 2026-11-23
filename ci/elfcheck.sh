@@ -31,13 +31,14 @@
 # shared object with no PT_GNU_STACK, or an executable one, to need an
 # executable stack: it makes the stacks executable for one loaded at
 # startup, and from glibc 2.41 dlopen refuses one. lc_library_open reads
-# only PT_LOAD and PT_DYNAMIC, so this rule keeps lightc's shared objects
-# right for other loaders too. A shared object may have a PT_TLS header:
-# the test libraries for TLS support in
-# lc_library_open are meant to carry one. It is not held to the page rule
-# either: a plugin such as build/test_plugin.so is linked with the
-# compiler's default linker script, for the page size of the ld that linked
-# it.
+# no PT_GNU_STACK, so this rule keeps lightc's shared objects right for
+# other loaders too. A shared object may have a PT_TLS header: the test
+# plugins build/plugins/tls_*.so carry one, to check that lc_library_open
+# refuses them. It is not held to the page rule either: a plugin such as
+# build/test_plugin.so is linked with the compiler's default linker script,
+# for the page size of the ld that linked it, and lc_library_open refuses
+# one with two segments of different protections on one page of the
+# kernel's.
 #
 # A PIE is an executable, though its ELF type is ET_DYN as a shared
 # object's is. It is told apart by a PT_INTERP header, or by DF_1_PIE in

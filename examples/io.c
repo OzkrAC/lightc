@@ -35,9 +35,9 @@ int main(int argc, char **argv, char **envp) {
 
     /* Write a string */
     lc_print_string(STDOUT, S("writer_put_string"));
-    lc_writer_put_string(&w, S("hello world"));
+    lc_result put = lc_writer_put_string(&w, S("hello world"));
     lc_writer_put_newline(&w);
-    say_pass_fail(w.used > 0);
+    say_pass_fail(lc_is_ok(put) && put.value == 11 && w.used > 0);
 
     /* Write a character */
     lc_print_string(STDOUT, S("writer_put_char"));
@@ -82,9 +82,9 @@ int main(int argc, char **argv, char **envp) {
 
     /* Flush and destroy */
     lc_print_string(STDOUT, S("writer_destroy"));
-    lc_writer_destroy(&w);
+    ok = lc_is_ok(lc_writer_destroy(&w));   /* the final flush */
     lc_kernel_close_file(fd);
-    say_pass_fail(w.buffer == NULL);
+    say_pass_fail(ok && w.buffer == NULL);
 
     /* ================================================================
      * Buffered Reader — byte by byte
@@ -276,13 +276,13 @@ int main(int argc, char **argv, char **envp) {
     fd = (int32_t)fd_ret;
     lc_writer w2 = lc_writer_create(fd, 8); /* tiny buffer */
     lc_writer_put_string(&w2, S("abcdefghijklmnopqrstuvwxyz")); /* 26 chars > 8 */
-    lc_writer_destroy(&w2);
+    ok = lc_is_ok(lc_writer_destroy(&w2));
     lc_kernel_close_file(fd);
 
     /* Read it back and verify */
     uint8_t *verify_data = NULL;
     size_t verify_size = 0;
-    ok = lc_is_ok(lc_file_read_all(test_file2, &verify_data, &verify_size));
+    ok = ok && lc_is_ok(lc_file_read_all(test_file2, &verify_data, &verify_size));
     ok = ok && verify_size == 26 &&
          lc_string_equal((char *)verify_data, verify_size,
                          "abcdefghijklmnopqrstuvwxyz", 26);
@@ -299,12 +299,12 @@ int main(int argc, char **argv, char **envp) {
     lc_writer w3 = lc_writer_create(fd, 64);
     /* INT64_MIN = -9223372036854775808 */
     lc_writer_put_signed(&w3, (int64_t)(-9223372036854775807LL - 1));
-    lc_writer_destroy(&w3);
+    ok = lc_is_ok(lc_writer_destroy(&w3));
     lc_kernel_close_file(fd);
 
     verify_data = NULL;
     verify_size = 0;
-    ok = lc_is_ok(lc_file_read_all(test_file2, &verify_data, &verify_size));
+    ok = ok && lc_is_ok(lc_file_read_all(test_file2, &verify_data, &verify_size));
     ok = ok && verify_size == 20 &&
          lc_string_equal((char *)verify_data, verify_size,
                          "-9223372036854775808", 20);

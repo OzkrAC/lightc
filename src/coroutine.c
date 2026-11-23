@@ -185,6 +185,12 @@ lc_coroutine *lc_coroutine_create(lc_scheduler *sched, lc_coroutine_func func, v
 void lc_scheduler_run(lc_scheduler *sched) {
     if (sched->count == 0) return;
 
+    /* The scheduler current when we were called: none at top level, the outer
+     * one when a coroutine runs a scheduler of its own. Every return below
+     * makes it current again, so a later yield outside any coroutine of
+     * `sched` is a no-op at top level and goes to the outer scheduler when
+     * nested, never to the main_context of this finished run. */
+    lc_scheduler *prev = get_current_scheduler();
     set_current_scheduler(sched);
 
     /*
@@ -203,7 +209,10 @@ void lc_scheduler_run(lc_scheduler *sched) {
             runnable++;
         }
     }
-    if (runnable == 0) return;  /* nothing left to run */
+    if (runnable == 0) {  /* nothing left to run */
+        set_current_scheduler(prev);
+        return;
+    }
 
     sched->active_count = runnable;
 
@@ -216,6 +225,7 @@ void lc_scheduler_run(lc_scheduler *sched) {
      * We return here when all coroutines have finished.
      * (lc_coroutine_yield switches back to main_context when none remain.)
      */
+    set_current_scheduler(prev);
 }
 
 void lc_coroutine_yield(void) {
@@ -258,6 +268,9 @@ void lc_coroutine_yield(void) {
 }
 
 void lc_scheduler_destroy(lc_scheduler *sched) {
+    /* Never leave this thread's current scheduler pointing at one that is
+     * gone: a later yield would read its freed coroutines. */
+    if (get_current_scheduler() == sched) set_current_scheduler(NULL);
     for (uint32_t i = 0; i < sched->count; i++) {
         if (sched->coroutines[i].stack_base != NULL) {
             lc_kernel_unmap_memory(sched->coroutines[i].stack_base,

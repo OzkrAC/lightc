@@ -44,7 +44,7 @@ The small allocator carves memory at two granularities:
 
 ### Per-thread allocation {#tls}
 
-Each thread owns an `lc_heap_local` — per-bucket page lists — reachable through the thread's TLS register (`%fs` on x86_64, `TPIDR_EL0` on aarch64) in a single instruction after the first allocation. Allocation touches shared state only when a new page or segment is needed, and then only a short global lock around the segment list. The locals are indexed in a global hash table keyed by thread id, so a recycled tid reconnects to its existing local.
+Each thread owns an `lc_heap_local` — per-bucket page lists — reachable through the thread's TLS register (`%fs` on x86_64, `TPIDR_EL0` on aarch64) in a single instruction after the first allocation. Allocation touches shared state only when a new page or segment is needed, and then only a short global lock around the segment list. The locals are indexed in a global hash table keyed by thread id, so a recycled tid reconnects to its existing local, with its TLS slots cleared.
 
 ### Cross-thread frees {#remote}
 

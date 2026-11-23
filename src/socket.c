@@ -1,6 +1,7 @@
 #include <lightc/socket.h>
 #include <lightc/syscall.h>
 #include <lightc/string.h>
+#include "kernel.h"          /* SOCK_CLOEXEC, MSG_NOSIGNAL */
 
 _Static_assert(sizeof(lc_socket_address) == 16, "lc_socket_address must be 16 bytes (sockaddr_in)");
 
@@ -11,7 +12,7 @@ lc_socket_address lc_socket_address_create(uint8_t a, uint8_t b, uint8_t c, uint
     lc_bytes_fill(&addr, 0, sizeof(addr));
     addr.family = LC_AF_INET;
     addr.port   = lc_host_to_network_16(port);
-    addr.addr   = (uint32_t)a | ((uint32_t)b << 8) | ((uint32_t)c << 16) | ((uint32_t)d << 24);
+    addr.addr   = lc_host_to_network_32(((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d);
     return addr;
 }
 
@@ -27,7 +28,7 @@ lc_socket_address lc_socket_address_any(uint16_t port) {
 /* --- Socket operations --- */
 
 lc_result lc_socket_create(int32_t type) {
-    return lc_result_from_sysret(lc_syscall3(SYS_socket, LC_AF_INET, type, 0));
+    return lc_result_from_sysret(lc_syscall3(SYS_socket, LC_AF_INET, type | SOCK_CLOEXEC, 0));
 }
 
 void lc_socket_close(int32_t socket_fd) {
@@ -51,7 +52,7 @@ lc_result lc_socket_listen(int32_t socket_fd, int32_t backlog) {
 lc_result lc_socket_accept(int32_t socket_fd, lc_socket_address *client_addr) {
     uint32_t addrlen = sizeof(lc_socket_address);
     return lc_result_from_sysret(lc_syscall4(SYS_accept4, socket_fd,
-                                (int64_t)client_addr, (int64_t)&addrlen, 0));
+                                (int64_t)client_addr, (int64_t)&addrlen, SOCK_CLOEXEC));
 }
 
 lc_result lc_socket_connect(int32_t socket_fd, const lc_socket_address *addr) {
@@ -60,7 +61,7 @@ lc_result lc_socket_connect(int32_t socket_fd, const lc_socket_address *addr) {
 
 lc_result lc_socket_send(int32_t socket_fd, const void *buf, size_t count) {
     return lc_result_from_sysret(lc_syscall6(SYS_sendto, socket_fd, (int64_t)buf, (int64_t)count,
-                       0, 0, 0));
+                       MSG_NOSIGNAL, 0, 0));
 }
 
 lc_result lc_socket_receive(int32_t socket_fd, void *buf, size_t count) {

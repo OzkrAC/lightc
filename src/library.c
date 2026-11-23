@@ -2,26 +2,34 @@
 #include <lightc/syscall.h>
 #include <lightc/heap.h>
 #include <lightc/string.h>
+#include <lightc/memory.h>   /* lc_runtime_page_size */
 #include "kernel.h"          /* Elf64_*, and the ELF constants PT_*, DT_*, R_* ... */
 
 /* ========================================================================
  * Library struct
  * ======================================================================== */
 
-#define PAGE_SIZE 4096
+/* The kernel's page size, from AT_PAGESZ: 4 KiB on x86_64, and 4, 16 or
+ * 64 KiB on aarch64. mprotect takes only addresses aligned to it. */
+#define PAGE_SIZE ((uint64_t)lc_runtime_page_size())
 #define PAGE_ALIGN_DOWN(x) ((x) & ~((uint64_t)(PAGE_SIZE - 1)))
 #define PAGE_ALIGN_UP(x)   (((x) + PAGE_SIZE - 1) & ~((uint64_t)(PAGE_SIZE - 1)))
 
 struct lc_library {
     uint8_t *base;           /* mmap'd base address */
     size_t   total_size;     /* total mmap'd size */
+    uintptr_t bias;          /* load bias: base - min_vaddr, added to every vaddr */
 
     /* Parsed from DYNAMIC segment */
     Elf64_Sym  *symtab;      /* symbol table */
     char       *strtab;      /* string table */
     size_t      strtab_size;
-    Elf64_Rela *rela;        /* relocation table */
+    Elf64_Rela *rela;        /* relocation table (DT_RELA) */
     size_t      rela_count;
+    Elf64_Rela *jmprel;      /* PLT relocations (DT_JMPREL) */
+    size_t      jmprel_count;
+    uint64_t   *relr;        /* packed relative relocations (DT_RELR) */
+    size_t      relr_count;
 
     /* ELF hash table (for symbol lookup) */
     uint32_t   *elf_hash;
@@ -71,6 +79,13 @@ static bool region_in_bounds(const lc_library *lib, const void *p, uint64_t len)
     uintptr_t q     = (uintptr_t)p;
     if (q < start || q > end) return false;
     return len <= (uint64_t)(end - q);
+}
+
+/* The address where the object's virtual address `vaddr` is mapped. It is
+ * only a number until region_in_bounds has checked it: a hostile vaddr
+ * gives an address outside the mapping, never a pointer overflow. */
+static void *mapped_address(const lc_library *lib, uint64_t vaddr) {
+    return (void *)(lib->bias + vaddr);
 }
 
 /* Compare `a` (bounded by `a_end`) against NUL-terminated `b`. Never reads at
@@ -179,67 +194,117 @@ static Elf64_Sym *reloc_symbol(lc_library *lib, uint32_t sym_idx, size_t sym_cou
     return sym;
 }
 
-static bool process_relocations(lc_library *lib) {
-    uint8_t *base = lib->base;
-    size_t sym_count = get_symbol_count(lib);
+/* The value of `sym` for a relocation: S. An undefined weak symbol is 0. An
+ * undefined strong one has no definition to bind to, since the loader has
+ * no other object to search, and a TLS symbol's value is an offset in a TLS
+ * block the loader does not make: both fail the load. */
+static bool reloc_symbol_value(const lc_library *lib, const Elf64_Sym *sym, uint64_t *out) {
+    if (sym->st_shndx == SHN_UNDEF) {
+        if (ELF64_ST_BIND(sym->st_info) != STB_WEAK) return false;
+        *out = 0;
+        return true;
+    }
+    if (ELF64_ST_TYPE(sym->st_info) == STT_TLS) return false;
+    *out = (sym->st_shndx == SHN_ABS) ? sym->st_value : lib->bias + sym->st_value;
+    return true;
+}
 
-    for (size_t i = 0; i < lib->rela_count; i++) {
-        Elf64_Rela *rela = &lib->rela[i];
-        uint64_t *target = (uint64_t *)(base + rela->r_offset);
+/* Apply `count` RELA entries of `table` (DT_RELA or DT_JMPREL). Every
+ * entry is applied now, PLT slots too: there is no lazy binding. A target
+ * outside the mapping, an unresolved symbol or a relocation type this
+ * loader does not know fails the load, as anything it skipped would leave
+ * a pointer that the plugin later follows to a wrong address. A NONE entry
+ * has no target, so its offset is not looked at: GNU ld leaves all-zero
+ * ones in a table it sized larger than it filled. */
+static bool process_rela_table(lc_library *lib, const Elf64_Rela *table, size_t count,
+                               size_t sym_count) {
+    for (size_t i = 0; i < count; i++) {
+        const Elf64_Rela *rela = &table[i];
         uint32_t type = ELF64_R_TYPE(rela->r_info);
         uint32_t sym_idx = ELF64_R_SYM(rela->r_info);
-
-        /* The write is 8 bytes at `target`; reject any r_offset that would put
-         * it (wholly or partially) outside the mapping — arbitrary write. */
-        if (!region_in_bounds(lib, target, sizeof(*target))) continue;
+        uint64_t value;
 
 #if defined(__x86_64__)
         switch (type) {
             case R_X86_64_NONE:
-                break;
+                continue;
 
             case R_X86_64_RELATIVE:
-                *target = (uint64_t)base + rela->r_addend;
+                value = lib->bias + rela->r_addend;
                 break;
 
             case R_X86_64_GLOB_DAT:
             case R_X86_64_JUMP_SLOT:
             case R_X86_64_64: {
-                Elf64_Sym *sym = reloc_symbol(lib, sym_idx, sym_count);
-                if (sym && sym->st_shndx != SHN_UNDEF) {
-                    *target = (uint64_t)base + sym->st_value + rela->r_addend;
-                }
-                break;
-            }
-
-            default:
-                /* Unknown relocation type — skip it */
-                break;
-        }
 #elif defined(__aarch64__)
         switch (type) {
             case R_AARCH64_NONE:
-                break;
+                continue;
 
             case R_AARCH64_RELATIVE:
-                *target = (uint64_t)base + rela->r_addend;
+                value = lib->bias + rela->r_addend;
                 break;
 
             case R_AARCH64_GLOB_DAT:
             case R_AARCH64_JUMP_SLOT:
             case R_AARCH64_ABS64: {
+#endif
                 Elf64_Sym *sym = reloc_symbol(lib, sym_idx, sym_count);
-                if (sym && sym->st_shndx != SHN_UNDEF) {
-                    *target = (uint64_t)base + sym->st_value + rela->r_addend;
-                }
+                if (!sym || !reloc_symbol_value(lib, sym, &value)) return false;
+                value += rela->r_addend;
                 break;
             }
 
             default:
-                break;
+                /* TLS, IFUNC, COPY and every other type: not supported */
+                return false;
         }
-#endif
+
+        /* The write is 8 bytes at `target`: it must lie wholly within the
+         * mapping, or it is an arbitrary write. */
+        uint64_t *target = mapped_address(lib, rela->r_offset);
+        if (!region_in_bounds(lib, target, sizeof(*target))) return false;
+        *target = value;
     }
+    return true;
+}
+
+/* Apply DT_RELR, the packed relative relocations of ld -z
+ * pack-relative-relocs: each word they name gets the load bias added. An
+ * even entry is the address of one such word. An odd entry is a bitmap of
+ * the 63 words that follow the last one relocated so far: bit n, from 1 to
+ * 63, names word n - 1 of them, and a further bitmap goes on 63 words
+ * later. */
+static bool process_relr_table(lc_library *lib) {
+    uint64_t *where = NULL;
+    for (size_t i = 0; i < lib->relr_count; i++) {
+        uint64_t entry = lib->relr[i];
+        if ((entry & 1) == 0) {
+            where = mapped_address(lib, entry);
+            if (!region_in_bounds(lib, where, sizeof(*where))) return false;
+            *where++ += lib->bias;
+        } else {
+            if (!where) return false;   /* a bitmap before any address */
+            uint64_t *p = where;
+            for (entry >>= 1; entry != 0; entry >>= 1, p++) {
+                if (entry & 1) {
+                    if (!region_in_bounds(lib, p, sizeof(*p))) return false;
+                    *p += lib->bias;
+                }
+            }
+            where += 8 * sizeof(entry) - 1;   /* 63: the entry's bits less the tag */
+        }
+    }
+    return true;
+}
+
+/* RELR first: it holds only relative relocations, which the others do not
+ * read. */
+static bool process_relocations(lc_library *lib) {
+    size_t sym_count = get_symbol_count(lib);
+    if (lib->relr && !process_relr_table(lib)) return false;
+    if (lib->rela && !process_rela_table(lib, lib->rela, lib->rela_count, sym_count)) return false;
+    if (lib->jmprel && !process_rela_table(lib, lib->jmprel, lib->jmprel_count, sym_count)) return false;
     return true;
 }
 
@@ -307,8 +372,10 @@ static void *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
 
     const char *str_end = lib->strtab + lib->strtab_size;
 
-    /* Walk the chain */
-    uint32_t chain_idx = sym_idx - symndx;
+    /* Walk the chain. It only goes forward, and the index is 64-bit so it
+     * cannot wrap back to the start of the chains: a walk that never meets
+     * an end marker leaves the mapping and stops. */
+    uint64_t chain_idx = sym_idx - symndx;
     uint32_t hash1 = hash | 1; /* set bit 0 for comparison (chains store hash with bit 0 as end marker) */
 
     for (;;) {
@@ -323,8 +390,8 @@ static void *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
             if (region_in_bounds(lib, sym, sizeof(*sym)) &&
                 sym->st_name < lib->strtab_size &&
                 str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-                if (sym->st_shndx != SHN_UNDEF) {
-                    return (void *)(lib->base + sym->st_value);
+                if (sym->st_shndx != SHN_UNDEF && ELF64_ST_TYPE(sym->st_info) != STT_TLS) {
+                    return mapped_address(lib, sym->st_value);
                 }
             }
         }
@@ -357,15 +424,17 @@ static void *find_symbol_with_elf_hash(lc_library *lib, const char *name) {
     uint32_t hash = elf_hash_function(name);
     uint32_t idx = buckets[hash % nbucket];
 
-    /* Bound the walk: a valid chain index is < nchain, and each chain slot must
-     * be readable. Either guard failing means a malformed table — stop. */
-    while (idx != 0 && idx < nchain) {
+    /* Bound the walk: a valid chain index is < nchain, each chain slot must
+     * be readable, and a valid chain visits each of the nchain symbols at
+     * most once, so a longer walk is a chain that loops. Any guard failing
+     * means a malformed table — stop. */
+    for (uint32_t steps = 0; idx != 0 && idx < nchain && steps < nchain; steps++) {
         Elf64_Sym *sym = &lib->symtab[idx];
         if (!region_in_bounds(lib, sym, sizeof(*sym))) break;
         if (sym->st_name < lib->strtab_size &&
             str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-            if (sym->st_shndx != SHN_UNDEF) {
-                return (void *)(lib->base + sym->st_value);
+            if (sym->st_shndx != SHN_UNDEF && ELF64_ST_TYPE(sym->st_info) != STT_TLS) {
+                return mapped_address(lib, sym->st_value);
             }
         }
         if (!region_in_bounds(lib, &chains[idx], sizeof(uint32_t))) break;
@@ -439,7 +508,7 @@ static void *find_symbol_linear_scan(lc_library *lib, const char *name) {
         if (sym->st_name >= lib->strtab_size) continue;
 
         if (str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-            return (void *)(lib->base + sym->st_value);
+            return mapped_address(lib, sym->st_value);
         }
     }
     return NULL;
@@ -451,7 +520,7 @@ static void *find_symbol_linear_scan(lc_library *lib, const char *name) {
 
 lc_result_ptr lc_library_open(const char *path) {
     /* --- Step 1: Open the file --- */
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY, 0);
+    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_CLOEXEC, 0);
     if (fd_ret < 0) {
         return lc_err_ptr(LC_ERR_NOENT);
     }
@@ -493,8 +562,18 @@ lc_result_ptr lc_library_open(const char *path) {
     uint64_t min_vaddr = UINT64_MAX;
     uint64_t max_vaddr = 0;
     bool found_load = false;
+    uint64_t prev_page_end = 0;     /* the end of the last PT_LOAD's pages */
+    int32_t  prev_prot = 0;         /* and its protection */
 
     for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+        /* The loader makes no TLS block for the object, so its thread-local
+         * variables would have no storage: code that reaches for one through
+         * the thread pointer would use lightc's own per-thread data. */
+        if (phdrs[i].p_type == PT_TLS) {
+            lc_heap_free(phdrs);
+            lc_kernel_close_file(fd);
+            return lc_err_ptr(LC_ERR_MALFORMED_ELF);
+        }
         if (phdrs[i].p_type != PT_LOAD) continue;
 
         /* Reject nonsensical/hostile segment sizes: more bytes in the file than
@@ -511,6 +590,22 @@ lc_result_ptr lc_library_open(const char *path) {
             lc_kernel_close_file(fd);
             return lc_err_ptr(LC_ERR_MALFORMED_ELF);
         }
+
+        /* Step 10 gives each PT_LOAD its protection over the whole pages it
+         * touches. Two PT_LOADs with different protections on one page would
+         * leave it with the later one's, and the code or data of the other
+         * would fault: an object linked for a smaller page size than the
+         * kernel's, as ld -z max-page-size=4096 makes it, on a 16 KiB-page
+         * aarch64 kernel. glibc refuses such objects too. PT_LOADs come in
+         * vaddr order. */
+        int32_t prot = prot_from_elf_flags(phdrs[i].p_flags);
+        if (found_load && PAGE_ALIGN_DOWN(phdrs[i].p_vaddr) < prev_page_end && prot != prev_prot) {
+            lc_heap_free(phdrs);
+            lc_kernel_close_file(fd);
+            return lc_err_ptr(LC_ERR_MALFORMED_ELF);
+        }
+        prev_page_end = PAGE_ALIGN_UP(end);
+        prev_prot = prot;
 
         found_load = true;
         if (phdrs[i].p_vaddr < min_vaddr) {
@@ -596,6 +691,7 @@ lc_result_ptr lc_library_open(const char *path) {
     lc_library *lib = (lc_library *)lib_alloc.value;
     lib->base = base;
     lib->total_size = total_size;
+    lib->bias = (uintptr_t)base - min_vaddr;
 
     /* --- Step 8: Find and parse the DYNAMIC segment --- */
     Elf64_Dyn *dynamic = NULL;
@@ -603,7 +699,7 @@ lc_result_ptr lc_library_open(const char *path) {
 
     for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
         if (phdrs[i].p_type == PT_DYNAMIC) {
-            dynamic = (Elf64_Dyn *)(base + phdrs[i].p_vaddr - min_vaddr);
+            dynamic = mapped_address(lib, phdrs[i].p_vaddr);
             dynamic_bytes = phdrs[i].p_filesz;
             break;
         }
@@ -623,28 +719,35 @@ lc_result_ptr lc_library_open(const char *path) {
         return lc_err_ptr(LC_ERR_MALFORMED_ELF);
     }
 
-    /* Walk the dynamic table. All d_ptr values are virtual addresses
-     * relative to the library's load base (for ET_DYN). The walk is bounded by
-     * the segment size so a table with no DT_NULL terminator cannot run past
-     * the mapping. */
+    /* Walk the dynamic table. All d_ptr values are virtual addresses, which
+     * the load bias translates. The walk is bounded by the segment size so a
+     * table with no DT_NULL terminator cannot run past the mapping. */
     size_t rela_total_size = 0;
     size_t rela_entry_size = 0;
+    size_t jmprel_total_size = 0;
+    int64_t jmprel_type = -1;       /* DT_PLTREL: DT_RELA or DT_REL */
+    size_t relr_total_size = 0;
+    size_t relr_entry_size = 0;
+    size_t sym_entry_size = 0;
     size_t dyn_max = (size_t)(dynamic_bytes / sizeof(Elf64_Dyn));
 
     for (size_t di = 0; di < dyn_max && dynamic[di].d_tag != DT_NULL; di++) {
         Elf64_Dyn *dyn = &dynamic[di];
         switch (dyn->d_tag) {
             case DT_SYMTAB:
-                lib->symtab = (Elf64_Sym *)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->symtab = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_STRTAB:
-                lib->strtab = (char *)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->strtab = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_STRSZ:
                 lib->strtab_size = (size_t)dyn->d_un.d_val;
                 break;
+            case DT_SYMENT:
+                sym_entry_size = (size_t)dyn->d_un.d_val;
+                break;
             case DT_RELA:
-                lib->rela = (Elf64_Rela *)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->rela = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_RELASZ:
                 rela_total_size = (size_t)dyn->d_un.d_val;
@@ -652,26 +755,44 @@ lc_result_ptr lc_library_open(const char *path) {
             case DT_RELAENT:
                 rela_entry_size = (size_t)dyn->d_un.d_val;
                 break;
+            case DT_JMPREL:
+                lib->jmprel = mapped_address(lib, dyn->d_un.d_ptr);
+                break;
+            case DT_PLTRELSZ:
+                jmprel_total_size = (size_t)dyn->d_un.d_val;
+                break;
+            case DT_PLTREL:
+                jmprel_type = (int64_t)dyn->d_un.d_val;
+                break;
+            case DT_RELR:
+                lib->relr = mapped_address(lib, dyn->d_un.d_ptr);
+                break;
+            case DT_RELRSZ:
+                relr_total_size = (size_t)dyn->d_un.d_val;
+                break;
+            case DT_RELRENT:
+                relr_entry_size = (size_t)dyn->d_un.d_val;
+                break;
             case DT_HASH:
-                lib->elf_hash = (uint32_t *)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->elf_hash = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_GNU_HASH:
-                lib->gnu_hash = (uint32_t *)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->gnu_hash = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_INIT:
-                lib->init_func = (void (*)(void))(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->init_func = (void (*)(void))(lib->bias + dyn->d_un.d_ptr);
                 break;
             case DT_FINI:
-                lib->fini_func = (void (*)(void))(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->fini_func = (void (*)(void))(lib->bias + dyn->d_un.d_ptr);
                 break;
             case DT_INIT_ARRAY:
-                lib->init_array = (void **)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->init_array = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_INIT_ARRAYSZ:
                 lib->init_array_count = (size_t)dyn->d_un.d_val / sizeof(void *);
                 break;
             case DT_FINI_ARRAY:
-                lib->fini_array = (void **)(base + dyn->d_un.d_ptr - min_vaddr);
+                lib->fini_array = mapped_address(lib, dyn->d_un.d_ptr);
                 break;
             case DT_FINI_ARRAYSZ:
                 lib->fini_array_count = (size_t)dyn->d_un.d_val / sizeof(void *);
@@ -681,17 +802,26 @@ lc_result_ptr lc_library_open(const char *path) {
         }
     }
 
-    /* Compute relocation count */
-    if (rela_entry_size > 0 && rela_total_size > 0) {
-        lib->rela_count = rela_total_size / rela_entry_size;
-    }
+    /* The tables are read at the fixed strides of Elf64_Rela, uint64_t and
+     * Elf64_Sym. An entry size that disagrees would desync the reads from
+     * the file's layout, so it fails the load, as does a DT_RELA or DT_RELR
+     * with none. DT_JMPREL must be RELA, as the 64-bit psABIs have it. Each
+     * count is a quotient, so it cannot wrap the bounds checks below. */
+    bool sizes_ok = true;
+    if (lib->rela && rela_entry_size != sizeof(Elf64_Rela))         sizes_ok = false;
+    if (lib->jmprel && jmprel_type != DT_RELA)                      sizes_ok = false;
+    if (lib->relr && relr_entry_size != sizeof(uint64_t))           sizes_ok = false;
+    if (sym_entry_size != 0 && sym_entry_size != sizeof(Elf64_Sym)) sizes_ok = false;
+    lib->rela_count   = rela_total_size / sizeof(Elf64_Rela);
+    lib->jmprel_count = jmprel_total_size / sizeof(Elf64_Rela);
+    lib->relr_count   = relr_total_size / sizeof(uint64_t);
 
     /* Every table the dynamic section pointed us at must lie inside the mapping.
      * A table that is present but out of range makes the object unsafe to touch,
      * so reject the whole load rather than risk an OOB access at lookup time.
      * (The hash-table interiors and per-symbol accesses are additionally bounds
      * checked at use.) */
-    bool tables_ok = true;
+    bool tables_ok = sizes_ok;
     if (lib->symtab   && !region_in_bounds(lib, lib->symtab, sizeof(Elf64_Sym)))      tables_ok = false;
     if (lib->strtab   && !region_in_bounds(lib, lib->strtab, lib->strtab_size))       tables_ok = false;
     if (lib->elf_hash && !region_in_bounds(lib, lib->elf_hash, 2 * sizeof(uint32_t))) tables_ok = false;
@@ -700,6 +830,10 @@ lc_result_ptr lc_library_open(const char *path) {
     if (lib->fini_func && !region_in_bounds(lib, (void *)(uintptr_t)lib->fini_func, 1)) tables_ok = false;
     if (lib->rela && !region_in_bounds(lib, lib->rela,
                                        (uint64_t)lib->rela_count * sizeof(Elf64_Rela))) tables_ok = false;
+    if (lib->jmprel && !region_in_bounds(lib, lib->jmprel,
+                                       (uint64_t)lib->jmprel_count * sizeof(Elf64_Rela))) tables_ok = false;
+    if (lib->relr && !region_in_bounds(lib, lib->relr,
+                                       (uint64_t)lib->relr_count * sizeof(uint64_t))) tables_ok = false;
     if (lib->init_array && !region_in_bounds(lib, lib->init_array,
                                        (uint64_t)lib->init_array_count * sizeof(void *))) tables_ok = false;
     if (lib->fini_array && !region_in_bounds(lib, lib->fini_array,
@@ -712,13 +846,11 @@ lc_result_ptr lc_library_open(const char *path) {
     }
 
     /* --- Step 9: Process relocations (mapping still fully RW) --- */
-    if (lib->rela && lib->rela_count > 0) {
-        if (!process_relocations(lib)) {
-            lc_kernel_unmap_memory(base, total_size);
-            lc_heap_free(phdrs);
-            lc_heap_free(lib);
-            return lc_err_ptr(LC_ERR_RELOC_FAILED);
-        }
+    if (!process_relocations(lib)) {
+        lc_kernel_unmap_memory(base, total_size);
+        lc_heap_free(phdrs);
+        lc_heap_free(lib);
+        return lc_err_ptr(LC_ERR_RELOC_FAILED);
     }
 
     /* --- Step 10: Tighten page permissions now that relocations are done --- */
@@ -746,6 +878,27 @@ lc_result_ptr lc_library_open(const char *path) {
         }
     }
 
+    /* PT_GNU_RELRO, which holds the GOT and the other data that only
+     * relocation writes, is read-only from here on. As glibc's ld.so does,
+     * this protects the whole pages it covers: a partial page at its end
+     * keeps the protection of its PT_LOAD. */
+    for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+        if (phdrs[i].p_type != PT_GNU_RELRO) continue;
+
+        uint64_t relro_start = phdrs[i].p_vaddr - min_vaddr;
+        uint64_t page_start  = PAGE_ALIGN_DOWN(relro_start);
+        uint64_t page_end    = PAGE_ALIGN_DOWN(relro_start + phdrs[i].p_memsz);
+        if (page_end <= page_start || page_end > total_size) continue;
+
+        if (lc_kernel_protect_memory(base + page_start, (size_t)(page_end - page_start),
+                                     PROT_READ) < 0) {
+            lc_kernel_unmap_memory(base, total_size);
+            lc_heap_free(phdrs);
+            lc_heap_free(lib);
+            return lc_err_ptr(LC_ERR_IO);
+        }
+    }
+
     lc_heap_free(phdrs);
 
     /* --- Step 11: Run constructors --- */
@@ -756,7 +909,7 @@ lc_result_ptr lc_library_open(const char *path) {
         for (size_t i = 0; i < lib->init_array_count; i++) {
             if (lib->init_array[i]) {
                 typedef void (*init_fn)(void);
-                init_fn fn = (init_fn)lib->init_array[i];
+                init_fn fn = (init_fn)(uintptr_t)lib->init_array[i];
                 fn();
             }
         }
@@ -798,7 +951,7 @@ void lc_library_close(lc_library *lib) {
         for (size_t i = lib->fini_array_count; i > 0; i--) {
             if (lib->fini_array[i - 1]) {
                 typedef void (*fini_fn)(void);
-                fini_fn fn = (fini_fn)lib->fini_array[i - 1];
+                fini_fn fn = (fini_fn)(uintptr_t)lib->fini_array[i - 1];
                 fn();
             }
         }

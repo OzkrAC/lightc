@@ -8,14 +8,15 @@
  *
  * lightc builds without kernel headers, so each definition here is a copy
  * of the kernel's, from the Linux UAPI headers where they have it, and
- * named after it where that name is free. struct linux_dirent64 and some
- * ELF values are in no UAPI header: tests/abi_check.c says where each of
- * them comes from. abi_check.c includes this file and checks it against
- * the UAPI headers of each arch: the size of each struct and the offset
- * and size of each field, and the value of each macro, or it lists the
- * macro with the reason no UAPI header can check it. ci/abilint.sh fails
- * when a macro here is in none of its lists. So a kernel value that a file
- * in src/ needs goes here or in a public header, not in the .c file.
+ * named after it where that name is free. struct linux_dirent64, the
+ * socket flags and some ELF values are in no UAPI header: tests/abi_check.c
+ * says where each of them comes from. abi_check.c includes this file and
+ * checks it against the UAPI headers of each arch: the size of each struct
+ * and the offset and size of each field, and the value of each macro, or it
+ * lists the macro with the reason no UAPI header can check it.
+ * ci/abilint.sh fails when a macro here is in none of its lists. So a
+ * kernel value that a file in src/ needs goes here or in a public header,
+ * not in the .c file.
  */
 
 #include <lightc/types.h>
@@ -107,6 +108,48 @@ struct linux_dirent64 {
     uint8_t  d_type;
     char     d_name[];
 };
+
+/* --- statx (<linux/stat.h>), for io.c --- */
+
+/*
+ * statx fills all 256 bytes of struct statx. lc_file_get_size reads only
+ * stx_size, so the fields after it are one array here.
+ */
+struct statx {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t _spare0;
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t _rest[26];     /* stx_blocks to the end */
+};
+_Static_assert(sizeof(struct statx) == 256, "struct statx must be 256 bytes");
+
+#define STATX_SIZE  0x00000200U
+
+/* --- writev (<linux/uio.h>), for log.c --- */
+
+/* One buffer of a writev. The kernel's iov_base is a void *; writev only
+ * reads the buffer, so it is const here. */
+struct iovec {
+    const void *iov_base;
+    size_t      iov_len;
+};
+
+/* --- Sockets, for socket.c --- */
+
+/* socket and accept4 flag: the kernel's include/linux/net.h defines it as
+ * O_CLOEXEC */
+#define SOCK_CLOEXEC  02000000
+
+/* send flag: fail with EPIPE instead of raising SIGPIPE (the kernel's
+ * include/linux/socket.h) */
+#define MSG_NOSIGNAL  0x4000
 
 /* --- clone (<linux/sched.h>), for thread.c, which says what each is for --- */
 
@@ -217,9 +260,11 @@ typedef struct {
 #define EM_AARCH64 183
 
 /* Program header types */
-#define PT_NULL    0
-#define PT_LOAD    1
-#define PT_DYNAMIC 2
+#define PT_NULL      0
+#define PT_LOAD      1
+#define PT_DYNAMIC   2
+#define PT_TLS       7
+#define PT_GNU_RELRO 0x6474e552
 
 /* Program header flags */
 #define PF_X 1
@@ -229,6 +274,7 @@ typedef struct {
 /* Dynamic tags */
 #define DT_NULL         0
 #define DT_NEEDED       1
+#define DT_PLTRELSZ     2
 #define DT_HASH         4
 #define DT_STRTAB       5
 #define DT_SYMTAB       6
@@ -239,10 +285,15 @@ typedef struct {
 #define DT_SYMENT       11
 #define DT_INIT         12
 #define DT_FINI         13
+#define DT_PLTREL       20
+#define DT_JMPREL       23
 #define DT_INIT_ARRAY   25
 #define DT_FINI_ARRAY   26
 #define DT_INIT_ARRAYSZ 27
 #define DT_FINI_ARRAYSZ 28
+#define DT_RELRSZ       35
+#define DT_RELR         36
+#define DT_RELRENT      37
 #define DT_GNU_HASH     0x6ffffef5
 #define DT_RELACOUNT    0x6ffffff9
 
@@ -253,7 +304,9 @@ typedef struct {
 #define STB_WEAK   2
 #define STT_FUNC   2
 #define STT_OBJECT 1
+#define STT_TLS    6
 #define SHN_UNDEF  0
+#define SHN_ABS    0xfff1
 
 /* Relocation types (x86_64) */
 #define R_X86_64_NONE      0

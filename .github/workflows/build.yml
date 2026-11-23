@@ -48,6 +48,12 @@ jobs:
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # HEAP-tid-reuse-tls checks a thread that gets the id of one that has
+      # exited, so the kernel's thread ids must wrap round: at the runner's
+      # default kernel.pid_max of 4194304 that takes minutes and the program
+      # skips, at 32768 it takes seconds.
+      - name: Wrap thread ids at 32768
+        run: sudo sysctl -w kernel.pid_max=32768
       # The output also goes to build/test.log, for the step below.
       - name: Run tests
         run: |
@@ -163,6 +169,9 @@ jobs:
       # As on x86_64, so test_syscall's tmpfs mount case runs.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As on x86_64, so HEAP-tid-reuse-tls runs rather than skips.
+      - name: Wrap thread ids at 32768
+        run: sudo sysctl -w kernel.pid_max=32768
       - name: Run tests
         id: tests
         run: |
@@ -252,6 +261,10 @@ jobs:
       # passes here also passes there once its id is gating.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The same for kernel.pid_max, which HEAP-tid-reuse-tls needs in those
+      # jobs, so a pending program sees the same thread ids here.
+      - name: Wrap thread ids at 32768
+        run: sudo sysctl -w kernel.pid_max=32768
       # While a pending program does not build, ninja runs none of them;
       # -k 0 still builds the others, and pending.sh then lists every
       # pending id, one with no program as FAIL.
@@ -293,7 +306,7 @@ jobs:
       # configure takes the arch from CC and ar from CC's prefix, so CC alone
       # sets up the cross build. Debug, so lightc's safety checks run; the
       # aarch64-cross job builds release and tiny. This builds the default
-      # target, as the other jobs do, and the suites, with the plugin
+      # target, as the other jobs do, and the suites, with the plugins
       # test_library loads.
       - name: Build (aarch64 debug)
         run: |
@@ -304,6 +317,11 @@ jobs:
       # qemu-user cannot create one.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As in the x86_64 jobs, so HEAP-tid-reuse-tls runs: qemu-user gives
+      # the aarch64 threads the host's thread ids, which wrap at the host's
+      # kernel.pid_max.
+      - name: Wrap thread ids at 32768
+        run: sudo sysctl -w kernel.pid_max=32768
       # ninja test (tests/run.sh) runs every suite, even after one fails, so a
       # single run shows every aarch64 failure. Each suite gets 120 s, so a
       # hung one fails and the summary names it, instead of the job's 15
@@ -461,7 +479,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc linux-libc-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc linux-libc-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       # abi_check.c checks every syscall number and errno value of
       # syscalls.def, through the headers generated from it and the lists
       # generated into it, every macro of the public headers and of
@@ -518,6 +536,21 @@ jobs:
       - name: Check that ci/abilint.sh catches planted mistakes
         if: ${{ !cancelled() }}
         run: sh ci/abilint-test.sh
+      # api/ is the snapshot of the public API that tools/api-snapshot.sh
+      # writes with GCC for both arches, which this job has: the symbols
+      # liblightc.a defines, the declarations of the public headers and the
+      # layout of their structs. ninja api-check writes the snapshot of this
+      # tree to build/api and fails, with a diff, when it differs from api/,
+      # so a change to the API must update api/ in the same commit. Like the
+      # generator above, it runs under dash and mawk. ninja api-additive,
+      # which fails when the API removes or changes a line of the last
+      # release's api/vX.Y.Z, is not run yet: it is to gate 0.2.x and 0.3.x
+      # once 0.2.0, which changes the API on purpose, is out.
+      - name: Check the API snapshot in api/
+        if: ${{ !cancelled() }}
+        run: |
+          ./configure
+          ninja api-check
 
   pkg-config-consumer:
     name: pkg-config consumer (install + link)
@@ -584,6 +617,10 @@ jobs:
       - name: Allow unprivileged user namespaces
         if: ${{ !cancelled() }}
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As in the x86_64 jobs, so HEAP-tid-reuse-tls runs rather than skips.
+      - name: Wrap thread ids at 32768
+        if: ${{ !cancelled() }}
+        run: sudo sysctl -w kernel.pid_max=32768
       - name: Run tests
         if: ${{ !cancelled() }}
         run: ninja test

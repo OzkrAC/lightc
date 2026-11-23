@@ -9,6 +9,11 @@
  *
  * Each thread gets its own mmap'd stack.
  * Join uses futex (kernel wakes us when the thread exits).
+ *
+ * The sync objects are for the threads of one process. The mutex, condition
+ * variable, read-write lock, barrier and once wait on private futexes: in
+ * MAP_SHARED memory that two processes share, a waiter in one process is
+ * never woken by the other and can block for ever.
  */
 
 #define LC_DEFAULT_STACK_SIZE (1024 * 1024) /* 1 MiB */
@@ -57,6 +62,9 @@ bool lc_spinlock_try_acquire(lc_spinlock *lock);
  * Mutex — futex-based, sleeps on contention.
  * Good for all critical section lengths. Prefer over spinlock unless
  * the critical section is known to be very short (<100ns).
+ * Process-private: between two processes that share it in MAP_SHARED
+ * memory, a waiter is never woken by the other process's unlock and can
+ * block for ever.
  */
 
 typedef struct {
@@ -138,6 +146,8 @@ void lc_call_once(lc_once *once, lc_once_func func);
 
 /*
  * Thread-Local Storage — keyed per-thread data.
+ * Every slot of a new thread is NULL, even when the kernel gave it the id of
+ * a thread that has exited.
  */
 
 #define LC_TLS_MAX_KEYS 64

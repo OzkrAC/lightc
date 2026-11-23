@@ -11,7 +11,7 @@
 
 /*
  * Convert days since 1970-01-01 to year/month/day.
- * Handles all dates from year 0 to year 9999+.
+ * Handles any year an int32_t holds, years before 0 included.
  */
 static void days_to_date(int64_t days, int32_t *year, int32_t *month, int32_t *day) {
     /* Shift to March epoch (March 1, 0000) */
@@ -159,7 +159,7 @@ int64_t lc_time_elapsed_milliseconds(int64_t start) {
 
 size_t lc_time_format(const lc_date_time *dt, char *buf, size_t buf_size) {
     lc_format fmt = lc_format_start(buf, buf_size);
-    lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->year, 4, '0');
+    lc_format_add_signed_padded(&fmt, dt->year, dt->year < 0 ? 5 : 4, '0');
     lc_format_add_char(&fmt, '-');
     lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->month, 2, '0');
     lc_format_add_char(&fmt, '-');
@@ -175,7 +175,7 @@ size_t lc_time_format(const lc_date_time *dt, char *buf, size_t buf_size) {
 
 size_t lc_time_format_date(const lc_date_time *dt, char *buf, size_t buf_size) {
     lc_format fmt = lc_format_start(buf, buf_size);
-    lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->year, 4, '0');
+    lc_format_add_signed_padded(&fmt, dt->year, dt->year < 0 ? 5 : 4, '0');
     lc_format_add_char(&fmt, '-');
     lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->month, 2, '0');
     lc_format_add_char(&fmt, '-');
@@ -195,7 +195,7 @@ size_t lc_time_format_time(const lc_date_time *dt, char *buf, size_t buf_size) {
 
 size_t lc_time_format_iso8601(const lc_date_time *dt, char *buf, size_t buf_size) {
     lc_format fmt = lc_format_start(buf, buf_size);
-    lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->year, 4, '0');
+    lc_format_add_signed_padded(&fmt, dt->year, dt->year < 0 ? 5 : 4, '0');
     lc_format_add_char(&fmt, '-');
     lc_format_add_unsigned_padded(&fmt, (uint64_t)dt->month, 2, '0');
     lc_format_add_char(&fmt, '-');

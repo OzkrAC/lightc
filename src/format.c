@@ -213,6 +213,13 @@ void lc_format_add_signed_padded(lc_format *fmt, int64_t value,
         for (size_t i = 0; i < nlen; i++) tmp[tmp_len++] = p[i];
     }
 
+    /* Zeros go after the sign, as printf's %06d puts them: "-00042" */
+    if (tmp_len < width && pad == '0' && value < 0) {
+        put(fmt, '-');
+        lc_format_add_repeat(fmt, '0', width - tmp_len);
+        put_bytes(fmt, tmp + 1, tmp_len - 1);
+        return;
+    }
     if (tmp_len < width) {
         lc_format_add_repeat(fmt, pad, width - tmp_len);
     }
@@ -363,9 +370,14 @@ void lc_format_add_double_precision(lc_format *fmt, double value, uint32_t preci
         return;
     }
 
-    /* Precision 0: round to nearest integer, no decimal point */
+    /* Precision 0: round to the nearest integer, a tie to the even one as
+     * printf's %.0f does, and print no decimal point. value < 2^64 here, so
+     * the cast truncates it exactly and the fraction left is exact too: the
+     * compare decides on the value itself, not on a rounded value + 0.5. */
     if (precision == 0) {
-        uint64_t rounded = (uint64_t)(value + 0.5);
+        uint64_t rounded = (uint64_t)value;
+        double fraction = value - (double)rounded;
+        if (fraction > 0.5 || (fraction == 0.5 && (rounded & 1))) rounded++;
         char buf[20];
         size_t len;
         const char *p = render_unsigned(rounded, buf, sizeof(buf), &len);
