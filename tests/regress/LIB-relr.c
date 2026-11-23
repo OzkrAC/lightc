@@ -10,7 +10,9 @@
  * DT_RELR, before DT_RELA.
  *
  * build/plugins/relr.so (tests/plugins/relr.c) is linked so, and its
- * DT_RELR has address entries and several bitmaps. Opening it must run
+ * DT_RELR has address entries and several bitmaps. GNU ld 2.42 ignores
+ * the flag on aarch64, so there configure links the plugin with lld, and
+ * without lld this program fails in its first test. Opening it must run
  * its constructor, which sets ctor_ran to 1234, and plugin_table must call
  * through its two relocated pointers. plugin_word(i) must be i for words
  * in each of the three bitmaps that cover its 136 pointers. With the
@@ -27,7 +29,11 @@ static void test_plugin_has_relr(void) {
     plugin_file file;
     TEST_REQUIRE(plugin_file_read(&file, PLUGIN));
     uint64_t address = 0, size = 0;
-    TEST_ASSERT(plugin_file_dynamic(&file, DT_RELR, &address));
+    bool has_relr = plugin_file_dynamic(&file, DT_RELR, &address);
+    if (!has_relr)
+        _test_print_text("  " PLUGIN " has no DT_RELR: its linker ignored -z pack-relative-relocs,\n"
+                         "  as GNU ld 2.42 does on aarch64. Install lld and run configure again.\n");
+    TEST_ASSERT(has_relr);
     TEST_ASSERT(plugin_file_dynamic(&file, DT_RELRSZ, &size));
     /* At least one address entry and the three bitmaps of words. */
     TEST_ASSERT(size >= 4 * sizeof(uint64_t));

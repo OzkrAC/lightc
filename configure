@@ -175,6 +175,28 @@ for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k hash_cycl
     TEST_PLUGINS="$TEST_PLUGINS${TEST_PLUGINS:+ }\$builddir/plugins/$plugin.so"
 done
 
+# relr.so is linked with -z pack-relative-relocs, as LIB-relr needs its
+# relative relocations in DT_RELR. GNU ld 2.42, Ubuntu 24.04's, ignores the
+# flag on aarch64 with a warning, and the plugin then has no DT_RELR. With
+# --fatal-warnings before the flag, that warning fails the link, so this
+# links an empty shared object with CC's linker, then with lld, and relr.so
+# takes the first that packs. If neither does, relr.so keeps CC's linker
+# and LIB-relr fails, saying why.
+RELR_SO_FLAGS="-Wl,-z,pack-relative-relocs"
+RELR_LINKER=none
+mkdir -p "$BUILDDIR"
+for use_ld in "" "-fuse-ld=lld"; do
+    if $CC${SYSROOT:+ --sysroot=$SYSROOT} -shared -fPIC -nostdlib $use_ld \
+            -Wl,--fatal-warnings -Wl,-z,pack-relative-relocs \
+            -x c /dev/null -o "$BUILDDIR/relr-probe.so" >/dev/null 2>&1; then
+        RELR_SO_FLAGS="${use_ld:+$use_ld }-Wl,-z,pack-relative-relocs"
+        RELR_LINKER=${use_ld:+lld}
+        RELR_LINKER=${RELR_LINKER:-cc}
+        break
+    fi
+done
+rm -f "$BUILDDIR/relr-probe.so"
+
 # --- Regress programs: the "id state" lines of tests/regress/manifest ---
 
 # Each id gets build edges for tests/regress/<id>.c. The gating ones go to
@@ -423,7 +445,7 @@ rule corrupt_plugin
 
 build \$builddir/plugins/plt.so: cc_shared tests/plugins/plt.c tests/plugins/plt_helper.c
 build \$builddir/plugins/relr.so: cc_shared tests/plugins/relr.c
-  so_flags = -Wl,-z,pack-relative-relocs
+  so_flags = ${RELR_SO_FLAGS}
 build \$builddir/plugins/based.so: cc_shared tests/plugins/based.c
   so_flags = -Wl,-Ttext-segment=0x200000
 build \$builddir/plugins/tls_ie.so: cc_shared tests/plugins/tls_ie.c
@@ -643,4 +665,15 @@ build clean: clean_cmd
 EOF
 
 echo "Configured: ${DESC} [${ARCH_DIR}]"
+case "$RELR_LINKER" in
+    lld)
+        echo "The test plugin relr.so links with lld: the linker of $CC"
+        echo "does not pack relative relocations (-z pack-relative-relocs)."
+        ;;
+    none)
+        echo "Warning: neither the linker of $CC nor lld packs relative relocations"
+        echo "(-z pack-relative-relocs), so LIB-relr fails in ninja regress."
+        echo "Install lld and run configure again."
+        ;;
+esac
 echo "Run 'ninja' to build."
