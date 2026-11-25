@@ -2,7 +2,7 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/heap.h>
-#include "kernel.h"          /* struct linux_dirent64 */
+#include "kernel.h"          /* struct linux_dirent64, struct statx */
 
 /* ========================================================================
  * Buffered Writer
@@ -11,6 +11,7 @@
 lc_writer lc_writer_create(int32_t fd, size_t buffer_size) {
     lc_writer w;
     w.fd       = fd;
+    w.error    = 0;
     lc_result_ptr alloc = lc_heap_allocate(buffer_size);
     w.buffer   = alloc.value;
     w.capacity = w.buffer ? buffer_size : 0;
@@ -18,101 +19,151 @@ lc_writer lc_writer_create(int32_t fd, size_t buffer_size) {
     return w;
 }
 
-void lc_writer_destroy(lc_writer *writer) {
-    if (writer->buffer == NULL) return;
-    lc_writer_flush(writer);
+lc_result lc_writer_destroy(lc_writer *writer) {
+    lc_result r = lc_writer_flush(writer);
     lc_heap_free(writer->buffer);
     writer->buffer   = NULL;
     writer->capacity = 0;
     writer->used     = 0;
+    return r;
 }
 
-void lc_writer_flush(lc_writer *writer) {
-    if (writer->used == 0) return;
-
-    /* Write the whole buffer, retrying EINTR and looping over partial writes so
-     * a signal or short write does not silently drop the tail. */
-    (void)lc_kernel_write_all(writer->fd, writer->buffer, writer->used);
-    writer->used = 0;
+/* The result of a call that got `count` bytes through before `error`
+ * stopped it: unlike lc_err, it keeps the count. */
+static lc_result writer_result(size_t count, int32_t error) {
+    return (lc_result){ .value = (int64_t)count, .error = error };
 }
 
-void lc_writer_put_byte(lc_writer *writer, uint8_t byte) {
-    if (writer->buffer == NULL) return;
-    if (writer->used >= writer->capacity) {
-        lc_writer_flush(writer);
+/*
+ * Write `count` bytes of `data` to the fd, retrying EINTR and looping over
+ * short writes, and set *written to the number the fd took. Returns 0 when
+ * it took them all, LC_ERR_AGAIN when the fd would block, or the error that
+ * stopped the write, which becomes the writer's sticky error.
+ */
+static int32_t writer_write(lc_writer *writer, const uint8_t *data, size_t count, size_t *written) {
+    size_t done = 0;
+    int32_t error = 0;
+    while (done < count) {
+        lc_sysret ret = lc_kernel_write_bytes(writer->fd, data + done, count - done);
+        if (ret == -LC_ERR_INTR) continue;
+        if (ret == -LC_ERR_AGAIN) {
+            error = LC_ERR_AGAIN;
+            break;
+        }
+        if (ret <= 0) {
+            /* A write that takes no byte would never finish: an I/O error. */
+            error = ret < 0 ? (int32_t)(-ret) : LC_ERR_IO;
+            writer->error = error;
+            break;
+        }
+        done += (size_t)ret;
     }
-    writer->buffer[writer->used++] = byte;
+    *written = done;
+    return error;
 }
 
-void lc_writer_put_string(lc_writer *writer, const char *str, size_t length) {
-    /* No buffer (allocation failed): capacity is 0, so the loop below would spin
-     * forever making no progress. Nothing can be buffered — bail out. */
-    if (writer->buffer == NULL || writer->capacity == 0) return;
+lc_result lc_writer_flush(lc_writer *writer) {
+    if (writer->error) return lc_err(writer->error);
 
-    size_t remaining = length;
-    const char *src = str;
+    size_t written;
+    int32_t error = writer_write(writer, writer->buffer, writer->used, &written);
 
-    while (remaining > 0) {
+    /* Keep the bytes the fd did not take at the front of the buffer: after
+     * LC_ERR_AGAIN, the next flush writes them. */
+    writer->used -= written;
+    if (writer->used > 0) lc_bytes_move(writer->buffer, writer->buffer + written, writer->used);
+    return writer_result(written, error);
+}
+
+lc_result lc_writer_put_byte(lc_writer *writer, uint8_t byte) {
+    if (writer->error == 0 && writer->used < writer->capacity) {
+        writer->buffer[writer->used++] = byte;
+        return lc_ok(1);
+    }
+    return lc_writer_put_string(writer, (const char *)&byte, 1);
+}
+
+lc_result lc_writer_put_string(lc_writer *writer, const char *str, size_t length) {
+    if (writer->error) return lc_err(writer->error);
+
+    const uint8_t *src = (const uint8_t *)str;
+    size_t accepted = 0;
+
+    while (accepted < length) {
+        size_t remaining = length - accepted;
+
+        /* The buffer is empty and the rest would fill it (always, for an
+         * unbuffered writer, whose capacity is 0): write it straight from
+         * the caller's memory instead of copying it through. */
+        if (writer->used == 0 && remaining >= writer->capacity) {
+            size_t written;
+            int32_t error = writer_write(writer, src + accepted, remaining, &written);
+            return writer_result(accepted + written, error);
+        }
+
         size_t space = writer->capacity - writer->used;
         if (space == 0) {
-            lc_writer_flush(writer);
-            space = writer->capacity;
+            lc_result flushed = lc_writer_flush(writer);
+            /* Stop on a sticky error, or when the fd would block and took
+             * no byte, so the buffer is still full. */
+            if (writer->error || writer->used == writer->capacity)
+                return writer_result(accepted, flushed.error);
+            continue;
         }
 
         size_t chunk = remaining < space ? remaining : space;
-        lc_bytes_copy(writer->buffer + writer->used, src, chunk);
+        lc_bytes_copy(writer->buffer + writer->used, src + accepted, chunk);
         writer->used += chunk;
-        src       += chunk;
-        remaining -= chunk;
+        accepted     += chunk;
     }
+    return lc_ok((int64_t)accepted);
 }
 
-void lc_writer_put_char(lc_writer *writer, char c) {
-    lc_writer_put_byte(writer, (uint8_t)c);
+lc_result lc_writer_put_char(lc_writer *writer, char c) {
+    return lc_writer_put_byte(writer, (uint8_t)c);
 }
 
-void lc_writer_put_line(lc_writer *writer, const char *str, size_t length) {
-    lc_writer_put_string(writer, str, length);
-    lc_writer_put_char(writer, '\n');
+lc_result lc_writer_put_line(lc_writer *writer, const char *str, size_t length) {
+    lc_result r = lc_writer_put_string(writer, str, length);
+    if (lc_is_err(r)) return r;
+    lc_result newline = lc_writer_put_char(writer, '\n');
+    newline.value += r.value;
+    return newline;
 }
 
-void lc_writer_put_unsigned(lc_writer *writer, uint64_t value) {
-    /* max uint64_t is 20 digits */
-    char buf[20];
-    char *p = buf + sizeof(buf);
-
-    if (value == 0) {
-        lc_writer_put_char(writer, '0');
-        return;
-    }
-
-    while (value > 0) {
-        *--p = '0' + (char)(value % 10);
+/* Write the decimal digits of `value` so that they end at `end`, and return
+ * where they start. */
+static char *format_decimal(char *end, uint64_t value) {
+    do {
+        *--end = (char)('0' + value % 10);
         value /= 10;
-    }
-
-    lc_writer_put_string(writer, p, (size_t)(buf + sizeof(buf) - p));
+    } while (value > 0);
+    return end;
 }
 
-void lc_writer_put_signed(lc_writer *writer, int64_t value) {
-    if (value < 0) {
-        lc_writer_put_char(writer, '-');
-        /* Handle INT64_MIN: -(INT64_MIN) overflows, cast first */
-        lc_writer_put_unsigned(writer, (uint64_t)(-(value + 1)) + 1);
-    } else {
-        lc_writer_put_unsigned(writer, (uint64_t)value);
-    }
+lc_result lc_writer_put_unsigned(lc_writer *writer, uint64_t value) {
+    char buf[20];   /* max uint64_t is 20 digits */
+    char *p = format_decimal(buf + sizeof(buf), value);
+    return lc_writer_put_string(writer, p, (size_t)(buf + sizeof(buf) - p));
+}
+
+lc_result lc_writer_put_signed(lc_writer *writer, int64_t value) {
+    char buf[20];   /* "-" + up to 19 digits */
+    /* Handle INT64_MIN: -(INT64_MIN) overflows, cast first */
+    uint64_t magnitude = value < 0 ? (uint64_t)(-(value + 1)) + 1 : (uint64_t)value;
+    char *p = format_decimal(buf + sizeof(buf), magnitude);
+    if (value < 0) *--p = '-';
+    return lc_writer_put_string(writer, p, (size_t)(buf + sizeof(buf) - p));
 }
 
 static const char io_hex_digits[] = "0123456789abcdef";
 
-void lc_writer_put_hex(lc_writer *writer, uint64_t value) {
+lc_result lc_writer_put_hex(lc_writer *writer, uint64_t value) {
     char buf[18]; /* "0x" + up to 16 hex digits */
     char *p = buf + sizeof(buf);
 
     if (value == 0) {
-        lc_writer_put_string(writer, "0x0", 3);
-        return;
+        return lc_writer_put_string(writer, "0x0", 3);
     }
 
     while (value > 0) {
@@ -123,11 +174,11 @@ void lc_writer_put_hex(lc_writer *writer, uint64_t value) {
     *--p = 'x';
     *--p = '0';
 
-    lc_writer_put_string(writer, p, (size_t)(buf + sizeof(buf) - p));
+    return lc_writer_put_string(writer, p, (size_t)(buf + sizeof(buf) - p));
 }
 
-void lc_writer_put_newline(lc_writer *writer) {
-    lc_writer_put_char(writer, '\n');
+lc_result lc_writer_put_newline(lc_writer *writer) {
+    return lc_writer_put_char(writer, '\n');
 }
 
 /* ========================================================================
@@ -135,6 +186,10 @@ void lc_writer_put_newline(lc_writer *writer) {
  * ======================================================================== */
 
 lc_reader lc_reader_create(int32_t fd, size_t buffer_size) {
+    /* A 0-byte buffer could take no byte, so every read would end the
+     * stream at once. */
+    if (buffer_size == 0) buffer_size = 4096;
+
     lc_reader r;
     r.fd          = fd;
     lc_result_ptr alloc = lc_heap_allocate(buffer_size);
@@ -142,7 +197,9 @@ lc_reader lc_reader_create(int32_t fd, size_t buffer_size) {
     r.capacity    = r.buffer ? buffer_size : 0;
     r.filled      = 0;
     r.position    = 0;
-    r.end_of_file = false;
+    /* With no buffer the stream ends at once, with the allocation's error. */
+    r.end_of_file = r.buffer == NULL;
+    r.error       = r.buffer ? 0 : alloc.error;
     return r;
 }
 
@@ -162,22 +219,28 @@ static void reader_refill(lc_reader *reader) {
     reader->position = 0;
     reader->filled   = 0;
 
-    /* Retry EINTR so a signal mid-read is not mistaken for end-of-file. A real
-     * 0 (EOF) or hard error still ends the stream — the reader has no error
-     * channel, so both surface as end_of_file. */
+    /* Retry EINTR so a signal mid-read is not mistaken for end-of-file. */
     lc_sysret ret = lc_kernel_read_retry(reader->fd, reader->buffer, reader->capacity);
-    if (ret <= 0) {
-        reader->end_of_file = true;
-    } else {
+    if (ret > 0) {
         reader->filled = (size_t)ret;
+        reader->error  = 0;
+        return;
     }
+    /* A non-blocking fd with no data yet: not the end of the stream. */
+    if (ret == -LC_ERR_AGAIN) {
+        reader->error = LC_ERR_AGAIN;
+        return;
+    }
+    /* EOF (0) or a read error ends the stream; error tells them apart. */
+    reader->end_of_file = true;
+    reader->error       = (int32_t)(-ret);
 }
 
 int32_t lc_reader_read_byte(lc_reader *reader) {
     if (reader->buffer == NULL) return -1;
     if (reader->position >= reader->filled) {
         reader_refill(reader);
-        if (reader->end_of_file) return -1;
+        if (reader->position >= reader->filled) return -1;
     }
     return (int32_t)reader->buffer[reader->position++];
 }
@@ -191,7 +254,7 @@ size_t lc_reader_read_bytes(lc_reader *reader, void *buf, size_t count) {
         /* If buffer is exhausted, refill */
         if (reader->position >= reader->filled) {
             reader_refill(reader);
-            if (reader->end_of_file) break;
+            if (reader->position >= reader->filled) break;
         }
 
         size_t available = reader->filled - reader->position;
@@ -231,9 +294,18 @@ int64_t lc_reader_read_line(lc_reader *reader, char *buf, size_t buf_size) {
 
     /* If we stopped because buffer is full, consume rest of line */
     if (length == max) {
+        bool consumed = false;
         for (;;) {
             int32_t byte = lc_reader_read_byte(reader);
-            if (byte < 0 || (char)byte == '\n') break;
+            if (byte < 0) break;
+            consumed = true;
+            if ((char)byte == '\n') break;
+        }
+        /* buf_size 1 stores no byte: only the rest of the line, when
+         * there was one, tells a line from the end. */
+        if (max == 0 && !consumed) {
+            buf[0] = '\0';
+            return -1;
         }
     }
 
@@ -257,72 +329,43 @@ lc_result lc_file_read_all(const char *path, uint8_t **out_data, size_t *out_siz
     if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
     int32_t fd = (int32_t)fd_ret;
 
-    /* Try to get the size via seek to end. Pipes and the /proc and /sys
-     * filesystems either report 0 or do not support lseek at all; treat any
-     * non-positive or failed result as "unknown size" and fall through to the
-     * grow-until-EOF path below (the fd is still positioned at the start). */
+    /* The size seek to end reports is only a hint for the first allocation:
+     * pipes and /proc report 0 or do not support lseek at all, every /sys
+     * attribute reports a page whatever it holds, and a file can grow or
+     * shrink while it is read. So always read until EOF, into a buffer that
+     * grows. One byte more than the hint lets a right hint reach EOF without
+     * a reallocation. (A genuinely empty regular file reads 0 bytes
+     * immediately and returns the empty result.) */
     lc_sysret end = lc_kernel_seek_position(fd, 0, SEEK_END);
-    size_t file_size = 0;
+    size_t cap = 4096, len = 0;
     if (end > 0) {
         if (lc_kernel_seek_position(fd, 0, SEEK_SET) < 0) {
             lc_kernel_close_file(fd);
             return lc_err(LC_ERR_IO);
         }
-        file_size = (size_t)end;
+        cap = (size_t)end + 1;
     }
 
-    /* Size unknown: read until EOF into a growing buffer instead of trusting
-     * the reported size. (A genuinely empty regular file reads 0 bytes
-     * immediately and returns the empty result.) */
-    if (file_size == 0) {
-        size_t cap = 4096, len = 0;
-        lc_result_ptr a = lc_heap_allocate(cap);
-        if (lc_ptr_is_err(a)) { lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
-        uint8_t *buf = a.value;
-        for (;;) {
-            if (len == cap) {
-                lc_result_ptr g = lc_heap_reallocate(buf, cap * 2);
-                if (lc_ptr_is_err(g)) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
-                buf = g.value;
-                cap *= 2;
-            }
-            lc_sysret n = lc_kernel_read_retry(fd, buf + len, cap - len);
-            if (n < 0) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err((int32_t)(-n)); }
-            if (n == 0) break;  /* EOF */
-            len += (size_t)n;
+    lc_result_ptr a = lc_heap_allocate(cap);
+    if (lc_ptr_is_err(a)) { lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
+    uint8_t *buf = a.value;
+    for (;;) {
+        if (len == cap) {
+            lc_result_ptr g = lc_heap_reallocate(buf, cap * 2);
+            if (lc_ptr_is_err(g)) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err(LC_ERR_NOMEM); }
+            buf = g.value;
+            cap *= 2;
         }
-        lc_kernel_close_file(fd);
-        if (len == 0) { lc_heap_free(buf); *out_data = NULL; *out_size = 0; return lc_ok(0); }
-        *out_data = buf;
-        *out_size = len;
-        return lc_ok((int64_t)len);
+        lc_sysret n = lc_kernel_read_retry(fd, buf + len, cap - len);
+        if (n < 0) { lc_heap_free(buf); lc_kernel_close_file(fd); return lc_err((int32_t)(-n)); }
+        if (n == 0) break;  /* EOF */
+        len += (size_t)n;
     }
-
-    /* Allocate buffer */
-    lc_result_ptr alloc = lc_heap_allocate(file_size);
-    uint8_t *data = alloc.value;
-    if (data == NULL) {
-        lc_kernel_close_file(fd);
-        return lc_err(LC_ERR_NOMEM);
-    }
-
-    /* Read the entire file, retrying EINTR and looping over short reads. */
-    lc_sysret r = lc_kernel_read_all(fd, data, file_size);
-
     lc_kernel_close_file(fd);
-
-    if (r < 0) {
-        lc_heap_free(data);
-        return lc_err((int32_t)(-r));  /* real error, not an interrupted read */
-    }
-    if ((size_t)r != file_size) {
-        lc_heap_free(data);
-        return lc_err(LC_ERR_IO);  /* file shrank / truncated mid-read */
-    }
-
-    *out_data = data;
-    *out_size = file_size;
-    return lc_ok((int64_t)file_size);
+    if (len == 0) { lc_heap_free(buf); return lc_ok(0); }
+    *out_data = buf;
+    *out_size = len;
+    return lc_ok((int64_t)len);
 }
 
 lc_result lc_file_write_all(const char *path, const void *data, size_t size) {
@@ -341,15 +384,12 @@ lc_result lc_file_write_all(const char *path, const void *data, size_t size) {
 }
 
 lc_result lc_file_get_size(const char *path) {
-    lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_CLOEXEC, 0);
-    if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
-    int32_t fd = (int32_t)fd_ret;
-
-    lc_sysret end = lc_kernel_seek_position(fd, 0, SEEK_END);
-    lc_kernel_close_file(fd);
-
-    if (end < 0) return lc_err((int32_t)(-end));
-    return lc_ok(end);
+    /* statx does not open the file: a FIFO does not block it, it needs no
+     * read permission, and a device sees no open. */
+    struct statx stx;
+    lc_sysret ret = lc_syscall5(SYS_statx, AT_FDCWD, (int64_t)path, 0, STATX_SIZE, (int64_t)&stx);
+    if (ret < 0) return lc_err((int32_t)(-ret));
+    return lc_ok((int64_t)stx.stx_size);
 }
 
 /* ========================================================================

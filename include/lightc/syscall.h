@@ -310,11 +310,16 @@ static inline int32_t lc_kernel_get_thread_id(void) {
 /* futex operations */
 #define FUTEX_WAIT  0
 #define FUTEX_WAKE  1
+/* Or'd into an operation: the futex is private to this process. A private
+ * wait is woken only by a private wake of the same process. */
+#define FUTEX_PRIVATE_FLAG 128
 
 /*
  * futex takes six arguments: uaddr, op, val, timeout, uaddr2 and val3.
  * FUTEX_WAIT reads only the first four, FUTEX_WAKE the first three, and
  * the rest are passed as 0. A NULL timeout waits with no time limit.
+ * These two are shared futexes, which also work between processes that
+ * map the same memory; lightc's sync objects use private ones.
  */
 static inline lc_sysret lc_kernel_futex_wait(int32_t *addr, int32_t expected) {
     return lc_syscall6(SYS_futex, (int64_t)addr, FUTEX_WAIT, expected, 0, 0, 0);

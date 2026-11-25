@@ -34,10 +34,12 @@
  * io_uring names, ...). Each such UAPI value is captured as an enum constant
  * UAPI_<name>, the UAPI macro is #undef'd, and only then are lightc's headers
  * included, so every assert compares lightc's definition with the kernel's.
- * src/kernel.h's Elf64_* typedefs would clash with <linux/elf.h>'s, so that
- * file is included with them renamed lightc_Elf64_*. SYS_* numbers are
- * compared with __NR_* directly, and LC_ERR_* values with E* directly; those
- * names do not clash.
+ * src/kernel.h's Elf64_* typedefs would clash with <linux/elf.h>'s, its
+ * struct statx with <linux/stat.h>'s and its struct iovec with
+ * <linux/uio.h>'s, so that file is included with them renamed
+ * lightc_Elf64_*, lightc_statx and lightc_iovec. SYS_* numbers are
+ * compared with __NR_* directly, and LC_ERR_* values with E* directly;
+ * those names do not clash.
  *
  * The UAPI headers are those of Linux 6.8 in CI, and nothing here may need a
  * newer one.
@@ -61,9 +63,10 @@
 #include <linux/mount.h>     /* MS_* */
 #include <linux/sched.h>     /* CLONE_* */
 #include <linux/signalfd.h>  /* SFD_*, struct signalfd_siginfo */
-#include <linux/stat.h>      /* S_IF* */
+#include <linux/stat.h>      /* S_IF*, STATX_SIZE, struct statx */
 #include <linux/time.h>      /* CLOCK_* */
 #include <linux/time_types.h>  /* struct __kernel_timespec */
+#include <linux/uio.h>       /* struct iovec */
 #include <linux/wait.h>      /* WNOHANG */
 #if defined(__x86_64__)
 #include <asm/prctl.h>       /* ARCH_SET_FS */
@@ -81,10 +84,11 @@
     X(MAP_PRIVATE) X(MAP_FIXED) X(MAP_ANONYMOUS) X(MADV_DONTNEED)           \
     X(SEEK_SET) X(SEEK_CUR) X(SEEK_END) X(WNOHANG) X(SIGHUP) X(SIGINT)      \
     X(SIGQUIT) X(SIGKILL) X(SIGUSR1) X(SIGUSR2) X(SIGTERM) X(SIGCHLD)       \
-    X(SFD_CLOEXEC) X(SFD_NONBLOCK) X(FUTEX_WAIT) X(FUTEX_WAKE) X(MS_RDONLY) \
-    X(MS_NOSUID) X(MS_NODEV) X(MS_NOEXEC) X(MS_REMOUNT) X(MS_BIND)          \
-    X(MS_REC) X(MS_PRIVATE) X(MS_SLAVE) X(CLONE_NEWNS) X(CLONE_NEWUTS)      \
-    X(CLONE_NEWIPC) X(CLONE_NEWUSER) X(CLONE_NEWPID) X(CLONE_NEWNET)        \
+    X(SFD_CLOEXEC) X(SFD_NONBLOCK) X(FUTEX_WAIT) X(FUTEX_WAKE)              \
+    X(FUTEX_PRIVATE_FLAG) X(MS_RDONLY) X(MS_NOSUID) X(MS_NODEV)             \
+    X(MS_NOEXEC) X(MS_REMOUNT) X(MS_BIND) X(MS_REC) X(MS_PRIVATE)           \
+    X(MS_SLAVE) X(CLONE_NEWNS) X(CLONE_NEWUTS) X(CLONE_NEWIPC)              \
+    X(CLONE_NEWUSER) X(CLONE_NEWPID) X(CLONE_NEWNET)                        \
     /* src/kernel.h */                                                      \
     X(IORING_OFF_SQ_RING) X(IORING_OFF_CQ_RING) X(IORING_OFF_SQES)          \
     X(IORING_OP_TIMEOUT) X(IORING_OP_ACCEPT) X(IORING_OP_READ)              \
@@ -97,7 +101,9 @@
     X(PF_W) X(PF_R) X(DT_NULL) X(DT_NEEDED) X(DT_HASH) X(DT_STRTAB)         \
     X(DT_SYMTAB) X(DT_RELA) X(DT_RELASZ) X(DT_RELAENT) X(DT_STRSZ)          \
     X(DT_SYMENT) X(DT_INIT) X(DT_FINI) X(DT_RELACOUNT) X(STB_GLOBAL)        \
-    X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF)
+    X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF) X(STATX_SIZE)        \
+    X(PT_TLS) X(PT_GNU_RELRO) X(DT_PLTRELSZ) X(DT_PLTREL) X(DT_JMPREL)      \
+    X(STT_TLS) X(SHN_ABS)
 
 /* The same, on x86_64 only: aarch64 has no arch_prctl. */
 #define UAPI_CONSTANTS_X86_64(X)                                            \
@@ -109,7 +115,8 @@
  * another name, or of an expression of UAPI values. getdents64 gives a
  * file's type as the kernel's S_DT(mode), bits 12 to 15 of its mode
  * (include/linux/fs_types.h), so each LC_DT_* is an S_IF* shifted right
- * by 12.
+ * by 12. The kernel's include/linux/net.h, which is not UAPI, defines
+ * SOCK_CLOEXEC as O_CLOEXEC.
  */
 #define UAPI_RENAMED(X)                                                     \
     /* <lightc/syscall.h> */                                                \
@@ -129,7 +136,8 @@
     X(LC_DT_DIR, S_IFDIR >> 12) X(LC_DT_REG, S_IFREG >> 12)                 \
     X(LC_DT_LNK, S_IFLNK >> 12)                                             \
     /* src/kernel.h */                                                      \
-    X(LC_AT_NULL, AT_NULL) X(LC_AT_PAGESZ, AT_PAGESZ)
+    X(LC_AT_NULL, AT_NULL) X(LC_AT_PAGESZ, AT_PAGESZ)                       \
+    X(SOCK_CLOEXEC, O_CLOEXEC)
 
 /*
  * X(name, probe): function-like macros of the UAPI, which must give the
@@ -159,16 +167,16 @@
  *                          UAPI.
  *   F_OK, R_OK, W_OK, X_OK faccessat2's modes, which only libc's <unistd.h>
  *                          names.
- *   LC_AF_*, LC_SOCK_*, LC_SHUT_*
+ *   LC_AF_*, LC_SOCK_*, LC_SHUT_*, MSG_NOSIGNAL
  *                          in the kernel's include/linux/socket.h and
  *                          include/linux/net.h, which are not UAPI.
  *   LC_DT_UNKNOWN          the d_type of a file whose type getdents64
  *                          does not know: 0 in the kernel's
  *                          include/linux/fs_types.h, which is not UAPI.
  *   DT_INIT_ARRAY, DT_FINI_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAYSZ,
- *   DT_GNU_HASH, R_X86_64_*, R_AARCH64_*
+ *   DT_RELRSZ, DT_RELR, DT_RELRENT, DT_GNU_HASH, R_X86_64_*, R_AARCH64_*
  *                          ELF values that <linux/elf.h> leaves out: the
- *                          first four are the ELF gABI's, DT_GNU_HASH is
+ *                          first seven are the ELF gABI's, DT_GNU_HASH is
  *                          GNU's, and the relocation types are each arch's
  *                          psABI's, in the kernel's arch/x86 and arch/arm64
  *                          asm/elf.h, which are not UAPI.
@@ -184,10 +192,11 @@
     X(LC_DT_UNKNOWN)                                                        \
     /* src/kernel.h */                                                      \
     X(DT_INIT_ARRAY) X(DT_FINI_ARRAY) X(DT_INIT_ARRAYSZ) X(DT_FINI_ARRAYSZ) \
+    X(DT_RELRSZ) X(DT_RELR) X(DT_RELRENT)                                   \
     X(DT_GNU_HASH) X(R_X86_64_NONE) X(R_X86_64_64) X(R_X86_64_GLOB_DAT)     \
     X(R_X86_64_JUMP_SLOT) X(R_X86_64_RELATIVE) X(R_AARCH64_NONE)            \
     X(R_AARCH64_RELATIVE) X(R_AARCH64_GLOB_DAT) X(R_AARCH64_JUMP_SLOT)      \
-    X(R_AARCH64_ABS64)
+    X(R_AARCH64_ABS64) X(MSG_NOSIGNAL)
 
 /*
  * lightc's own sizes, limits, initializers and helpers: no kernel values.
@@ -284,6 +293,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef SFD_NONBLOCK
 #undef FUTEX_WAIT
 #undef FUTEX_WAKE
+#undef FUTEX_PRIVATE_FLAG
 #undef MS_RDONLY
 #undef MS_NOSUID
 #undef MS_NODEV
@@ -352,13 +362,22 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef STT_FUNC
 #undef STT_OBJECT
 #undef SHN_UNDEF
+#undef STATX_SIZE
+#undef PT_TLS
+#undef PT_GNU_RELRO
+#undef DT_PLTRELSZ
+#undef DT_PLTREL
+#undef DT_JMPREL
+#undef STT_TLS
+#undef SHN_ABS
 #undef ARCH_SET_FS
 #undef ELF64_ST_BIND
 #undef ELF64_ST_TYPE
 #undef ELF64_R_SYM
 #undef ELF64_R_TYPE
 
-/* src/kernel.h, with its Elf64_* typedefs renamed lightc_Elf64_* */
+/* src/kernel.h, with its Elf64_* typedefs renamed lightc_Elf64_*, its
+ * struct statx renamed lightc_statx and its struct iovec lightc_iovec */
 #define Elf64_Addr   lightc_Elf64_Addr
 #define Elf64_Off    lightc_Elf64_Off
 #define Elf64_Half   lightc_Elf64_Half
@@ -371,6 +390,8 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #define Elf64_Dyn    lightc_Elf64_Dyn
 #define Elf64_Sym    lightc_Elf64_Sym
 #define Elf64_Rela   lightc_Elf64_Rela
+#define statx        lightc_statx
+#define iovec        lightc_iovec
 #include "../src/kernel.h"
 #undef Elf64_Addr
 #undef Elf64_Off
@@ -384,6 +405,8 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef Elf64_Dyn
 #undef Elf64_Sym
 #undef Elf64_Rela
+#undef statx
+#undef iovec
 
 #include <lightc/io.h>
 #include <lightc/signal.h>
@@ -626,6 +649,28 @@ AT_OFFSET(struct linux_dirent64, d_reclen, 16, 2)
 AT_OFFSET(struct linux_dirent64, d_type, 18, 1)
 _Static_assert(offsetof(struct linux_dirent64, d_name) == 19,
                "struct linux_dirent64.d_name is not at offset 19");
+
+/*
+ * src/kernel.h: statx fills the whole struct, and lc_file_get_size reads
+ * stx_size. lightc's _rest is the UAPI's fields from stx_blocks on.
+ */
+SAME_SIZE(struct lightc_statx, struct statx)
+SAME_FIELD(struct lightc_statx, stx_mask, struct statx, stx_mask)
+SAME_FIELD(struct lightc_statx, stx_blksize, struct statx, stx_blksize)
+SAME_FIELD(struct lightc_statx, stx_attributes, struct statx, stx_attributes)
+SAME_FIELD(struct lightc_statx, stx_nlink, struct statx, stx_nlink)
+SAME_FIELD(struct lightc_statx, stx_uid, struct statx, stx_uid)
+SAME_FIELD(struct lightc_statx, stx_gid, struct statx, stx_gid)
+SAME_FIELD(struct lightc_statx, stx_mode, struct statx, stx_mode)
+SAME_FIELD(struct lightc_statx, _spare0, struct statx, __spare0)
+SAME_FIELD(struct lightc_statx, stx_ino, struct statx, stx_ino)
+SAME_FIELD(struct lightc_statx, stx_size, struct statx, stx_size)
+SAME_OFFSET(struct lightc_statx, _rest, struct statx, stx_blocks)
+
+/* src/kernel.h: writev reads an array of struct iovec, for log.c. */
+SAME_SIZE(struct lightc_iovec, struct iovec)
+SAME_FIELD(struct lightc_iovec, iov_base, struct iovec, iov_base)
+SAME_FIELD(struct lightc_iovec, iov_len, struct iovec, iov_len)
 
 /* src/kernel.h: ELF, as lc_library_open reads it from a shared object. */
 SAME_SIZE(lightc_Elf64_Addr, Elf64_Addr)

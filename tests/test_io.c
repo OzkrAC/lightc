@@ -42,8 +42,9 @@ static void test_writer_create_destroy(void) {
     TEST_ASSERT_EQ(w.fd, wfd);
     TEST_ASSERT_EQ(w.capacity, 256);
     TEST_ASSERT_EQ(w.used, 0);
+    TEST_ASSERT_EQ(w.error, 0);
 
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
     TEST_ASSERT_NULL(w.buffer);
     TEST_ASSERT_EQ(w.capacity, 0);
     TEST_ASSERT_EQ(w.used, 0);
@@ -58,8 +59,12 @@ static void test_writer_put_string_flush(void) {
     TEST_ASSERT_EQ(pipe_create(&rfd, &wfd), 0);
 
     lc_writer w = lc_writer_create(wfd, 256);
-    lc_writer_put_string(&w, "hello", 5);
-    lc_writer_flush(&w);
+    lc_result put = lc_writer_put_string(&w, "hello", 5);
+    TEST_ASSERT_OK(put);
+    TEST_ASSERT_EQ(put.value, 5);
+    lc_result flushed = lc_writer_flush(&w);
+    TEST_ASSERT_OK(flushed);
+    TEST_ASSERT_EQ(flushed.value, 5);
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -69,7 +74,7 @@ static void test_writer_put_string_flush(void) {
 
     lc_kernel_close_file(rfd);
     /* buffer already freed by close; free manually since we flushed ourselves */
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Writer: put_byte ===== */
@@ -82,7 +87,7 @@ static void test_writer_put_byte(void) {
     lc_writer_put_byte(&w, 0x41); /* 'A' */
     lc_writer_put_byte(&w, 0x42); /* 'B' */
     lc_writer_put_byte(&w, 0x43); /* 'C' */
-    lc_writer_flush(&w);
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -91,7 +96,7 @@ static void test_writer_put_byte(void) {
     TEST_ASSERT_STR_EQ(buf, 3, "ABC", 3);
 
     lc_kernel_close_file(rfd);
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Writer: put_char ===== */
@@ -103,7 +108,7 @@ static void test_writer_put_char(void) {
     lc_writer w = lc_writer_create(wfd, 256);
     lc_writer_put_char(&w, 'X');
     lc_writer_put_char(&w, 'Y');
-    lc_writer_flush(&w);
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -112,7 +117,7 @@ static void test_writer_put_char(void) {
     TEST_ASSERT_STR_EQ(buf, 2, "XY", 2);
 
     lc_kernel_close_file(rfd);
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Writer: put_line ===== */
@@ -122,8 +127,10 @@ static void test_writer_put_line(void) {
     TEST_ASSERT_EQ(pipe_create(&rfd, &wfd), 0);
 
     lc_writer w = lc_writer_create(wfd, 256);
-    lc_writer_put_line(&w, "hello", 5);
-    lc_writer_flush(&w);
+    lc_result put = lc_writer_put_line(&w, "hello", 5);
+    TEST_ASSERT_OK(put);
+    TEST_ASSERT_EQ(put.value, 6);      /* the newline counts */
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -132,7 +139,7 @@ static void test_writer_put_line(void) {
     TEST_ASSERT_STR_EQ(buf, 6, "hello\n", 6);
 
     lc_kernel_close_file(rfd);
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Writer: put_signed ===== */
@@ -147,14 +154,16 @@ static void test_writer_put_signed(void) {
     lc_writer_put_signed(&w, 42);
     lc_writer_put_char(&w, ',');
 
-    /* negative */
-    lc_writer_put_signed(&w, -99);
+    /* negative: the sign counts */
+    lc_result put = lc_writer_put_signed(&w, -99);
+    TEST_ASSERT_OK(put);
+    TEST_ASSERT_EQ(put.value, 3);
     lc_writer_put_char(&w, ',');
 
     /* zero */
     lc_writer_put_signed(&w, 0);
 
-    lc_writer_flush(&w);
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -162,7 +171,7 @@ static void test_writer_put_signed(void) {
     TEST_ASSERT_STR_EQ(buf, n, "42,-99,0", 8);
 
     lc_kernel_close_file(rfd);
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Writer: put_unsigned ===== */
@@ -179,7 +188,7 @@ static void test_writer_put_unsigned(void) {
     lc_writer_put_char(&w, ',');
     lc_writer_put_unsigned(&w, 18446744073709551615ULL);
 
-    lc_writer_flush(&w);
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
 
     char buf[64];
@@ -187,7 +196,7 @@ static void test_writer_put_unsigned(void) {
     TEST_ASSERT_STR_EQ(buf, n, "0,12345,18446744073709551615", 28);
 
     lc_kernel_close_file(rfd);
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 }
 
 /* ===== Reader lifecycle ===== */
@@ -271,11 +280,11 @@ static void test_writer_reader_roundtrip(void) {
     lc_writer_put_string(&w, "line2\n", 6);
     lc_writer_put_signed(&w, -42);
     lc_writer_put_char(&w, '\n');
-    lc_writer_flush(&w);
+    TEST_ASSERT_OK(lc_writer_flush(&w));
     lc_kernel_close_file(wfd);
     /* Destroy after closing fd to avoid double-flush to closed fd */
     w.fd = -1;
-    lc_writer_destroy(&w);
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
 
     /* Read via buffered reader */
     lc_reader r = lc_reader_create(rfd, 64);
@@ -300,19 +309,27 @@ static void test_writer_reader_roundtrip(void) {
 /* ===== M1: writer with a failed buffer allocation must not spin ===== */
 
 /* A writer whose buffer allocation failed has capacity 0. put_string's chunking
- * loop makes no progress at capacity 0 and, unguarded, spins forever. With the
- * guard it returns immediately, so this test simply completing (not timing out)
- * is the assertion. */
+ * loop makes no progress at capacity 0 and, unguarded, spins forever. Such a
+ * writer is unbuffered instead: each put writes straight to the fd. */
 static void test_writer_put_string_no_buffer(void) {
-    lc_writer w = lc_writer_create(1, (size_t)-1);  /* SIZE_MAX -> allocation fails */
+    int32_t rfd, wfd;
+    TEST_ASSERT_EQ(pipe_create(&rfd, &wfd), 0);
+
+    lc_writer w = lc_writer_create(wfd, (size_t)-1);  /* SIZE_MAX -> allocation fails */
     TEST_ASSERT_NULL(w.buffer);
     TEST_ASSERT_EQ(w.capacity, (size_t)0);
 
-    lc_writer_put_string(&w, "data", 4);  /* must return, not hang */
-    lc_writer_put_byte(&w, 'x');          /* also guarded */
-    TEST_ASSERT(true);
+    lc_result put = lc_writer_put_string(&w, "data", 4);  /* must return, not hang */
+    TEST_ASSERT_OK(put);
+    TEST_ASSERT_EQ(put.value, 4);
+    TEST_ASSERT_OK(lc_writer_put_byte(&w, 'x'));
+    TEST_ASSERT_OK(lc_writer_destroy(&w));
+    lc_kernel_close_file(wfd);
 
-    lc_writer_destroy(&w);
+    char buf[16];
+    size_t n = raw_read(rfd, buf, sizeof(buf));
+    TEST_ASSERT_STR_EQ(buf, n, "datax", 5);
+    lc_kernel_close_file(rfd);
 }
 
 /* ===== M1: lc_file_write_all / lc_file_read_all round-trip ===== */

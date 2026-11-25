@@ -427,6 +427,10 @@ static lc_heap_local *get_local(void) {
          local != NULL;
          local = atomic_load_explicit(&local->next, memory_order_acquire)) {
         if (local->tid == tid) {
+            /* The local of a thread that is gone, whose tid the kernel has
+             * handed out again: this thread takes over its pages, but starts
+             * with every lc_tls_* slot NULL, not with the dead one's values. */
+            lc_bytes_fill(local->tls_slots, 0, sizeof(local->tls_slots));
             tls_write(local);
             return local;
         }

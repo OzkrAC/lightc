@@ -69,6 +69,7 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
                                   lc_heap_tls_sentinel(),
                                   func, arg);
     if (tid < 0) {
+        thread->stack_base = NULL;  /* so a join cannot unmap it a second time */
         lc_kernel_unmap_memory(stack, total_size);
         return lc_err((int32_t)(-tid));
     }
@@ -111,6 +112,25 @@ bool lc_spinlock_try_acquire(lc_spinlock *lock) {
     return atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) == 0;
 }
 
+/*
+ * The mutex, condition variable, read-write lock, barrier and once below are
+ * process-private: they wait and wake with FUTEX_PRIVATE_FLAG, which spares
+ * the kernel the page lookup of a shared futex. A private futex wakes no
+ * waiter of another process, so none of them works between processes that
+ * share it in MAP_SHARED memory. lc_thread_join keeps the shared
+ * lc_kernel_futex_wait: the kernel's CLONE_CHILD_CLEARTID wake is a shared
+ * one, which a private wait never sees.
+ */
+static inline lc_sysret futex_wait_private(int32_t *addr, int32_t expected) {
+    return lc_syscall6(SYS_futex, (int64_t)addr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+                       expected, 0, 0, 0);
+}
+
+static inline lc_sysret futex_wake_private(int32_t *addr, int32_t count) {
+    return lc_syscall6(SYS_futex, (int64_t)addr, FUTEX_WAKE | FUTEX_PRIVATE_FLAG,
+                       count, 0, 0, 0);
+}
+
 /* --- Mutex (futex-based, 3-state) --- */
 
 void lc_mutex_lock(lc_mutex *m) {
@@ -123,7 +143,7 @@ void lc_mutex_lock(lc_mutex *m) {
 
     /* Slow path: set to contended (2) and wait */
     while (atomic_exchange_explicit(&m->state, 2, memory_order_acquire) != 0) {
-        lc_kernel_futex_wait((int32_t *)&m->state, 2);
+        futex_wait_private((int32_t *)&m->state, 2);
     }
 }
 
@@ -132,7 +152,7 @@ void lc_mutex_unlock(lc_mutex *m) {
     if (prev == 2) {
         /* There were waiters — wake one */
         atomic_store_explicit(&m->state, 0, memory_order_release);
-        lc_kernel_futex_wake((int32_t *)&m->state, 1);
+        futex_wake_private((int32_t *)&m->state, 1);
     }
 }
 
@@ -147,18 +167,18 @@ bool lc_mutex_try_lock(lc_mutex *m) {
 void lc_condvar_wait(lc_condvar *cv, lc_mutex *m) {
     uint32_t seq = atomic_load_explicit(&cv->seq, memory_order_acquire);
     lc_mutex_unlock(m);
-    lc_kernel_futex_wait((int32_t *)&cv->seq, (int32_t)seq);
+    futex_wait_private((int32_t *)&cv->seq, (int32_t)seq);
     lc_mutex_lock(m);
 }
 
 void lc_condvar_signal(lc_condvar *cv) {
     atomic_fetch_add_explicit(&cv->seq, 1, memory_order_release);
-    lc_kernel_futex_wake((int32_t *)&cv->seq, 1);
+    futex_wake_private((int32_t *)&cv->seq, 1);
 }
 
 void lc_condvar_broadcast(lc_condvar *cv) {
     atomic_fetch_add_explicit(&cv->seq, 1, memory_order_release);
-    lc_kernel_futex_wake((int32_t *)&cv->seq, 2147483647);
+    futex_wake_private((int32_t *)&cv->seq, 2147483647);
 }
 
 /* --- Read-Write Lock --- */
@@ -170,7 +190,7 @@ void lc_rwlock_read_lock(lc_rwlock *rw) {
         uint32_t state = atomic_load_explicit(&rw->state, memory_order_acquire);
         if (state & RWLOCK_WRITE_BIT) {
             /* Writer holds lock — wait */
-            lc_kernel_futex_wait((int32_t *)&rw->state, (int32_t)state);
+            futex_wait_private((int32_t *)&rw->state, (int32_t)state);
             continue;
         }
         uint32_t expected = state;
@@ -185,7 +205,7 @@ void lc_rwlock_read_unlock(lc_rwlock *rw) {
     uint32_t prev = atomic_fetch_sub_explicit(&rw->state, 1, memory_order_release);
     if (prev == 1) {
         /* Last reader — wake a waiting writer */
-        lc_kernel_futex_wake((int32_t *)&rw->state, 1);
+        futex_wake_private((int32_t *)&rw->state, 1);
     }
 }
 
@@ -203,14 +223,14 @@ void lc_rwlock_write_lock(lc_rwlock *rw) {
         /* Only sleep while the lock is still held with the value we observed.
          * If it was released between the CAS and here, futex_wait returns
          * immediately (value mismatch) and we retry. */
-        lc_kernel_futex_wait((int32_t *)&rw->state, (int32_t)expected);
+        futex_wait_private((int32_t *)&rw->state, (int32_t)expected);
     }
 }
 
 void lc_rwlock_write_unlock(lc_rwlock *rw) {
     atomic_store_explicit(&rw->state, 0, memory_order_release);
     /* Wake all — readers and writers compete */
-    lc_kernel_futex_wake((int32_t *)&rw->state, 2147483647);
+    futex_wake_private((int32_t *)&rw->state, 2147483647);
 }
 
 /* --- Barrier --- */
@@ -229,11 +249,11 @@ void lc_barrier_wait(lc_barrier *b) {
         /* Last thread — reset and advance phase */
         atomic_store_explicit(&b->count, 0, memory_order_relaxed);
         atomic_fetch_add_explicit(&b->phase, 1, memory_order_release);
-        lc_kernel_futex_wake((int32_t *)&b->phase, 2147483647);
+        futex_wake_private((int32_t *)&b->phase, 2147483647);
     } else {
         /* Wait for phase to change */
         while (atomic_load_explicit(&b->phase, memory_order_acquire) == phase) {
-            lc_kernel_futex_wait((int32_t *)&b->phase, (int32_t)phase);
+            futex_wait_private((int32_t *)&b->phase, (int32_t)phase);
         }
     }
 }
@@ -250,13 +270,13 @@ void lc_call_once(lc_once *once, lc_once_func func) {
         /* We won — run the function */
         func();
         atomic_store_explicit(&once->state, 2, memory_order_release);
-        lc_kernel_futex_wake((int32_t *)&once->state, 2147483647);
+        futex_wake_private((int32_t *)&once->state, 2147483647);
         return;
     }
 
     /* Another thread is running it — wait */
     while (atomic_load_explicit(&once->state, memory_order_acquire) != 2) {
-        lc_kernel_futex_wait((int32_t *)&once->state, 1);
+        futex_wait_private((int32_t *)&once->state, 1);
     }
 }
 

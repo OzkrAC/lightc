@@ -78,7 +78,8 @@ void lc_heap_get_stats(lc_heap_stats *stats);
 /* Reset cumulative counters (no-op when LC_STATS=0). */
 void lc_heap_reset_stats(void);
 
-/* Return per-thread TLS slot array (used by lc_tls_get/set). */
+/* Return per-thread TLS slot array (used by lc_tls_get/set). A thread's
+ * slots start NULL, also when it reuses the id of a thread that has exited. */
 void **lc_heap_tls_slots(void);
 
 #endif /* LIGHTC_HEAP_H */

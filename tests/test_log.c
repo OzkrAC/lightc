@@ -4,8 +4,10 @@
 
 #include "test.h"
 #include <lightc/log.h>
+#include <lightc/signal.h>
 #include <lightc/syscall.h>
 #include <lightc/string.h>
+#include <lightc/thread.h>
 
 /* ===== Helper: create pipe and redirect log output ===== */
 
@@ -162,6 +164,109 @@ static void test_log_json_format(void) {
     teardown_log_pipe(fds);
 }
 
+/* ===== A short write: the rest of the line follows, or the line stops ===== */
+
+/* Longer than a pipe holds: 16 pages by default, 1 MiB with 64 KiB pages. */
+#define LONG_MESSAGE (2u << 20)
+
+static char    long_message[LONG_MESSAGE];
+static char    long_output[LONG_MESSAGE + 64];
+static size_t  long_output_length;
+static int32_t long_pipe[2];
+static bool    reader_blocked_signal;
+static volatile int32_t short_write_signals;
+
+static void short_write_handler(int signo) { (void)signo; short_write_signals++; }
+
+static void fill_long_message(void) {
+    for (size_t i = 0; i < LONG_MESSAGE; i++) long_message[i] = (char)('a' + i % 26);
+}
+
+/* Length of the "[INFO  tid:<tid>] " prefix that out starts with, or 0. */
+static size_t info_prefix_length(const char *out, size_t length) {
+    if (!lc_string_starts_with(out, length, "[INFO  tid:", 11)) return 0;
+    for (size_t i = 11; i + 1 < length; i++)
+        if (out[i] == ']' && out[i + 1] == ' ') return i + 2;
+    return 0;
+}
+
+/*
+ * Once it has read the first byte of the line, the main thread is in its
+ * writev, which cannot finish while nothing reads: the line is longer than
+ * the pipe holds. This thread blocks SIGUSR1, so the SIGUSR1 it then sends
+ * goes to the main thread and cuts the writev short. It reads the rest
+ * until the write end is closed.
+ */
+static int32_t read_long_line(void *arg) {
+    (void)arg;
+    reader_blocked_signal = lc_is_ok(lc_signal_block(SIGUSR1));
+    lc_sysret n = lc_kernel_read_retry(long_pipe[0], long_output, 1);
+    if (n != 1) return 1;
+    long_output_length = 1;
+    if (reader_blocked_signal)
+        (void)lc_kernel_send_signal(lc_kernel_get_process_id(), SIGUSR1);
+    for (;;) {
+        n = lc_kernel_read_retry(long_pipe[0], long_output + long_output_length,
+                                 sizeof(long_output) - long_output_length);
+        if (n <= 0) return 0;
+        long_output_length += (size_t)n;
+    }
+}
+
+/* A signal cuts the writev of a line short: the rest must follow, and the
+ * line come out whole. */
+static void test_log_short_write_finishes_line(void) {
+    fill_long_message();
+    TEST_REQUIRE_EQ(lc_kernel_create_pipe(long_pipe, O_CLOEXEC), 0);
+    short_write_signals = 0;
+    TEST_REQUIRE_OK(lc_signal_handle(SIGUSR1, short_write_handler));
+    lc_log_set_level(LC_LOG_DEBUG);
+    lc_log_set_format(LC_LOG_FORMAT_TEXT);
+    lc_log_set_output(long_pipe[1]);
+
+    lc_thread reader;
+    TEST_REQUIRE_OK(lc_thread_create(&reader, read_long_line, NULL));
+    lc_log_string(LC_LOG_INFO, long_message, LONG_MESSAGE);
+    lc_log_set_output(2);
+    lc_kernel_close_file(long_pipe[1]);     /* the reader reads end of file */
+    lc_thread_join(&reader);
+    lc_kernel_close_file(long_pipe[0]);
+    TEST_ASSERT_OK(lc_signal_reset(SIGUSR1));
+
+    TEST_ASSERT(reader_blocked_signal);
+    TEST_ASSERT_EQ(short_write_signals, 1);  /* the signal came during the writev */
+    size_t prefix = info_prefix_length(long_output, long_output_length);
+    TEST_ASSERT(prefix > 0);
+    TEST_ASSERT_EQ(long_output_length, prefix + LONG_MESSAGE + 1);
+    if (prefix > 0 && long_output_length == prefix + LONG_MESSAGE + 1) {
+        TEST_ASSERT_EQ(lc_bytes_compare(long_output + prefix, long_message, LONG_MESSAGE), 0);
+        TEST_ASSERT_EQ(long_output[long_output_length - 1], '\n');
+    }
+}
+
+/* On a non-blocking pipe the writev stops once the pipe is full, and the
+ * write of the rest fails at once. The line stops there, with no newline,
+ * and the next line, which the pipe cannot take, is dropped. */
+static void test_log_short_write_error_stops_line(void) {
+    fill_long_message();
+    int32_t fds[2];
+    setup_log_pipe(fds);
+    lc_log_set_level(LC_LOG_DEBUG);
+    lc_log_set_format(LC_LOG_FORMAT_TEXT);
+
+    lc_log_string(LC_LOG_INFO, long_message, LONG_MESSAGE);
+    lc_log(LC_LOG_INFO, "next");
+
+    size_t n = drain_pipe(fds[0], long_output, sizeof(long_output));
+    teardown_log_pipe(fds);
+
+    size_t prefix = info_prefix_length(long_output, n);
+    TEST_ASSERT(prefix > 0);
+    TEST_ASSERT(n > prefix && n < prefix + LONG_MESSAGE);
+    if (prefix > 0 && n > prefix && n < prefix + LONG_MESSAGE)  /* the message's start */
+        TEST_ASSERT_EQ(lc_bytes_compare(long_output + prefix, long_message, n - prefix), 0);
+}
+
 /* ===== main ===== */
 
 /* Control bytes (< 0x20) must be escaped as \u00XX so the JSON stays valid, and
@@ -202,6 +307,10 @@ int main(int argc, char **argv, char **envp) {
     /* JSON format output */
     TEST_RUN(test_log_json_format);
     TEST_RUN(test_log_json_control_escape);
+
+    /* a short write */
+    TEST_RUN(test_log_short_write_finishes_line);
+    TEST_RUN(test_log_short_write_error_stops_line);
 
     return test_main();
 }

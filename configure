@@ -15,6 +15,7 @@
 #   ninja regress            — run the regress programs of fixed defects
 #   ninja smoke              — run the examples that check their own results
 #   ninja bench              — run the benchmarks
+#   ninja api-check          — check that api/ is the snapshot of the public API
 #
 # Environment (an empty value counts as unset):
 #   CC       — the compiler (default gcc). It sets the target: the arch is
@@ -166,6 +167,71 @@ esac
 
 COMMON_FLAGS="-ffreestanding -nostdlib -nostartfiles -nodefaultlibs -fno-stack-protector${ARCH_FLAGS:+ ${ARCH_FLAGS}} -Iinclude"
 
+# --- Test plugins: the shared objects the loader's tests load ---
+
+# Their build edges are under "Test plugins" in build.ninja below.
+TEST_PLUGINS=""
+for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
+    TEST_PLUGINS="$TEST_PLUGINS${TEST_PLUGINS:+ }\$builddir/plugins/$plugin.so"
+done
+
+# relr.so is linked with -z pack-relative-relocs, as LIB-relr needs its
+# relative relocations in DT_RELR. GNU ld 2.42, Ubuntu 24.04's, ignores the
+# flag on aarch64 with a warning, and the plugin then has no DT_RELR. With
+# --fatal-warnings before the flag, that warning fails the link, so this
+# links an empty shared object with CC's linker, then with lld, and relr.so
+# takes the first that packs. A cross GCC can miss /usr/bin/ld.lld with
+# -fuse-ld=lld: Ubuntu's aarch64-linux-gnu-gcc 13 looks in its own
+# directories, then on PATH for aarch64-linux-gnu-ld.lld. So the last try
+# puts a link to ld.lld in $BUILDDIR/lld/, which -B makes GCC search first;
+# ninja makes that link again after ninja clean. If nothing packs, relr.so
+# keeps CC's linker and LIB-relr fails, saying why.
+RELR_SO_FLAGS="-Wl,-z,pack-relative-relocs"
+RELR_SO_DEPS=""
+RELR_LLD_EDGES=""
+RELR_LINKER=none
+LLD_PATH=$(command -v ld.lld 2>/dev/null || true)
+case "$LLD_PATH" in
+    /*[!A-Za-z0-9/._+-]*|"") LLD_PATH="" ;;   # none, or a path ninja would split
+    /*) ;;
+    *) LLD_PATH="" ;;
+esac
+mkdir -p "$BUILDDIR"
+relr_tries="cc lld"
+if [ -n "$LLD_PATH" ]; then
+    mkdir -p "$BUILDDIR/lld"
+    ln -sf "$LLD_PATH" "$BUILDDIR/lld/ld.lld"
+    relr_tries="$relr_tries lld-link"
+fi
+for try in $relr_tries; do
+    case "$try" in
+        cc)       use_ld="" ;;
+        lld)      use_ld="-fuse-ld=lld" ;;
+        lld-link) use_ld="-B$BUILDDIR/lld/ -fuse-ld=lld" ;;
+    esac
+    if $CC${SYSROOT:+ --sysroot=$SYSROOT} -shared -fPIC -nostdlib $use_ld \
+            -Wl,--fatal-warnings -Wl,-z,pack-relative-relocs \
+            -x c /dev/null -o "$BUILDDIR/relr-probe.so" >/dev/null 2>&1; then
+        RELR_SO_FLAGS="${use_ld:+$use_ld }-Wl,-z,pack-relative-relocs"
+        RELR_LINKER=$try
+        if [ "$try" = lld-link ]; then
+            RELR_SO_DEPS=" | \$builddir/lld/ld.lld"
+            RELR_LLD_EDGES="rule lld_link
+  command = mkdir -p \$builddir/lld && ln -sf $LLD_PATH \$out
+  description = LN \$out
+
+build \$builddir/lld/ld.lld: lld_link
+"
+        fi
+        break
+    fi
+done
+rm -f "$BUILDDIR/relr-probe.so"
+if [ "$RELR_LINKER" != lld-link ] && [ -n "$LLD_PATH" ]; then
+    rm -f "$BUILDDIR/lld/ld.lld"
+    rmdir "$BUILDDIR/lld" 2>/dev/null || true
+fi
+
 # --- Regress programs: the "id state" lines of tests/regress/manifest ---
 
 # Each id gets build edges for tests/regress/<id>.c. The gating ones go to
@@ -211,7 +277,7 @@ LINE
         fi
         regress_ids="$regress_ids$id "
         REGRESS_BUILDS="${REGRESS_BUILDS}build \$builddir/regress/$id.o: cc_test tests/regress/$id.c
-build \$builddir/regress/$id: link \$builddir/regress/$id.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/regress/$id: link \$builddir/regress/$id.o \$builddir/liblightc.a | \$ldscript || $TEST_PLUGINS
 
 "
     done < "$REGRESS_MANIFEST"
@@ -385,8 +451,10 @@ build \$builddir/lightio_http: link \$builddir/lightio_http.o \$builddir/libligh
 build \$builddir/lightio_test.o: cc examples/lightio_test.c
 build \$builddir/lightio_test: link \$builddir/lightio_test.o \$builddir/liblightc.a | \$ldscript
 
+# so_flags, empty for test_plugin.so, are the link flags a test plugin is
+# about (see Test plugins below).
 rule cc_shared
-  command = \$cc -shared -fPIC -nostdlib -o \$out \$in
+  command = \$cc -shared -fPIC -nostdlib \$so_flags -o \$out \$in
   description = SO \$out
 
 build \$builddir/test_plugin.so: cc_shared examples/test_plugin.c
@@ -396,6 +464,47 @@ build \$builddir/library.example: link \$builddir/library.example.o \$builddir/l
 
 build \$builddir/containers.example.o: cc examples/containers.c
 build \$builddir/containers.example: link \$builddir/containers.example.o \$builddir/liblightc.a | \$ldscript
+
+# --- Test plugins ---
+
+# The shared objects test_library and the LIB-* regress programs load, in
+# \$builddir/plugins: each is about one thing the loader does or refuses,
+# which its source in tests/plugins/ describes. They are built as
+# test_plugin.so is, with the link flags that make that thing. Six are
+# copies of another with one table changed, which tests/plugins/corrupt.sh
+# makes, so no binary is checked in. Every regress program may load them, so building
+# one builds them.
+rule corrupt_plugin
+  command = sh tests/plugins/corrupt.sh \$how \$in \$out
+  description = CORRUPT \$out
+
+build \$builddir/plugins/plt.so: cc_shared tests/plugins/plt.c tests/plugins/plt_helper.c
+${RELR_LLD_EDGES}build \$builddir/plugins/relr.so: cc_shared tests/plugins/relr.c${RELR_SO_DEPS}
+  so_flags = ${RELR_SO_FLAGS}
+build \$builddir/plugins/based.so: cc_shared tests/plugins/based.c
+  so_flags = -Wl,-Ttext-segment=0x200000
+build \$builddir/plugins/tls_ie.so: cc_shared tests/plugins/tls_ie.c
+build \$builddir/plugins/tls_gd.so: cc_shared tests/plugins/tls_gd.c
+build \$builddir/plugins/imp.so: cc_shared tests/plugins/imp.c
+build \$builddir/plugins/weak.so: cc_shared tests/plugins/weak.c
+build \$builddir/plugins/page64k.so: cc_shared tests/plugins/page.c
+  so_flags = -Wl,-z,relro,-z,max-page-size=0x10000,-z,common-page-size=0x10000
+build \$builddir/plugins/page4k.so: cc_shared tests/plugins/page.c
+  so_flags = -Wl,-z,relro,-z,max-page-size=0x1000,-z,common-page-size=0x1000
+build \$builddir/plugins/sysv_hash.so: cc_shared examples/test_plugin.c
+  so_flags = -Wl,--hash-style=sysv
+build \$builddir/plugins/hash_cycle.so: corrupt_plugin \$builddir/plugins/sysv_hash.so | tests/plugins/corrupt.sh
+  how = hash-cycle
+build \$builddir/plugins/relaent1.so: corrupt_plugin \$builddir/plugins/plt.so | tests/plugins/corrupt.sh
+  how = relaent1
+build \$builddir/plugins/unknown_reloc.so: corrupt_plugin \$builddir/plugins/plt.so | tests/plugins/corrupt.sh
+  how = unknown-reloc
+build \$builddir/plugins/wild_reloc.so: corrupt_plugin \$builddir/plugins/plt.so | tests/plugins/corrupt.sh
+  how = wild-reloc
+build \$builddir/plugins/none_reloc.so: corrupt_plugin \$builddir/plugins/based.so | tests/plugins/corrupt.sh
+  how = none-reloc
+build \$builddir/plugins/abs.so: corrupt_plugin \$builddir/plugins/based.so | tests/plugins/corrupt.sh
+  how = abs-symbol
 
 # --- Tests ---
 
@@ -452,10 +561,10 @@ build \$builddir/test_signal: link \$builddir/test_signal.o \$builddir/liblightc
 build \$builddir/test_lifecycle.o: cc_test tests/test_lifecycle.c
 build \$builddir/test_lifecycle: link \$builddir/test_lifecycle.o \$builddir/liblightc.a | \$ldscript
 
-# test_library loads test_plugin.so from its own directory, so building the
-# suite builds the plugin too.
+# test_library loads test_plugin.so and plugins/page64k.so from its own
+# directory, so building the suite builds those plugins too.
 build \$builddir/test_library.o: cc_test tests/test_library.c
-build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so
+build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so \$builddir/plugins/page64k.so
 
 build \$builddir/test_thread_sync.o: cc_test tests/test_thread_sync.c
 build \$builddir/test_thread_sync: link \$builddir/test_thread_sync.o \$builddir/liblightc.a | \$ldscript
@@ -477,7 +586,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so \$builddir/plugins/page64k.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 
@@ -508,6 +617,30 @@ rule run_regress_pending
   pool = console
 
 build regress-pending: run_regress_pending${REGRESS_PENDING} | tests/run.sh tests/regress/pending.sh
+
+# --- API snapshot ---
+
+# api/ holds the snapshot of the public API that tools/api-snapshot.sh
+# writes: the symbols liblightc.a defines, the declarations of the public
+# headers and the layout of their structs on each arch. ninja api-check
+# writes the snapshot of this tree to \$builddir/api and fails, with a diff,
+# when it differs from api/. ninja api-additive fails when the snapshot
+# lacks a line of the newest release in api/, api/vX.Y.Z, so it passes
+# only additions: it is to gate 0.2.x and 0.3.x once 0.2.0, which changes
+# the API on purpose, is out, and until then CI does not run it. Neither
+# uses what ninja builds: the tool compiles what it reads for both arches,
+# with GCC for each, the same in every mode.
+rule api_snapshot
+  command = sh tools/api-snapshot.sh \$how \$builddir/api
+  pool = console
+
+build api-check: api_snapshot
+  how = -c
+  description = Checking the API snapshot in api/
+
+build api-additive: api_snapshot
+  how = -a
+  description = Checking that the API keeps every line of the last release
 
 # --- Install ---
 
@@ -567,4 +700,15 @@ build clean: clean_cmd
 EOF
 
 echo "Configured: ${DESC} [${ARCH_DIR}]"
+case "$RELR_LINKER" in
+    lld|lld-link)
+        echo "The test plugin relr.so links with lld: the linker of $CC"
+        echo "does not pack relative relocations (-z pack-relative-relocs)."
+        ;;
+    none)
+        echo "Warning: neither the linker of $CC nor lld packs relative relocations"
+        echo "(-z pack-relative-relocs), so LIB-relr fails in ninja regress."
+        echo "Install lld and run configure again."
+        ;;
+esac
 echo "Run 'ninja' to build."

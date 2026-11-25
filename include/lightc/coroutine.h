@@ -66,7 +66,8 @@ struct lc_scheduler {
     uint32_t      count;          /* total coroutines */
     uint32_t      active_count;   /* coroutines not yet finished */
     uint32_t      current;        /* index of currently running coroutine */
-    lc_coroutine_context main_context;  /* saved context of the caller (main thread) */
+    lc_coroutine_context main_context;  /* saved context of the caller of run:
+                                         * plain code, or a coroutine when nested */
 };
 
 /* --- Scheduler API --- */
@@ -84,12 +85,16 @@ void lc_scheduler_destroy(lc_scheduler *sched);
 /* Create a new coroutine in the scheduler. Returns pointer to it, or NULL if full. */
 lc_coroutine *lc_coroutine_create(lc_scheduler *sched, lc_coroutine_func func, void *arg);
 
-/* Run all coroutines until they all finish. */
+/* Run all coroutines until they all finish. A coroutine may run a scheduler
+ * of its own: when run returns, the scheduler that was running before it is
+ * the current one again, or none at top level. */
 void lc_scheduler_run(lc_scheduler *sched);
 
 /* --- Called from within a coroutine --- */
 
-/* Yield control to the next ready coroutine. */
+/* Yield control to the next ready coroutine of the running scheduler.
+ * Outside a running scheduler, as after lc_scheduler_run has returned, it
+ * does nothing. */
 void lc_coroutine_yield(void);
 
 #endif /* LIGHTC_COROUTINE_H */

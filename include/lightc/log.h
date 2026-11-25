@@ -5,11 +5,15 @@
 #include "format.h"
 
 /*
- * Thread-safe logging.
+ * Thread-safe logging, with no lock.
  *
- * Each log entry is built locally on the stack (no lock),
- * then written atomically with a single syscall (brief lock).
- * Multiple threads never produce garbled output.
+ * Each log entry is built locally on the stack, then written with a
+ * single syscall: a writev for a text line, a write for a JSON one. In an
+ * O_APPEND regular file, and in a pipe when the line is at most PIPE_BUF
+ * (4096) bytes, lines from other threads and processes never mix into it.
+ * Only after a short write (a terminal, a socket, a full non-blocking
+ * pipe, a signal) does the rest take a second write, and another line can
+ * then come in between. As no lock is held, a child can log after fork.
  *
  * Simple:
  *   lc_log(LC_LOG_INFO, "server started");
@@ -70,7 +74,9 @@ void lc_log_string(lc_log_level level, const char *message, size_t length);
  * then call lc_log_commit. The entry must be a local variable (stack-allocated). */
 void lc_log_begin(lc_log_entry *entry, lc_log_level level);
 
-/* Write the log entry atomically. */
+/* Write the log entry as one line, with one syscall (see above). An entry
+ * that lc_log_begin filtered writes nothing, even if the level has been
+ * lowered since. */
 void lc_log_commit(lc_log_entry *entry);
 
 /* Check if a level would be logged (useful to skip expensive formatting). */

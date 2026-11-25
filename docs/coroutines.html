@@ -89,14 +89,14 @@ Add a coroutine to `sched`. Maps its stack and prepares its initial context; it 
 ```c
 void lc_scheduler_run(lc_scheduler *sched);
 ```
-Drive the runnable coroutines round-robin until all have finished, then return. A coroutine that has already finished is never resumed; re-running a scheduler whose coroutines all finished is a no-op, and coroutines added after an earlier run start cleanly on a later one.
+Drive the runnable coroutines round-robin until all have finished, then return. A coroutine that has already finished is never resumed; re-running a scheduler whose coroutines all finished is a no-op, and coroutines added after an earlier run start cleanly on a later one. Runs nest: a coroutine may run a scheduler of its own, and when `lc_scheduler_run` returns, the scheduler that was running before it is the current one again, or none at top level.
 :::
 
 :::member{#lc_coroutine_yield}
 ```c
 void lc_coroutine_yield(void);
 ```
-Suspend the current coroutine and hand control to the scheduler, which resumes the next runnable one. Execution continues from the following statement when control returns. Called outside a running scheduler it is a safe no-op.
+Suspend the current coroutine and hand control to the scheduler, which resumes the next runnable one. Execution continues from the following statement when control returns. Called outside a running scheduler, as after `lc_scheduler_run` has returned, it is a safe no-op.
 :::
 
 :::member{#lc_scheduler_destroy}
