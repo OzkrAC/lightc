@@ -180,22 +180,57 @@ done
 # flag on aarch64 with a warning, and the plugin then has no DT_RELR. With
 # --fatal-warnings before the flag, that warning fails the link, so this
 # links an empty shared object with CC's linker, then with lld, and relr.so
-# takes the first that packs. If neither does, relr.so keeps CC's linker
-# and LIB-relr fails, saying why.
+# takes the first that packs. A cross GCC can miss /usr/bin/ld.lld with
+# -fuse-ld=lld: Ubuntu's aarch64-linux-gnu-gcc 13 looks in its own
+# directories, then on PATH for aarch64-linux-gnu-ld.lld. So the last try
+# puts a link to ld.lld in $BUILDDIR/lld/, which -B makes GCC search first;
+# ninja makes that link again after ninja clean. If nothing packs, relr.so
+# keeps CC's linker and LIB-relr fails, saying why.
 RELR_SO_FLAGS="-Wl,-z,pack-relative-relocs"
+RELR_SO_DEPS=""
+RELR_LLD_EDGES=""
 RELR_LINKER=none
+LLD_PATH=$(command -v ld.lld 2>/dev/null || true)
+case "$LLD_PATH" in
+    /*[!A-Za-z0-9/._+-]*|"") LLD_PATH="" ;;   # none, or a path ninja would split
+    /*) ;;
+    *) LLD_PATH="" ;;
+esac
 mkdir -p "$BUILDDIR"
-for use_ld in "" "-fuse-ld=lld"; do
+relr_tries="cc lld"
+if [ -n "$LLD_PATH" ]; then
+    mkdir -p "$BUILDDIR/lld"
+    ln -sf "$LLD_PATH" "$BUILDDIR/lld/ld.lld"
+    relr_tries="$relr_tries lld-link"
+fi
+for try in $relr_tries; do
+    case "$try" in
+        cc)       use_ld="" ;;
+        lld)      use_ld="-fuse-ld=lld" ;;
+        lld-link) use_ld="-B$BUILDDIR/lld/ -fuse-ld=lld" ;;
+    esac
     if $CC${SYSROOT:+ --sysroot=$SYSROOT} -shared -fPIC -nostdlib $use_ld \
             -Wl,--fatal-warnings -Wl,-z,pack-relative-relocs \
             -x c /dev/null -o "$BUILDDIR/relr-probe.so" >/dev/null 2>&1; then
         RELR_SO_FLAGS="${use_ld:+$use_ld }-Wl,-z,pack-relative-relocs"
-        RELR_LINKER=${use_ld:+lld}
-        RELR_LINKER=${RELR_LINKER:-cc}
+        RELR_LINKER=$try
+        if [ "$try" = lld-link ]; then
+            RELR_SO_DEPS=" | \$builddir/lld/ld.lld"
+            RELR_LLD_EDGES="rule lld_link
+  command = mkdir -p \$builddir/lld && ln -sf $LLD_PATH \$out
+  description = LN \$out
+
+build \$builddir/lld/ld.lld: lld_link
+"
+        fi
         break
     fi
 done
 rm -f "$BUILDDIR/relr-probe.so"
+if [ "$RELR_LINKER" != lld-link ] && [ -n "$LLD_PATH" ]; then
+    rm -f "$BUILDDIR/lld/ld.lld"
+    rmdir "$BUILDDIR/lld" 2>/dev/null || true
+fi
 
 # --- Regress programs: the "id state" lines of tests/regress/manifest ---
 
@@ -444,7 +479,7 @@ rule corrupt_plugin
   description = CORRUPT \$out
 
 build \$builddir/plugins/plt.so: cc_shared tests/plugins/plt.c tests/plugins/plt_helper.c
-build \$builddir/plugins/relr.so: cc_shared tests/plugins/relr.c
+${RELR_LLD_EDGES}build \$builddir/plugins/relr.so: cc_shared tests/plugins/relr.c${RELR_SO_DEPS}
   so_flags = ${RELR_SO_FLAGS}
 build \$builddir/plugins/based.so: cc_shared tests/plugins/based.c
   so_flags = -Wl,-Ttext-segment=0x200000
@@ -666,7 +701,7 @@ EOF
 
 echo "Configured: ${DESC} [${ARCH_DIR}]"
 case "$RELR_LINKER" in
-    lld)
+    lld|lld-link)
         echo "The test plugin relr.so links with lld: the linker of $CC"
         echo "does not pack relative relocations (-z pack-relative-relocs)."
         ;;
