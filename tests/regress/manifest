@@ -57,4 +57,8 @@ LOG-interleave          gating
 LOG-spin-across-write   gating
 LOG-uninit-bytes        gating
 ARENA-abi-lcstats       gating
+DS-array-self-alias     gating
+DS-ringbuf-overflow     gating
+ARENA-aligned-math      gating
+ARENA-create-wrap       gating
 TIME-sleep-eintr        pending

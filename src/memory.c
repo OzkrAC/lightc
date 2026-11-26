@@ -64,7 +64,10 @@ void lc_free_pages(void *ptr, size_t count) {
 lc_arena lc_arena_create(size_t size) {
     lc_arena arena = {0};
 
-    /* Round up to page boundary */
+    /* Round up to page boundary. A size within a page of SIZE_MAX would wrap
+     * to a small one, and an arena of a page would come back as if it were
+     * that big: fail instead. */
+    if (size > SIZE_MAX - (LC_PAGE_SIZE - 1)) return arena;
     size_t pages = align_up(size, LC_PAGE_SIZE) / LC_PAGE_SIZE;
     if (pages == 0) pages = 1;
 
@@ -89,7 +92,16 @@ void lc_arena_destroy(lc_arena *arena) {
 }
 
 void *lc_arena_allocate_aligned(lc_arena *arena, size_t size, size_t alignment) {
-    size_t aligned_offset = align_up(arena->used, alignment);
+    /* align_up masks with alignment - 1, which takes a power of two: 0 gave
+     * back memory already handed out, and 24 a misaligned pointer. */
+    if (alignment == 0 || (alignment & (alignment - 1)) != 0) return NULL;
+    if (arena->base == NULL) return NULL;
+
+    /* Align the address, not the offset: the base is aligned only to the
+     * page, so aligning the offset would not honour an alignment above it. */
+    uintptr_t next = (uintptr_t)arena->base + arena->used;
+    if (alignment - 1 > UINTPTR_MAX - next) return NULL;
+    size_t aligned_offset = (size_t)(align_up(next, alignment) - (uintptr_t)arena->base);
 
     /* Overflow-safe capacity check: aligned_offset + size must not wrap, or a
      * huge `size` would pass the check and hand out overlapping memory. */

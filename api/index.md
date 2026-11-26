@@ -96,7 +96,7 @@ Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes
 | `lc_log_string` | `lightc/log.h` | `void lc_log_string(lc_log_level level, const char *message, size_t length);` | Log a message with known length. | — | module | clock_gettime gettid write writev | yes |
 | `lc_allocate_pages` | `lightc/memory.h` | `[[nodiscard]] lc_result_ptr lc_allocate_pages(size_t count);` | Allocate `count` pages. | `.error` | module | mmap | yes |
 | `lc_arena_allocate` | `lightc/memory.h` | `[[gnu::hot]] static inline void *lc_arena_allocate(lc_arena *arena, size_t size);` | Allocate `size` bytes from the arena, 16-byte aligned. | — | module | none | yes |
-| `lc_arena_allocate_aligned` | `lightc/memory.h` | `void *lc_arena_allocate_aligned(lc_arena *arena, size_t size, size_t alignment);` | Allocate `size` bytes with custom alignment. | — | module | none | yes |
+| `lc_arena_allocate_aligned` | `lightc/memory.h` | `void *lc_arena_allocate_aligned(lc_arena *arena, size_t size, size_t alignment);` | Allocate `size` bytes at an address aligned to `alignment`, a power of two, which may be larger than the page size. | — | module | none | yes |
 | `lc_arena_create` | `lightc/memory.h` | `lc_arena lc_arena_create(size_t size);` | Create an arena of at least `size` bytes (rounded up to page boundary). | — | module | mmap | yes |
 | `lc_arena_destroy` | `lightc/memory.h` | `void lc_arena_destroy(lc_arena *arena);` | Destroy the arena — unmaps all memory. | — | module | munmap | yes |
 | `lc_arena_get_remaining` | `lightc/memory.h` | `[[gnu::pure]] static inline size_t lc_arena_get_remaining(const lc_arena *arena);` | How many bytes remain available. | — | module | none | yes |

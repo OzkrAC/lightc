@@ -61,7 +61,9 @@ lc_arena lc_arena_create(size_t size);
 /* Destroy the arena — unmaps all memory. Do not use the arena after this. */
 void lc_arena_destroy(lc_arena *arena);
 
-/* Allocate `size` bytes with custom alignment. Returns NULL if full. */
+/* Allocate `size` bytes at an address aligned to `alignment`, a power of two,
+ * which may be larger than the page size. Returns NULL when the arena has no
+ * room, and for an alignment of 0 or one that is not a power of two. */
 void *lc_arena_allocate_aligned(lc_arena *arena, size_t size, size_t alignment);
 
 /* Allocate `size` bytes from the arena, 16-byte aligned. Returns NULL if full.
