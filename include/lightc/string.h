@@ -54,7 +54,7 @@ static inline void *lc_bytes_copy(void *dst, const void *src, size_t count) {
     return __builtin_memcpy(dst, src, count);
 }
 
-/* Copy `count` bytes from `src` to `dst`. Handles overlap. */
+/* Copy `count` bytes from `src` to `dst`, which may overlap. */
 static inline void *lc_bytes_move(void *dst, const void *src, size_t count) {
     return __builtin_memmove(dst, src, count);
 }

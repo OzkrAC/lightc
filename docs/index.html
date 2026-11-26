@@ -96,7 +96,7 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 | `ninja regress` | run the regress programs of fixed defects, listed in `tests/regress/manifest` |
 | `ninja smoke` | run the examples that check their own results, and `lightio_test` |
 | `ninja bench` | run the benchmarks |
-| `ninja api-check` | check that `api/` is the snapshot of the public API: symbols, declarations and struct layouts |
+| `ninja api-check` | check that `api/` is the snapshot of the public API: symbols, declarations, struct layouts, and the index of every function with the system calls it makes (`api/index.md`, `api/syscalls.tsv`) |
 
 The output links statically with lightc's own linker script (`lightc.ld`, or `lightc-tiny.ld` in tiny mode), no-PIE, with no interpreter and no dynamic dependencies.
 

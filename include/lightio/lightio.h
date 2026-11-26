@@ -30,9 +30,16 @@ typedef void (*lio_handler)(lio_stream *stream);
 
 /* --- Event Loop --- */
 
+/* Create an event loop with its own io_uring ring. */
 lio_loop *lio_loop_create(void);
+
+/* Destroy the loop and free what it holds. */
 void lio_loop_destroy(lio_loop *loop);
+
+/* Run the loop until lio_loop_stop. */
 void lio_loop_run(lio_loop *loop);
+
+/* Ask the loop to stop. */
 void lio_loop_stop(lio_loop *loop);
 
 /* Run with N worker threads. Each worker gets its own io_uring ring

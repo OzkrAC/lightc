@@ -49,6 +49,7 @@ typedef struct {
  * identity, on a little-endian host they swap. (x86_64 and aarch64/Linux are
  * little-endian, so the generated code is a byte swap there.) */
 
+/* A 16-bit value in network byte order. */
 [[gnu::const]]
 static inline uint16_t lc_host_to_network_16(uint16_t value) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -58,6 +59,7 @@ static inline uint16_t lc_host_to_network_16(uint16_t value) {
 #endif
 }
 
+/* A 32-bit value in network byte order. */
 [[gnu::const]]
 static inline uint32_t lc_host_to_network_32(uint32_t value) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -67,11 +69,13 @@ static inline uint32_t lc_host_to_network_32(uint32_t value) {
 #endif
 }
 
+/* A 16-bit value from network byte order. */
 [[gnu::const]]
 static inline uint16_t lc_network_to_host_16(uint16_t value) {
     return lc_host_to_network_16(value);
 }
 
+/* A 32-bit value from network byte order. */
 [[gnu::const]]
 static inline uint32_t lc_network_to_host_32(uint32_t value) {
     return lc_host_to_network_32(value);
@@ -153,23 +157,31 @@ typedef struct {
     uint32_t scope_id;
 } lc_socket_address6;
 
-/* Create IPv6 sockets */
+/* Create an IPv6 TCP socket. */
 [[nodiscard]] lc_result lc_socket_tcp6(void);
+
+/* Create an IPv6 UDP socket. */
 [[nodiscard]] lc_result lc_socket_udp6(void);
 
-/* Create an IPv6 address from components */
+/* Create an IPv6 address from its 16 bytes and a port. */
 lc_socket_address6 lc_socket_address6_create(const uint8_t addr[16], uint16_t port);
 
-/* Create loopback (::1) address */
+/* Create the loopback address, ::1, with a port. */
 lc_socket_address6 lc_socket_address6_loopback(uint16_t port);
 
-/* Create any-address (::) */
+/* Create the any-address, ::, with a port. */
 lc_socket_address6 lc_socket_address6_any(uint16_t port);
 
-/* IPv6 type-safe wrappers */
+/* Bind an IPv6 socket to an address. */
 [[nodiscard]] lc_result lc_socket_bind6(int32_t fd, const lc_socket_address6 *addr);
+
+/* Start listening for connections on an IPv6 socket. */
 [[nodiscard]] lc_result lc_socket_listen6(int32_t fd, int32_t backlog);
+
+/* Accept a connection on an IPv6 socket. */
 [[nodiscard]] lc_result lc_socket_accept6(int32_t fd, lc_socket_address6 *client_addr);
+
+/* Connect an IPv6 socket to a remote address. */
 [[nodiscard]] lc_result lc_socket_connect6(int32_t fd, const lc_socket_address6 *addr);
 
 #endif /* LIGHTC_SOCKET_H */

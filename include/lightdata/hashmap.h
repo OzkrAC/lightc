@@ -27,7 +27,10 @@ typedef struct {
     size_t            count;     /* occupied slots */
 } lc_hashmap;
 
+/* An empty map. It allocates nothing yet. */
 lc_hashmap lc_hashmap_create(void);
+
+/* Free the map's entries. */
 void lc_hashmap_destroy(lc_hashmap *map);
 
 /* Set a key-value pair. Overwrites if key exists. */
