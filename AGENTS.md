@@ -8,7 +8,7 @@ A program on lightc loads nothing at run time: no NSS or gconv modules, which ma
 
 ## Look before you write a wrapper
 
-`api/index.md` lists every public function, one row each: its header, signature and purpose, how it reports an error, its layer, the system calls it can make and whether the child of a raw clone can call it. `api/syscalls.tsv` lists the same system calls, one line per function and call, so `grep accept4 api/syscalls.tsv` finds every function that makes accept4. Both are generated, so they are always current.
+`api/index.md` lists every public function, one row each: its header, signature and purpose, how it reports an error, its layer, the system calls it can make and whether the child of a raw clone can call it. `api/syscalls.tsv` lists the same system calls, one line per function and call, so `grep accept4 api/syscalls.tsv` finds every function that makes accept4. Both are generated, so they are always current, and `test_index` runs the functions of the main headers under a seccomp filter of just those calls, to check them.
 
 When lightc lacks something general, add it to lightc rather than to the program that needs it.
 

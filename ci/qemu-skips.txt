@@ -16,3 +16,8 @@ test_lightio    3
 # and qemu-user runs threads of its own. The fchmodat case's check of the
 # pre-6.6 ENOSYS path: qemu-user does not implement seccomp.
 test_syscall    2
+
+# qemu-user does not run a guest's seccomp filter, and test_index runs each
+# function under one, so its seven tests that do skip. The eighth, that every
+# covered function has a case, needs no filter and runs.
+test_index      7

@@ -8,6 +8,8 @@ Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes
 - **Syscalls:** every system call the function can make in any build mode, found by following its calls through the library's sources, on both arches unless the column says otherwise. "And what its callbacks make" marks a function that calls through a function pointer, whose calls are not counted. `lc_syscallN` makes whichever call its first argument names.
 - **Clone-safe:** "yes" when the function touches no state of the library, so the child of a raw clone, sharing or copying the parent's memory with no lightc thread of its own, can call it: it reads no thread pointer, and writes no variable of the library, takes no address of one and uses none through a pointer. Otherwise the first reason found, and the public function it goes through.
 
+`tests/test_index.c` checks the system calls and the clone safety of every function of `lightc/syscall.h`, `io.h`, `socket.h`, `time.h`, `signal.h`, `print.h` and `log.h` by running it: in a child under a seccomp filter that allows only the calls listed here, and, for a clone-safe one, with the program's data read-only and no readable thread pointer.
+
 | Function | Header | Signature | Purpose | Errors | Layer | Syscalls | Clone-safe |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `lc_async_flush` | `lightc/async.h` | `uint32_t lc_async_flush(lc_async_ring *ring);` | Submit all queued operations to the kernel. | — | module | io_uring_enter | yes |
