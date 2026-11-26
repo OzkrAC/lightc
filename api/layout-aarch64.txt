@@ -1,11 +1,10 @@
-lc_arena size 24 align 8 # only with NDEBUG
-lc_arena size 48 align 8 # only without NDEBUG
+lc_arena size 48 align 8
 lc_arena.base offset 0 size 8: uint8_t *
 lc_arena.capacity offset 8 size 8: size_t
 lc_arena.used offset 16 size 8: size_t
-lc_arena.peak_used offset 24 size 8: size_t # only without NDEBUG
-lc_arena.alloc_count offset 32 size 8: size_t # only without NDEBUG
-lc_arena.reset_count offset 40 size 8: size_t # only without NDEBUG
+lc_arena.peak_used offset 24 size 8: size_t
+lc_arena.alloc_count offset 32 size 8: size_t
+lc_arena.reset_count offset 40 size 8: size_t
 lc_arena_stats size 56 align 8
 lc_arena_stats.capacity offset 0 size 8: size_t
 lc_arena_stats.used offset 8 size 8: size_t

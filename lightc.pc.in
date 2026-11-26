@@ -5,6 +5,6 @@ ldscript_tiny=${libdir}/lightc/lightc-tiny.ld
 
 Name: lightc
 Description: Freestanding C runtime for Linux
-Version: 0.1.1
+Version: @VERSION@
 Cflags: -I${includedir} -ffreestanding -fno-stack-protector @ARCH_CFLAGS@
 Libs: -static -nostdlib -nostartfiles -L${libdir} -T${libdir}/lightc/lightc.ld -llightc

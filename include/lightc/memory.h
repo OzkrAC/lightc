@@ -30,9 +30,12 @@ size_t lc_runtime_page_size(void);
 void lc_runtime_init(void *stack_top);
 
 /*
- * LC_STATS controls arena statistics tracking.
- * Default: on in debug (no NDEBUG), off in release.
- * Override: compile with -DLC_STATS=1 to force on, -DLC_STATS=0 to force off.
+ * LC_STATS controls arena statistics tracking: whether the counters of
+ * lc_arena are kept up to date. The counters are there either way, so the
+ * layout of lc_arena is the same whatever LC_STATS and NDEBUG are.
+ * Default: on in debug (no NDEBUG), off in release. An installed lightc's
+ * <lightc/config.h> fixes it to the library's. Otherwise, override it with
+ * -DLC_STATS=1 or -DLC_STATS=0.
  */
 #ifndef LC_STATS
 # ifdef NDEBUG
@@ -46,11 +49,10 @@ typedef struct {
     uint8_t *base;       /* start of the mmap'd region */
     size_t   capacity;   /* total size in bytes */
     size_t   used;       /* bytes allocated so far */
-#if LC_STATS
+    /* Kept up to date only with LC_STATS, and 0 without it. */
     size_t   peak_used;  /* high-water mark of used bytes */
     size_t   alloc_count; /* total allocations since create/reset */
     size_t   reset_count; /* number of times reset was called */
-#endif
 } lc_arena;
 
 /* Create an arena of at least `size` bytes (rounded up to page boundary). */

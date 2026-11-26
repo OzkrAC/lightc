@@ -56,4 +56,5 @@ LOG-fork-deadlock       gating
 LOG-interleave          gating
 LOG-spin-across-write   gating
 LOG-uninit-bytes        gating
+ARENA-abi-lcstats       gating
 TIME-sleep-eintr        pending

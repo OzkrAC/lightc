@@ -45,7 +45,8 @@
 # "{ ... }", since the layout files give them per arch, and each enumerator
 # has a line of its own, with its value:
 #   "lightc/log.h: typedef enum { LC_LOG_INFO = 1, ... } lc_log_level;"
-# _Static_assert declarations and macros are not in it.
+# _Static_assert declarations, top-level asm statements and macros are not
+# in it.
 #
 # layout-ARCH.txt: a translation unit that defines a char array of
 # sizeof, _Alignof or offsetof plus one bytes for each struct and field is
@@ -434,6 +435,9 @@ function finish(start, end, ob, cb,    first, n) {
     if (end == start) return
     first = skip_attributes(start, end)
     if (tok[first] == "_Static_assert" || tok[first] == "static_assert") return
+    # A top-level asm statement, such as the ABI tag reference of
+    # <lightc/version.h>, declares nothing.
+    if (tok[first] == "__asm__" || tok[first] == "asm") return
     if (ob) {
         aggregate_declaration(start, end, ob, cb)
         return

@@ -85,6 +85,10 @@ fi
 
 # --- Build mode ---
 
+# release and tiny strip .lightc_abi with the rest: the section only holds the
+# references to the ABI tag of <lightc/version.h>, which have done their work
+# once the program has linked.
+
 MODE="${1:-release}"
 
 case "$MODE" in
@@ -99,14 +103,14 @@ case "$MODE" in
         MODE_CFLAGS="$CSTD -O2 -DNDEBUG -Wall -Wextra -Wpedantic"
         MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc.ld"
-        STRIP_CMD="$STRIP \$out"
+        STRIP_CMD="$STRIP -R .lightc_abi \$out"
         DESC="release (optimized, stripped)"
         ;;
     tiny)
         MODE_CFLAGS="$CSTD -Os -DNDEBUG -Wall -Wextra -Wpedantic -fno-asynchronous-unwind-tables"
         MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc-tiny.ld"
-        STRIP_CMD="$STRIP \$out && $OBJCOPY --strip-section-headers \$out"
+        STRIP_CMD="$STRIP -R .lightc_abi \$out && $OBJCOPY --strip-section-headers \$out"
         DESC="tiny (minimal binary size)"
         ;;
     # Undefined behavior checks. -fsanitize-trap=all makes each failed check
@@ -166,6 +170,54 @@ case "$ARCH" in
 esac
 
 COMMON_FLAGS="-ffreestanding -nostdlib -nostartfiles -nodefaultlibs -fno-stack-protector${ARCH_FLAGS:+ ${ARCH_FLAGS}} -Iinclude"
+
+# --- The version, and the config.h that ninja install writes ---
+
+# include/lightc/version.h is the one place the version is written; lightc.pc
+# takes it from there.
+VERSION=$(awk '$1 == "#define" && $2 ~ /^LC_VERSION_(MAJOR|MINOR|PATCH)$/ { if (!($2 in v)) n++; v[$2] = $3 }
+               END { if (n == 3) print v["LC_VERSION_MAJOR"] "." v["LC_VERSION_MINOR"] "." v["LC_VERSION_PATCH"] }' \
+          include/lightc/version.h)
+if [ -z "$VERSION" ]; then
+    echo "include/lightc/version.h does not define LC_VERSION_MAJOR, _MINOR and _PATCH"
+    exit 1
+fi
+
+# The LC_STATS the library is built with: its default, from NDEBUG in the
+# mode's flags, or a -DLC_STATS in CFLAGS. An install's <lightc/config.h>
+# fixes it, so the inline code of the headers that a program compiles
+# agrees with the library.
+LIBRARY_LC_STATS=$(printf '#include <lightc/memory.h>\nlightc_stats=LC_STATS\n' |
+    $CC ${MODE_CFLAGS} ${COMMON_FLAGS}${CFLAGS:+ ${CFLAGS}}${SYSROOT:+ --sysroot=${SYSROOT}} -E -P -x c - 2>/dev/null |
+    sed -n 's/^lightc_stats=//p')
+case "$LIBRARY_LC_STATS" in
+    0|1) ;;
+    *) echo "cannot tell the LC_STATS the library is built with (got '$LIBRARY_LC_STATS')"; exit 1 ;;
+esac
+# The lines of that config.h. ninja install writes them with one printf,
+# so they hold no ' and no $.
+CONFIG_H_PRINTF="printf '%s\\n'"
+while IFS= read -r line; do
+    CONFIG_H_PRINTF="$CONFIG_H_PRINTF '$line'"
+done << EOF
+/*
+ * lightc: the settings this install was built with. ninja install wrote
+ * this file, and <lightc/types.h> includes it.
+ */
+#ifndef LIGHTC_CONFIG_H
+#define LIGHTC_CONFIG_H
+
+/* Whether the library keeps heap and arena statistics. The inline code of
+ * the headers updates them too, so a program must agree with the library. */
+#if defined(LC_STATS) && (LC_STATS + 0) != ${LIBRARY_LC_STATS}
+#error "lightc: this install was built with LC_STATS=${LIBRARY_LC_STATS}: build without -DLC_STATS, or with a lightc built with the LC_STATS you want"
+#endif
+#ifndef LC_STATS
+#define LC_STATS ${LIBRARY_LC_STATS}
+#endif
+
+#endif /* LIGHTC_CONFIG_H */
+EOF
 
 # --- Test plugins: the shared objects the loader's tests load ---
 
@@ -366,10 +418,11 @@ build \$builddir/library.o: cc src/library.c
 build \$builddir/containers.o: cc src/containers.c
 build \$builddir/signal.o: cc src/signal.c
 build \$builddir/lifecycle.o: cc src/lifecycle.c
+build \$builddir/version.o: cc src/version.c
 
 # --- Library ---
 
-build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o
+build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o
 
 # --- Examples ---
 
@@ -654,8 +707,9 @@ rule install_cmd
     mkdir -p \$\${DESTDIR}\$prefix/lib/lightc && \$
     cp lightc.ld lightc-tiny.ld \$\${DESTDIR}\$prefix/lib/lightc/ && \$
     cp -r include/lightc include/lightdata include/lightio \$\${DESTDIR}\$prefix/include/ && \$
+    ${CONFIG_H_PRINTF} > \$\${DESTDIR}\$prefix/include/lightc/config.h && \$
     mkdir -p \$\${DESTDIR}\$prefix/lib/pkgconfig && \$
-    sed -e "s|@PREFIX@|\$prefix|g" -e "s| *@ARCH_CFLAGS@|${ARCH_FLAGS:+ ${ARCH_FLAGS}}|" lightc.pc.in > \$\${DESTDIR}\$prefix/lib/pkgconfig/lightc.pc
+    sed -e "s|@PREFIX@|\$prefix|g" -e "s|@VERSION@|${VERSION}|" -e "s| *@ARCH_CFLAGS@|${ARCH_FLAGS:+ ${ARCH_FLAGS}}|" lightc.pc.in > \$\${DESTDIR}\$prefix/lib/pkgconfig/lightc.pc
   description = Installing to \$prefix
 
 build install: install_cmd \$builddir/liblightc.a

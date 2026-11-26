@@ -150,7 +150,7 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 
 ## Types and strings {#types}
 
-`types.h` takes the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t` and `NULL` from `<stdint.h>` and `<stddef.h>`, which with `-ffreestanding` are the compiler's own headers, not libc's. `bool`, `true` and `false` are C23 keywords, and `result.h`, which `types.h` includes, also includes `<stdbool.h>`. `lc_sysret` is an `int64_t`.
+`types.h` takes the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t` and `NULL` from `<stdint.h>` and `<stddef.h>`, which with `-ffreestanding` are the compiler's own headers, not libc's. It includes `version.h`, which gives the version (`LC_VERSION_*` and `lc_version()`) and the ABI tag: each object compiled with these headers refers to `lc_abi_MAJOR_MINOR`, so a program fails to link against a `liblightc.a` of another minor version. `bool`, `true` and `false` are C23 keywords, and `result.h`, which `types.h` includes, also includes `<stdbool.h>`. `lc_sysret` is an `int64_t`.
 
 `string.h` provides string and byte operations that lower to the compiler's `__builtin_*` routines; lengths are explicit, so no API assumes NUL termination.
 
@@ -163,4 +163,4 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 | `lc_bytes_compare(a, b, n)` | compare `n` bytes |
 
 {.source}
-Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.
+Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `version.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.

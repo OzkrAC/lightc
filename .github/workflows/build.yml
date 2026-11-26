@@ -154,7 +154,7 @@ jobs:
       # -z pack-relative-relocs on aarch64, and LIB-relr needs DT_RELR.
       # configure picks lld only when ld does not pack.
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc lld
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc lld pkg-config
       # What an aarch64 failure can depend on, so the log alone can explain
       # one: the kernel, the toolchain, the CPU and its features, the page
       # size, and whether io_uring and user namespaces are allowed.
@@ -208,6 +208,12 @@ jobs:
             echo "A gating regress program skipped a test."
             exit 1
           fi
+      # As in the pkg-config consumer job, which runs on x86_64 with a
+      # release install: here with this cell's mode, so a debug install is
+      # checked too, as is the ABI guard of <lightc/version.h> on aarch64.
+      - name: Install and build consumers with pkg-config
+        if: ${{ !cancelled() }}
+        run: sh ci/consumer.sh
       # The examples that check their own results, and lightio_test. An
       # example prints a skipped check as "NAME SKIP: REASON", and this
       # fails on any such line but one: release keeps no heap statistics
@@ -581,7 +587,11 @@ jobs:
       # Installs into a temporary DESTDIR, then builds with only the installed
       # lightc.pc's flags: hello must be a static EXEC that passes
       # ci/elfcheck.sh, runs and exits 0, and a thread_local program must
-      # fail to link.
+      # fail to link. It also checks the ABI guard: hello must not link
+      # against a liblightc.a of another minor version, a program with the
+      # other NDEBUG must agree on lc_arena, a -DLC_STATS other than the
+      # install's must stop at its config.h, and a -fPIC plugin built with
+      # the installed headers must load.
       - name: Install and build consumers with pkg-config
         run: sh ci/consumer.sh
 

@@ -57,7 +57,8 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | Header | Description |
 |---|---|
 | `syscall.h` | Raw Linux syscall wrappers (inline assembly) |
-| `types.h` | `uint8_t`, `size_t` and the like, from the compiler's own freestanding `<stdint.h>` and `<stddef.h>` (not libc's); `lc_sysret`, the version (`LC_VERSION_*`, `lc_version()`), and `result.h` |
+| `types.h` | `uint8_t`, `size_t` and the like, from the compiler's own freestanding `<stdint.h>` and `<stddef.h>` (not libc's); `lc_sysret`, `version.h` and `result.h` |
+| `version.h` | The version (`LC_VERSION_*`, `lc_version()`), the one place it is written, and the ABI tag that makes a program fail to link against a library of another minor version |
 | `string.h` | String ops (`length`, `find`, `compare`) and byte ops (`copy`, `fill`, `compare`) via `__builtin_*` |
 | `memory.h` | Arena allocator (bump allocation, reset, inline fast path) and raw page allocation |
 | `heap.h` | General-purpose heap allocator with bucket allocator, large block cache, per-thread pages, optional statistics |
@@ -110,6 +111,8 @@ Stackful coroutines with per-coroutine `mmap`'d stacks and a guard page at the b
 | `LC_STATS` | 1 | 0 | Heap/arena allocation statistics tracking |
 | `NDEBUG` | not set | set | Controls defaults of the above |
 
-Override any flag with `-DLC_STATS=1` or `-DLC_STATS=0` at compile time.
+Override any flag with `-DLC_STATS=1` or `-DLC_STATS=0` at compile time. No struct of the headers depends on these flags, so a program built with another `NDEBUG` or `LC_STATS` than `liblightc.a` still agrees with it on every layout; only the statistics are kept by one and not the other. `ninja install` writes `<lightc/config.h>`, which fixes `LC_STATS` to the library's for programs built against the install, and stops one that sets it otherwise.
+
+Each object compiled with lightc's headers refers to the ABI tag `lc_abi_MAJOR_MINOR` of `<lightc/version.h>`, which `liblightc.a` defines, so a program built with the headers of one minor version does not link with the library of another. The reference is in `.lightc_abi`, a section that is not loaded, and release and tiny builds strip it; a shared object compiled with `-fPIC` has none.
 
 

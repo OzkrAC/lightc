@@ -1,4 +1,5 @@
 T _start
+A lc_abi_0_1
 T lc_allocate_pages
 T lc_arena_allocate_aligned
 T lc_arena_create

@@ -204,8 +204,10 @@
  * lc_runtime_page_size gives the kernel's, from AT_PAGESZ.
  */
 #define LIGHTC_OWN(X)                                                       \
-    /* <lightc/types.h> */                                                  \
+    /* <lightc/version.h> */                                                \
     X(LC_VERSION_MAJOR) X(LC_VERSION_MINOR) X(LC_VERSION_PATCH)             \
+    X(LC_ABI_NAME_) X(LC_ABI_NAME) X(LC_ABI_STRING_) X(LC_ABI_STRING)       \
+    X(LC_ABI_TAG)                                                           \
     /* <lightc/heap.h> and <lightc/memory.h> */                             \
     X(LC_STATS)                                                             \
     /* <lightc/memory.h> */                                                 \

@@ -276,7 +276,7 @@ Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes
 | `lc_time_sleep_milliseconds` | `lightc/time.h` | `void lc_time_sleep_milliseconds(int64_t ms);` | Sleep for the given number of milliseconds. | — | module | nanosleep | yes |
 | `lc_time_start_timer` | `lightc/time.h` | `int64_t lc_time_start_timer(void);` | Start a timer (returns monotonic timestamp). | — | module | clock_gettime | yes |
 | `lc_time_to_unix` | `lightc/time.h` | `[[gnu::pure, gnu::nonnull(1)]] int64_t lc_time_to_unix(const lc_date_time *dt);` | Convert broken-down date/time to Unix epoch seconds. | — | module | none | yes |
-| `lc_version` | `lightc/types.h` | `[[gnu::const]] static inline int32_t lc_version(void);` | Returns version as a single integer: major * 10000 + minor * 100 + patch | — | module | none | yes |
+| `lc_version` | `lightc/version.h` | `[[gnu::const]] static inline int32_t lc_version(void);` | The version as one integer: major * 10000 + minor * 100 + patch. | — | module | none | yes |
 | `lc_array_clear` | `lightdata/array.h` | `void lc_array_clear(lc_array *arr);` | Remove all elements (keeps allocated memory). | — | module | none | yes |
 | `lc_array_count` | `lightdata/array.h` | `size_t lc_array_count(const lc_array *arr);` | Get number of elements. | — | module | none | yes |
 | `lc_array_create` | `lightdata/array.h` | `lc_array lc_array_create(size_t element_size);` | An empty array of elements of `element_size` bytes. | — | module | none | yes |

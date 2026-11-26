@@ -453,7 +453,7 @@ lightc/time.h: void lc_time_sleep_milliseconds(int64_t ms);
 lightc/time.h: int64_t lc_time_start_timer(void);
 lightc/time.h: [[gnu::pure, gnu::nonnull(1)]] int64_t lc_time_to_unix(const lc_date_time *dt);
 lightc/types.h: typedef int64_t lc_sysret;
-lightc/types.h: [[gnu::const]] static inline int32_t lc_version(void);
+lightc/version.h: [[gnu::const]] static inline int32_t lc_version(void);
 lightdata/array.h: typedef struct { ... } lc_array;
 lightdata/array.h: void lc_array_clear(lc_array *arr);
 lightdata/array.h: size_t lc_array_count(const lc_array *arr);
