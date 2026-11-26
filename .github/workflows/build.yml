@@ -1,10 +1,14 @@
 name: Build & Test
 
+# A release's work collects on its own branch, such as 0.2.0-pre: feature
+# branches open pull requests into it, and it merges into main when the
+# release is ready. So CI runs on pushes to, and pull requests into, main and
+# every *-pre branch.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, '*-pre']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, '*-pre']
 
 # Branch protection should require the check of every job here except the
 # two with continue-on-error, clang and regress-pending, which report
