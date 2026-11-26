@@ -22,7 +22,10 @@ typedef struct {
     size_t   capacity;      /* allocated capacity (elements) */
 } lc_array;
 
+/* An empty array of elements of `element_size` bytes. It allocates nothing yet. */
 lc_array lc_array_create(size_t element_size);
+
+/* Free the array's buffer. */
 void lc_array_destroy(lc_array *arr);
 
 /* Add element to the end. value = pointer to the new element. */

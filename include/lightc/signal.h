@@ -17,17 +17,19 @@
 typedef void (*lc_signal_handler)(int signo);
 typedef void (*lc_crash_handler)(int signo);
 
-/* Install a handler for a specific signal */
+/* Install a handler for a specific signal. */
 [[nodiscard]] lc_result lc_signal_handle(int signo, lc_signal_handler handler);
 
-/* Block/unblock a signal */
+/* Block a signal. */
 [[nodiscard]] lc_result lc_signal_block(int signo);
+
+/* Unblock a signal. */
 [[nodiscard]] lc_result lc_signal_unblock(int signo);
 
-/* Convenience: install handler for crash signals (SIGSEGV, SIGBUS, SIGABRT) */
+/* Install a handler for the crash signals: SIGSEGV, SIGBUS and SIGABRT. */
 void lc_on_crash(lc_crash_handler handler);
 
-/* Convenience: install handler for shutdown signals (SIGTERM, SIGINT) */
+/* Install a handler for the shutdown signals: SIGTERM and SIGINT. */
 void lc_on_shutdown(lc_signal_handler handler);
 
 /* Ignore a signal */

@@ -113,9 +113,16 @@ typedef struct {
 
 #define LC_RWLOCK_INIT { 0 }
 
+/* Wait until the lock is held for reading. */
 void lc_rwlock_read_lock(lc_rwlock *rw);
+
+/* Release a hold for reading. */
 void lc_rwlock_read_unlock(lc_rwlock *rw);
+
+/* Wait until the lock is held for writing. */
 void lc_rwlock_write_lock(lc_rwlock *rw);
+
+/* Release the hold for writing. */
 void lc_rwlock_write_unlock(lc_rwlock *rw);
 
 /*
@@ -128,7 +135,10 @@ typedef struct {
     uint32_t          threshold;
 } lc_barrier;
 
+/* Set up a barrier for `thread_count` threads. */
 void lc_barrier_init(lc_barrier *b, uint32_t thread_count);
+
+/* Wait until every thread of the barrier has arrived. */
 void lc_barrier_wait(lc_barrier *b);
 
 /*
@@ -142,6 +152,8 @@ typedef struct {
 #define LC_ONCE_INIT { 0 }
 
 typedef void (*lc_once_func)(void);
+
+/* Call `func` once for `once`: other callers wait until it has returned. */
 void lc_call_once(lc_once *once, lc_once_func func);
 
 /*
