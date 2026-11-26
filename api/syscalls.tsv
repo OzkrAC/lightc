@@ -31,6 +31,8 @@ lc_array_reserve	mmap	x86_64 aarch64
 lc_array_reserve	munmap	x86_64 aarch64
 lc_array_reserve	write	x86_64 aarch64
 lc_async_flush	io_uring_enter	x86_64 aarch64
+lc_async_flush_ex	io_uring_enter	x86_64 aarch64
+lc_async_peek	io_uring_enter	x86_64 aarch64
 lc_async_ring_create	arch_prctl	x86_64
 lc_async_ring_create	close	x86_64 aarch64
 lc_async_ring_create	gettid	x86_64 aarch64
@@ -46,6 +48,7 @@ lc_async_ring_destroy	mmap	x86_64 aarch64
 lc_async_ring_destroy	munmap	x86_64 aarch64
 lc_async_ring_destroy	write	x86_64 aarch64
 lc_async_wait	io_uring_enter	x86_64 aarch64
+lc_async_wait_ex	io_uring_enter	x86_64 aarch64
 lc_barrier_wait	futex	x86_64 aarch64
 lc_call_once	futex	x86_64 aarch64
 lc_condvar_broadcast	futex	x86_64 aarch64

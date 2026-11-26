@@ -90,7 +90,12 @@ typedef struct {
 
 #define IORING_ENTER_GETEVENTS  (1U << 0)
 
+/* io_uring_params.features */
 #define IORING_FEAT_SINGLE_MMAP  (1U << 0)
+#define IORING_FEAT_NODROP       (1U << 1)
+
+/* The SQ ring's flags: the kernel holds completions the CQ had no room for */
+#define IORING_SQ_CQ_OVERFLOW    (1U << 1)
 
 /* mmap flag for the rings: <lightc/syscall.h> has the others */
 #define MAP_POPULATE  0x008000

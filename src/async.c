@@ -37,6 +37,11 @@ struct lc_async_ring {
 
     /* Local submission tracking */
     uint32_t sq_pending;  /* entries written but not submitted */
+
+    /* The errno of an io_uring_enter that failed in a call that cannot report
+     * it (lc_async_flush, lc_async_wait, lc_async_peek), or 0. The next
+     * lc_async_flush_ex or lc_async_wait_ex reports it and clears it. */
+    int32_t error;
 };
 
 /* ========================================================================
@@ -85,6 +90,14 @@ lc_result_ptr lc_async_ring_create(uint32_t queue_size) {
     lc_sysret ret = lc_kernel_io_ring_setup(queue_size, &params);
     if (ret < 0) return lc_err_ptr((int32_t)(-ret));
     int32_t ring_fd = (int32_t)ret;
+
+    /* Without NODROP (Linux 5.5) a full CQ drops completions, and an operation
+     * whose completion is dropped never ends. Every kernel with IORING_OP_READ
+     * (5.6) has it. */
+    if ((params.features & IORING_FEAT_NODROP) == 0) {
+        lc_kernel_close_file(ring_fd);
+        return lc_err_ptr(LC_ERR_OPNOTSUPP);
+    }
 
     /* Calculate mmap sizes */
     size_t sq_ring_size = params.sq_off.array + params.sq_entries * sizeof(uint32_t);
@@ -189,6 +202,7 @@ lc_result_ptr lc_async_ring_create(uint32_t queue_size) {
     ring->sqes_size    = sqes_size;
 
     ring->sq_pending = 0;
+    ring->error      = 0;
 
     /* Initialize sq_array to identity mapping: sq_array[i] = i */
     for (uint32_t i = 0; i < params.sq_entries; i++) {
@@ -268,56 +282,108 @@ lc_result lc_async_submit_write(lc_async_ring *ring, int32_t fd,
                      (uint64_t)(uintptr_t)buf, count, offset, tag);
 }
 
-uint32_t lc_async_flush(lc_async_ring *ring) {
-    if (ring->sq_pending == 0) return 0;
-
-    uint32_t to_submit = ring->sq_pending;
-
-    /* Publish the staged SQEs to the kernel by advancing the shared tail. The
-     * io_uring ABI requires this before io_uring_enter — the kernel reads
-     * sq_tail to discover the new entries. The release pairs with the kernel's
-     * acquire so the fully-written SQEs are visible before the advanced tail. */
-    store_release(ring->sq_tail, *ring->sq_tail + to_submit);
-
-    /* Once published, the entries live between the kernel's sq_head and the new
-     * sq_tail — they are no longer "staged behind the tail". Clear the pending
-     * count now, unconditionally. Retaining it across a failed/partial enter
-     * would make the next flush advance sq_tail a second time by the same
-     * amount, publishing stale/garbage SQE slots to the kernel. Any entries the
-     * kernel doesn't consume below stay queued in the ring and are submitted by
-     * a subsequent io_uring_enter. */
+/* Publish the staged SQEs to the kernel by advancing the shared tail. The
+ * release pairs with the kernel's acquire, so the SQEs are written before it
+ * sees the tail. Once published they are the kernel's, between its sq_head and
+ * sq_tail, whether or not an enter takes them, so sq_pending is cleared: kept,
+ * the next flush would advance sq_tail by it a second time. */
+static void publish(lc_async_ring *ring) {
+    if (ring->sq_pending == 0) return;
+    store_release(ring->sq_tail, *ring->sq_tail + ring->sq_pending);
     ring->sq_pending = 0;
+}
 
-    /* Ask the kernel to submit them. io_uring_enter may submit fewer than
-     * requested (partial) or be interrupted (EINTR); loop until all requested
-     * entries are submitted, a transient error occurs, or no progress is made
-     * (the remainder then stays queued for a later enter). */
+/* The published SQEs the kernel has not taken yet. These include any an
+ * earlier enter left, one that failed with EAGAIN or EBUSY: each enter offers
+ * them all again, so none is stranded. */
+static uint32_t unconsumed(const lc_async_ring *ring) {
+    return *ring->sq_tail - load_acquire(ring->sq_head);
+}
+
+/* An errno the caller did not get, kept for the next _ex call. */
+static void keep_error(lc_async_ring *ring, lc_sysret ret) {
+    if (ret < 0 && ret != -LC_ERR_INTR) ring->error = (int32_t)-ret;
+}
+
+static int32_t take_error(lc_async_ring *ring) {
+    int32_t error = ring->error;
+    ring->error = 0;
+    return error;
+}
+
+/* Submit every published SQE. An enter may take fewer than offered, so it
+ * loops while the kernel makes progress; it retries EINTR only. Any other
+ * error, EAGAIN and EBUSY too, returns at once: those clear when completions
+ * are reaped, which the caller must do, so retrying here would spin. What the
+ * kernel did not take stays published, for the next flush or wait. */
+static lc_result submit(lc_async_ring *ring) {
+    publish(ring);
     uint32_t submitted = 0;
-    while (submitted < to_submit) {
-        lc_sysret ret = lc_kernel_io_ring_enter(ring->fd, to_submit - submitted, 0, 0);
-        if (ret == -LC_ERR_INTR) continue;   /* interrupted — retry */
-        if (ret <= 0) break;                 /* error, or kernel made no progress */
+    for (;;) {
+        uint32_t offered = unconsumed(ring);
+        if (offered == 0) break;
+        lc_sysret ret = lc_kernel_io_ring_enter(ring->fd, offered, 0, 0);
+        if (ret == -LC_ERR_INTR) continue;
+        if (ret < 0) return (lc_result){ .value = submitted, .error = (int32_t)-ret };
+        if (ret == 0) break;
         submitted += (uint32_t)ret;
     }
-    return submitted;
+    return (lc_result){ .value = submitted, .error = 0 };
+}
+
+uint32_t lc_async_flush(lc_async_ring *ring) {
+    lc_result r = submit(ring);
+    if (r.error != 0) ring->error = r.error;
+    return (uint32_t)r.value;
+}
+
+lc_result lc_async_flush_ex(lc_async_ring *ring) {
+    int32_t kept = take_error(ring);
+    lc_result r = submit(ring);
+    if (r.error == 0) r.error = kept;
+    return r;
+}
+
+/* Submit what is published, then wait for one completion with an enter that
+ * offers again what the kernel left. Refusing them again, the kernel returns
+ * its error without sleeping, so a wait never sleeps on SQEs it did not
+ * submit. An error of the submit either recurs in that enter or has cleared,
+ * so the enter's result is the one to report. */
+static lc_sysret submit_and_wait(lc_async_ring *ring) {
+    (void)submit(ring);
+    return lc_kernel_io_ring_enter(ring->fd, unconsumed(ring), 1, IORING_ENTER_GETEVENTS);
 }
 
 uint32_t lc_async_wait(lc_async_ring *ring,
                        lc_async_result *results, uint32_t max_results) {
-    /* Flush any pending submissions first */
-    lc_async_flush(ring);
-
-    /* Wait for at least one completion, retrying on EINTR */
     lc_sysret ret;
     do {
-        ret = lc_kernel_io_ring_enter(ring->fd, 0, 1, IORING_ENTER_GETEVENTS);
+        ret = submit_and_wait(ring);
     } while (ret == -LC_ERR_INTR);
-
+    keep_error(ring, ret);
     return reap_completions(ring, results, max_results);
+}
+
+lc_result lc_async_wait_ex(lc_async_ring *ring,
+                           lc_async_result *results, uint32_t max_results) {
+    /* A kept error is reported now, with what has completed, and nothing
+     * waits: the caller learns of it before it sleeps. */
+    int32_t error = take_error(ring);
+    if (error == 0) {
+        lc_sysret ret = submit_and_wait(ring);
+        if (ret < 0 && ret != -LC_ERR_INTR) error = (int32_t)-ret;
+    }
+    uint32_t n = reap_completions(ring, results, max_results);
+    return (lc_result){ .value = n, .error = error };
 }
 
 uint32_t lc_async_peek(lc_async_ring *ring,
                        lc_async_result *results, uint32_t max_results) {
+    /* Completions the CQ had no room for wait in the kernel's overflow list,
+     * and only an enter with GETEVENTS moves them to the CQ, as room allows:
+     * without it a peek-driven loop sees none of them, nor any later one. */
+    if (load_acquire(ring->sq_flags) & IORING_SQ_CQ_OVERFLOW)
+        keep_error(ring, lc_kernel_io_ring_enter(ring->fd, 0, 0, IORING_ENTER_GETEVENTS));
     return reap_completions(ring, results, max_results);
 }
 

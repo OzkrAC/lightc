@@ -361,24 +361,33 @@ jobs:
           awk '/^--- build\/test_[a-z0-9_]* ---$/ { suite = $2; sub(/^build\//, "", suite); next }
                /^[ \t]*SKIP:/ { skips[suite]++ }
                END { for (s in skips) print s, skips[s] }' build/test.log | sort > build/skips.actual
-          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 { print $1, $2 }' | sort > build/skips.expected
+          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 && $1 !~ /^regress\// { print $1, $2 }' | sort > build/skips.expected
           echo "SKIP: lines per suite in this run:"
           cat build/skips.actual
           if ! diff -u build/skips.expected build/skips.actual; then
             echo "The SKIP: counts differ from ci/qemu-skips.txt (-: the list, +: this run)."
             exit 1
           fi
-      # The gating regress programs need nothing qemu-user lacks, so unlike
-      # the suites none may skip: the step fails on any SKIP: line. Their
+      # The gating regress programs run as the suites do: those of the async
+      # ring's defects need io_uring, so each of their tests skips, which
+      # LIGHTC_TEST_ALLOW_SKIP lets them, and ci/qemu-skips.txt lists them
+      # as regress/<id>. The SKIP: lines of each program must equal the
+      # count there, so any other program that skips fails the step. Their
       # output stays out of build/test.log, whose SKIP: lines the step above
       # counts.
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          ninja regress 2>&1 | tee build/regress.log
-          if grep -E '^[[:space:]]*SKIP:' build/regress.log; then
-            echo "A gating regress program skipped a test under qemu-user."
+          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors" ninja regress 2>&1 | tee build/regress.log
+          awk '/^--- build\/regress\/[A-Za-z0-9-]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
+               /^[ \t]*SKIP:/ { skips[prog]++ }
+               END { for (p in skips) print p, skips[p] }' build/regress.log | sort > build/regress-skips.actual
+          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 && $1 ~ /^regress\// { print $1, $2 }' | sort > build/regress-skips.expected
+          echo "SKIP: lines per regress program in this run:"
+          cat build/regress-skips.actual
+          if ! diff -u build/regress-skips.expected build/regress-skips.actual; then
+            echo "The SKIP: counts of the regress programs differ from ci/qemu-skips.txt (-: the list, +: this run)."
             exit 1
           fi
       # The examples that check their own results, and lightio_test.

@@ -36,11 +36,19 @@ lio_loop *lio_loop_create(void);
 /* Destroy the loop and free what it holds. */
 void lio_loop_destroy(lio_loop *loop);
 
-/* Run the loop until lio_loop_stop. */
+/* Run the loop until lio_loop_stop, or until io_uring fails with an error it
+ * cannot wait out, such as EBADF; lio_loop_error then gives the errno. */
 void lio_loop_run(lio_loop *loop);
 
 /* Ask the loop to stop. */
 void lio_loop_stop(lio_loop *loop);
+
+/* Return the errno that made the last lio_loop_run or lio_loop_run_threaded
+ * return, or 0 when it returned because the loop was stopped or had no work.
+ * EINTR, EAGAIN and EBUSY never stop it. For lio_loop_run_threaded it is the
+ * errno of the first worker joined that stopped on one; that worker stops
+ * alone, and the call still returns only after lio_loop_stop. */
+int32_t lio_loop_error(const lio_loop *loop);
 
 /* Run with N worker threads. Each worker gets its own io_uring ring
  * and coroutine pool. The kernel distributes connections across workers.

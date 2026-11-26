@@ -61,4 +61,7 @@ DS-array-self-alias     gating
 DS-ringbuf-overflow     gating
 ARENA-aligned-math      gating
 ARENA-create-wrap       gating
+async-1                 gating
+async-2                 gating
+xm-wait-swallows-errors gating
 TIME-sleep-eintr        pending

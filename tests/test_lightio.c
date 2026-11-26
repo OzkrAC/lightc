@@ -83,6 +83,7 @@ static void test_lightio_echo_roundtrip(void) {
     TEST_ASSERT(echo_once(port, msg, sizeof(msg) - 1));
 
     stop_and_join(loop, &t, port);
+    TEST_ASSERT_EQ(lio_loop_error(loop), 0);   /* stopped, not failed */
     lio_loop_destroy(loop);
 }
 

@@ -17,6 +17,7 @@ T lc_array_push
 T lc_array_remove
 T lc_array_reserve
 T lc_async_flush
+T lc_async_flush_ex
 T lc_async_get_free_slots
 T lc_async_peek
 T lc_async_ring_create
@@ -25,6 +26,7 @@ T lc_async_submit_raw
 T lc_async_submit_read
 T lc_async_submit_write
 T lc_async_wait
+T lc_async_wait_ex
 T lc_atexit
 T lc_barrier_init
 T lc_barrier_wait
@@ -229,6 +231,7 @@ T lc_writer_put_unsigned
 T lio_close
 T lio_loop_create
 T lio_loop_destroy
+T lio_loop_error
 T lio_loop_run
 T lio_loop_run_threaded
 T lio_loop_stop

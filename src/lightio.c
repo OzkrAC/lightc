@@ -66,6 +66,9 @@ struct lio_loop {
 
     /* Timeout support — one timespec per slot (for lio_sleep) */
     lio_kernel_timespec  timeout_specs[LIO_MAX_SLOTS];
+
+    /* The errno of the io_uring failure that stopped the loop, or 0 */
+    int32_t              error;
 };
 
 /* ========================================================================
@@ -255,8 +258,20 @@ void lio_loop_stop(lio_loop *loop) {
     loop->running = false;
 }
 
+int32_t lio_loop_error(const lio_loop *loop) {
+    return loop->error;
+}
+
+/* An io_uring error the loop waits out: EINTR, and EAGAIN and EBUSY, which
+ * clear as completions are reaped. Any other, such as EBADF, recurs on every
+ * enter, so the loop stops instead of spinning. */
+static bool lio_can_retry(int32_t error) {
+    return error == 0 || error == LC_ERR_INTR || error == LC_ERR_AGAIN || error == LC_ERR_BUSY;
+}
+
 void lio_loop_run(lio_loop *loop) {
     loop->running = true;
+    loop->error   = 0;
     set_current_loop(loop);
 
     while (loop->running) {
@@ -288,14 +303,22 @@ void lio_loop_run(lio_loop *loop) {
         if (!loop->running) break;
 
         /* 2. Flush io_uring submissions */
-        lc_async_flush(loop->ring);
+        lc_result flushed = lc_async_flush_ex(loop->ring);
+        if (!lio_can_retry(flushed.error)) {
+            loop->error   = flushed.error;
+            loop->running = false;
+            break;
+        }
 
         /* 3. Wait for completions (only if there's work to do) */
         lc_async_result results[64];
         uint32_t n = 0;
+        int32_t wait_error = 0;
 
         if (loop->active_count > 0 || loop->server_fd >= 0) {
-            n = lc_async_wait(loop->ring, results, 64);
+            lc_result waited = lc_async_wait_ex(loop->ring, results, 64);
+            n = (uint32_t)waited.value;
+            wait_error = waited.error;
         } else {
             /* Nothing left to do */
             break;
@@ -329,6 +352,13 @@ void lio_loop_run(lio_loop *loop) {
                     loop->slots[slot].state = SLOT_READY;
                 }
             }
+        }
+
+        /* After the completions the wait returned, so none is lost */
+        if (!lio_can_retry(wait_error)) {
+            loop->error   = wait_error;
+            loop->running = false;
+            break;
         }
     }
 }
@@ -519,6 +549,7 @@ typedef struct {
     lio_handler handler;
     uint32_t    worker_id;
     _Atomic(bool) *stop_flag;
+    int32_t     error;   /* set by the worker: why it stopped, or 0 */
 } lio_worker_args;
 
 static int32_t lio_worker_thread(void *arg) {
@@ -566,10 +597,16 @@ static int32_t lio_worker_thread(void *arg) {
 
         if (atomic_load(wargs->stop_flag)) break;
 
-        /* Flush + wait */
-        lc_async_flush(loop->ring);
+        /* Flush + wait. As in lio_loop_run, an error but EINTR, EAGAIN or
+         * EBUSY stops this worker, with its errno kept. */
+        lc_result flushed = lc_async_flush_ex(loop->ring);
+        if (!lio_can_retry(flushed.error)) {
+            wargs->error = flushed.error;
+            break;
+        }
         lc_async_result results[64];
-        uint32_t n = lc_async_wait(loop->ring, results, 64);
+        lc_result waited = lc_async_wait_ex(loop->ring, results, 64);
+        uint32_t n = (uint32_t)waited.value;
 
         /* Process completions */
         for (uint32_t i = 0; i < n; i++) {
@@ -596,6 +633,10 @@ static int32_t lio_worker_thread(void *arg) {
                     loop->slots[slot].state = SLOT_READY;
                 }
             }
+        }
+        if (!lio_can_retry(waited.error)) {
+            wargs->error = waited.error;
+            break;
         }
     }
 
@@ -624,6 +665,7 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count) {
         args[i].handler = loop->accept_handler;
         args[i].worker_id = i;
         args[i].stop_flag = &stop_flag;
+        args[i].error = 0;
         if (lc_is_ok(lc_thread_create(&threads[i], lio_worker_thread, &args[i]))) {
             created_count++;
         }
@@ -646,8 +688,11 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count) {
         if (!lc_is_err(wr)) lc_socket_close((int32_t)wr.value);
     }
 
-    /* Join only the threads that were actually created */
+    /* Join only the threads that were actually created. The join orders each
+     * worker's write of its error before the read here. */
+    loop->error = 0;
     for (uint32_t i = 0; i < created_count; i++) {
         lc_thread_join(&threads[i]);
+        if (loop->error == 0) loop->error = args[i].error;
     }
 }

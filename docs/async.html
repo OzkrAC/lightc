@@ -24,7 +24,7 @@ Asynchronous I/O over Linux `io_uring`, and a coroutine-per-connection event loo
 
 Two layers. `async.h` is a thin wrapper over **io_uring**: two shared ring buffers between the program and the kernel — a submission queue the program fills and a completion queue the kernel fills. `lightio` is built on it and on [coroutines](coroutines.html): an event loop that runs **one coroutine per connection**, so a handler reads and writes in a straight line while the loop multiplexes many connections.
 
-The submission path has three moves: **submit** stages an operation in the submission queue; **flush** publishes staged entries to the kernel (`io_uring_enter`); **wait**/**peek** reap completions. Staging and publishing are separate so many submissions batch into one `io_uring_enter`. A full queue fails a submit with `LC_ERR_AGAIN` rather than overrunning, and `flush` retries short or interrupted `enter` calls so no submission is lost.
+The submission path has three moves: **submit** stages an operation in the submission queue; **flush** publishes staged entries to the kernel (`io_uring_enter`); **wait**/**peek** reap completions. Staging and publishing are separate so many submissions batch into one `io_uring_enter`. A full queue fails a submit with `LC_ERR_AGAIN` rather than overrunning. `flush` retries short or interrupted `enter` calls, and an entry the kernel refuses, with `EAGAIN` or `EBUSY`, stays queued: the next flush or wait offers it again, so no submission is lost.
 
 ```text
 submit_read/write ──stage──▶ submission queue
@@ -49,7 +49,7 @@ void lc_async_ring_destroy(lc_async_ring *ring);
 ```
 Create or tear down a ring. `queue_size` is the submission-queue depth (rounded up to a power of two).
 
-**Returns** — `lc_result_ptr`: the ring on success; an error if io_uring is unavailable (it needs Linux 5.1+), which the caller should treat as "fall back to synchronous I/O".
+**Returns** — `lc_result_ptr`: the ring on success; an error if io_uring is unavailable, which the caller should treat as "fall back to synchronous I/O". The ring needs `IORING_FEAT_NODROP`, from Linux 5.5, so that a full completion queue holds completions back rather than dropping them; without it the call fails with `LC_ERR_OPNOTSUPP`. Reads and writes need Linux 5.6.
 :::
 
 :::member{#lc_async_submit_read}
@@ -76,16 +76,22 @@ Stage an arbitrary io_uring operation by opcode (timeouts, accept, and so on). T
 :::member{#lc_async_flush}
 ```c
 uint32_t lc_async_flush(lc_async_ring *ring);
+[[nodiscard]] lc_result lc_async_flush_ex(lc_async_ring *ring);
 ```
-Publish all staged submissions to the kernel. Returns the number submitted. Retries interrupted or short `io_uring_enter` calls.
+Publish all staged submissions to the kernel. Retries interrupted or short `io_uring_enter` calls; on any other error it returns at once, and what the kernel did not take stays queued for the next flush or wait. `EAGAIN` and `EBUSY` clear as completions are reaped, so reap, then flush again.
+
+**Returns** — `lc_async_flush`: the number submitted. It cannot report an error, so the ring keeps it for the next `_ex` call. `lc_async_flush_ex`: `value` is the number submitted, and `error` the errno of the `enter` that failed, or of one an earlier call kept, or 0.
 :::
 
 :::member{#lc_async_wait}
 ```c
 uint32_t lc_async_wait(lc_async_ring *ring, lc_async_result *results, uint32_t max);
+[[nodiscard]] lc_result lc_async_wait_ex(lc_async_ring *ring, lc_async_result *results, uint32_t max);
 uint32_t lc_async_peek(lc_async_ring *ring, lc_async_result *results, uint32_t max);
 ```
-Reap completions into `results` (up to `max`). `lc_async_wait` flushes, then blocks until at least one completion is available; `lc_async_peek` returns immediately with whatever is ready. Both return the number written.
+Reap completions into `results` (up to `max`). `lc_async_wait` flushes, then blocks until at least one completion is available; `lc_async_peek` returns immediately with whatever is ready. When the completion queue was full, the kernel holds further completions back; `lc_async_peek` moves them into the queue as room allows, so a loop that only peeks sees them all.
+
+**Returns** — `lc_async_wait` and `lc_async_peek`: the number written. `lc_async_wait` retries `EINTR`; it and `lc_async_peek` cannot report another error, so the ring keeps it for the next `_ex` call. `lc_async_wait_ex`: `value` is the number written, and `error` the errno of the failed `enter`, or 0. An error an earlier call kept is reported at once, without waiting. A signal ends the wait with `error` 0, so a loop can look at what its handler set; `value` may then be 0.
 :::
 
 :::member{#lc_async_get_free_slots}
@@ -106,9 +112,10 @@ char buf[4096];
 lc_async_submit_read(ring, fd, buf, sizeof(buf), (uint64_t)-1, /*tag=*/7);
 
 lc_async_result done[16];
-uint32_t n = lc_async_wait(ring, done, 16);  // flush + block for ≥1 completion
-for (uint32_t i = 0; i < n; i++)
+lc_result w = lc_async_wait_ex(ring, done, 16);  // flush + block for ≥1 completion
+for (int64_t i = 0; i < w.value; i++)
     if (done[i].tag == 7) { /* done[i].result bytes read, or -errno */ }
+if (w.error != 0) { /* io_uring_enter failed: EAGAIN and EBUSY pass, others do not */ }
 
 lc_async_ring_destroy(ring);
 ```
@@ -143,11 +150,12 @@ Listen on `port` and run `handler` in a fresh coroutine for each accepted connec
 
 :::member{#lio_loop_run}
 ```c
-void lio_loop_run(lio_loop *loop);
-void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count);
-void lio_loop_stop(lio_loop *loop);
+void    lio_loop_run(lio_loop *loop);
+void    lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count);
+void    lio_loop_stop(lio_loop *loop);
+int32_t lio_loop_error(const lio_loop *loop);
 ```
-`lio_loop_run` drives the loop until `lio_loop_stop` is called. `lio_loop_run_threaded` runs `thread_count` worker threads, each with its own loop and ring accepting on the shared socket — the kernel spreads connections across them, so it scales near-linearly with no shared state.
+`lio_loop_run` drives the loop until `lio_loop_stop` is called, or until `io_uring_enter` fails with an error it cannot wait out, such as `EBADF`: `EINTR`, `EAGAIN` and `EBUSY` it waits out. `lio_loop_error` then gives that errno, and 0 after a stop. A worker of `lio_loop_run_threaded` stops alone on one, and `lio_loop_error` gives the first worker's errno once the call returns. `lio_loop_run_threaded` runs `thread_count` worker threads, each with its own loop and ring accepting on the shared socket — the kernel spreads connections across them, so it scales near-linearly with no shared state.
 :::
 
 :::member{#lio_read}
