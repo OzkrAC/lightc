@@ -560,6 +560,13 @@ jobs:
         run: |
           ./configure
           ninja api-check
+      # AGENTS.md tells people and agents how to work on lightc: a path,
+      # ninja target, configure mode, function or macro it names that no
+      # longer exists fails this step, which reads api/decls.txt for the
+      # functions.
+      - name: Check that AGENTS.md names only what exists
+        if: ${{ !cancelled() }}
+        run: sh ci/agents-check.sh
 
   pkg-config-consumer:
     name: pkg-config consumer (install + link)

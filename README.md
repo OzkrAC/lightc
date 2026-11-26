@@ -4,6 +4,8 @@ A freestanding C runtime for Linux. No libc, no linker scripts from the system, 
 
 Targets x86_64 and aarch64. Built with `./configure tiny`, the hello-world example is a static binary of 4640 bytes in CI's `x86_64 gcc 14 tiny` job: a measured size, not a limit (see below for where it comes from).
 
+`AGENTS.md` is the short guide to working on lightc or building on it, and `api/index.md` lists every public function.
+
 ## Building
 
 Requires GCC and ninja.

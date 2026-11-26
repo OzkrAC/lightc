@@ -94,6 +94,7 @@ Changes since 0.1.1. 32 more defects from the November 2026 code review of 0.1.0
 - Every CI job that runs `ninja regress` first sets `kernel.pid_max` to 32768, so `HEAP-tid-reuse-tls` runs. The aarch64 jobs install lld, for `LIB-relr`'s plugin. The UAPI ABI check job runs `ninja api-check`.
 - `ninja test` runs 277 tests: `test_log` checks a line that a signal or a full non-blocking pipe cuts short, and `test_library` that a library's RELRO page is read-only.
 - CI reports the test totals of each x86_64 job, and the size of the tiny hello, as notices on each run.
+- `AGENTS.md` is a short guide for people and agents who change lightc or build on it: why there is no libc, the index to look in before writing a wrapper, the two error conventions and naming layers, how to add a system call or a regress program, and the commands and what they need of the machine. `CLAUDE.md` imports it. `ci/agents-check.sh`, which CI runs, fails when a path, ninja target, configure mode, function or macro it names does not exist.
 
 ### Notes for lightbox
 
