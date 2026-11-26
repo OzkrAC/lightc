@@ -12,6 +12,9 @@
 /* The kernel's page size, from AT_PAGESZ: 4 KiB on x86_64, and 4, 16 or
  * 64 KiB on aarch64. mprotect takes only addresses aligned to it. */
 #define PAGE_SIZE ((uint64_t)lc_runtime_page_size())
+/* The smallest page of x86_64 and aarch64. Every page size is a multiple of
+ * it, so an address mmap gives is aligned to it, whatever the page. */
+#define MIN_PAGE_SIZE ((uint64_t)4096)
 #define PAGE_ALIGN_DOWN(x) ((x) & ~((uint64_t)(PAGE_SIZE - 1)))
 #define PAGE_ALIGN_UP(x)   (((x) + PAGE_SIZE - 1) & ~((uint64_t)(PAGE_SIZE - 1)))
 
@@ -692,13 +695,14 @@ lc_result_ptr lc_library_open(const char *path) {
      * then a multiple of each, and every address of the object is aligned
      * as the linker laid it out. ld gives a segment the alignment of its
      * most aligned variable, which the compiler took as given, and gives
-     * every aarch64 object 64 KiB. mmap gives an address aligned to a page,
-     * so for a larger alignment the region is reserved longer by the
-     * alignment less a page, and what the base leaves at either end is
+     * every aarch64 object 64 KiB. The base is aligned to the page at
+     * least, as mprotect needs. The loader counts only on mmap's address
+     * being aligned to MIN_PAGE_SIZE, so the region is reserved longer by
+     * the alignment less that, and what the base leaves at either end is
      * unmapped. */
     uint64_t align = max_align > PAGE_SIZE ? max_align : PAGE_SIZE;
     size_t reserved;
-    if (__builtin_add_overflow(total_size, (size_t)(align - PAGE_SIZE), &reserved)) {
+    if (__builtin_add_overflow(total_size, (size_t)(align - MIN_PAGE_SIZE), &reserved)) {
         lc_heap_free(phdrs);
         lc_kernel_close_file(fd);
         return lc_err_ptr(LC_ERR_MALFORMED_ELF);
@@ -711,8 +715,9 @@ lc_result_ptr lc_library_open(const char *path) {
     }
     uintptr_t region = (uintptr_t)mapped;
     /* The first address of the region that is min_vaddr modulo the
-     * alignment: both are multiples of a page, so it is at most the
-     * alignment less a page in. */
+     * alignment: both are multiples of MIN_PAGE_SIZE, so it is at most the
+     * alignment less that in. The kernel rounds the length of the region,
+     * and of the unmap of its end, up to a whole page. */
     uint8_t *base = (uint8_t *)(region + ((min_vaddr - region) & (align - 1)));
     if ((uintptr_t)base > region)
         lc_kernel_unmap_memory((void *)region, (uintptr_t)base - region);

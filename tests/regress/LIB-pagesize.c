@@ -11,9 +11,11 @@
  * give both, fail the load with LC_ERR_MALFORMED_ELF.
  *
  * This kernel's pages may be 4 KiB, so this program compiles its own copy
- * of src/library.c in which mmap and mprotect act as on a kernel with
- * larger pages: mmap gives an address aligned to the emulated page, and
- * mprotect fails with EINVAL on one that is not, as mm/mprotect.c does.
+ * of src/library.c in which mprotect acts as on a kernel with larger pages:
+ * it fails with EINVAL on an address that is not aligned to one, as
+ * mm/mprotect.c does. mmap needs no stand-in, as the loader counts only on
+ * its address being aligned to 4 KiB, the smallest page, and aligns the
+ * base to the page itself.
  * lc_runtime_init gets an auxiliary vector with that page size as
  * AT_PAGESZ, as _start passes it the kernel's. Each of 4, 16 and 64 KiB
  * that is not smaller than this kernel's page is emulated in turn.
@@ -33,24 +35,6 @@
 
 static uint64_t emulated_page = 4096;
 
-/* mmap on a kernel with emulated_page pages: the length is a whole number
- * of pages, and the address is aligned to one. The loader makes mmap's
- * raw call, to keep its errno, so this stands in for lc_syscall6 and
- * passes every other call through. */
-static lc_sysret emulated_syscall6(int64_t n, int64_t a1, int64_t a2, int64_t a3,
-                                   int64_t a4, int64_t a5, int64_t a6) {
-    if (n != SYS_mmap) return lc_syscall6(n, a1, a2, a3, a4, a5, a6);
-    size_t length = ((size_t)a2 + emulated_page - 1) & ~(size_t)(emulated_page - 1);
-    size_t span = length + emulated_page;
-    lc_sysret r = lc_syscall6(SYS_mmap, a1, (int64_t)span, a3, a4, a5, a6);
-    if (r < 0) return r;
-    uint8_t *p = (uint8_t *)(uintptr_t)r;
-    uint8_t *aligned = (uint8_t *)(((uintptr_t)p + emulated_page - 1) & ~(uintptr_t)(emulated_page - 1));
-    if (aligned > p) lc_kernel_unmap_memory(p, (size_t)(aligned - p));
-    if (p + span > aligned + length) lc_kernel_unmap_memory(aligned + length, (size_t)(p + span - (aligned + length)));
-    return (lc_sysret)(uintptr_t)aligned;
-}
-
 /* mprotect on such a kernel: EINVAL for an address that is not aligned to
  * a page. */
 static lc_sysret emulated_protect_memory(void *addr, size_t len, int32_t prot) {
@@ -58,10 +42,8 @@ static lc_sysret emulated_protect_memory(void *addr, size_t len, int32_t prot) {
     return lc_kernel_protect_memory(addr, len, prot);
 }
 
-#define lc_syscall6              emulated_syscall6
 #define lc_kernel_protect_memory emulated_protect_memory
 #include "../../src/library.c"
-#undef lc_syscall6
 #undef lc_kernel_protect_memory
 
 #include "test.h"
