@@ -1,10 +1,11 @@
 /*
  * test_library.c — tests for lightc dynamic library loading.
  *
- * Loads test_plugin.so and plugins/page64k.so from the suite's own
- * directory, the one argv[0] names. The build puts the plugins beside the
- * suite, so build/test_library opens build/test_plugin.so from any current
- * directory, and building the suite builds the plugins.
+ * Loads test_plugin.so, plugins/page64k.so and plugins/versioned.so from
+ * the suite's own directory, the one argv[0] names. The build puts the
+ * plugins beside the suite, so build/test_library opens
+ * build/test_plugin.so from any current directory, and building the suite
+ * builds the plugins.
  * test_plugin.so exports: int plugin_add(int a, int b)
  */
 
@@ -20,6 +21,7 @@
 static char plugin_path[4096];
 static char malformed_path[4096];
 static char relro_plugin_path[4096];
+static char versioned_plugin_path[4096];
 #define PLUGIN_PATH plugin_path
 #define TMP_PATH    malformed_path
 
@@ -108,6 +110,18 @@ static void test_library_missing_symbol(void) {
 static void test_library_open_nonexistent(void) {
     lc_result_ptr r = lc_library_open("/nonexistent.so");
     TEST_ASSERT_PTR_ERR(r);
+    TEST_ASSERT_EQ(r.error, LC_ERR_NOENT);
+}
+
+/* ===== test_library_versioned_refused ===== */
+
+/* A plugin with symbol versions, foo@V1 and foo@@V2: a lookup by name
+ * alone cannot tell them apart, so the loader refuses it. */
+static void test_library_versioned_refused(void) {
+    lc_result_ptr r = lc_library_open(versioned_plugin_path);
+    if (lc_ptr_is_ok(r)) lc_library_close(r.value);
+    TEST_ASSERT_PTR_ERR(r);
+    TEST_ASSERT_EQ(r.error, LC_ERR_UNSUPPORTED);
 }
 
 /* ===== test_library_relro_read_only ===== */
@@ -216,6 +230,7 @@ static void wr_u64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = 
 #define PH_VADDR     16
 #define PH_FILESZ    32
 #define PH_MEMSZ     40
+#define PH_ALIGN     48
 #define PT_LOAD_     1
 #define PT_DYNAMIC_  2
 
@@ -360,6 +375,28 @@ static void test_library_truncated_phdrs(void) {
 
     lc_result_ptr r = lc_library_open(TMP_PATH);
     TEST_ASSERT_PTR_ERR(r);
+    TEST_ASSERT_EQ(r.error, LC_ERR_MALFORMED_ELF);   /* it ends inside its headers */
+
+    lc_heap_free(buf);
+    remove_tmp();
+}
+
+/* A p_align that is neither 0, 1 nor a power of two breaks the gABI's
+ * rule, and the loader could not keep it: rejected. */
+static void test_library_p_align_not_power_of_two(void) {
+    uint8_t *buf = NULL;
+    size_t len = load_plugin_bytes(&buf);
+    TEST_REQUIRE(len > 0);
+
+    uint64_t load = find_phdr(buf, len, PT_LOAD_);
+    TEST_ASSERT(load != 0);
+    wr_u64(buf + load + PH_ALIGN, 0x3000);
+    TEST_ASSERT(write_tmp(buf, len));
+
+    lc_result_ptr r = lc_library_open(TMP_PATH);
+    if (lc_ptr_is_ok(r)) lc_library_close(r.value);
+    TEST_ASSERT_PTR_ERR(r);
+    TEST_ASSERT_EQ(r.error, LC_ERR_MALFORMED_ELF);
 
     lc_heap_free(buf);
     remove_tmp();
@@ -375,11 +412,13 @@ int main(int argc, char **argv, char **envp) {
     path_beside_suite(plugin_path, sizeof plugin_path, argv0, "test_plugin.so");
     path_beside_suite(malformed_path, sizeof malformed_path, argv0, "malformed_plugin.so");
     path_beside_suite(relro_plugin_path, sizeof relro_plugin_path, argv0, "plugins/page64k.so");
+    path_beside_suite(versioned_plugin_path, sizeof versioned_plugin_path, argv0, "plugins/versioned.so");
 
     TEST_RUN(test_library_open_close);
     TEST_RUN(test_library_find_symbol);
     TEST_RUN(test_library_missing_symbol);
     TEST_RUN(test_library_open_nonexistent);
+    TEST_RUN(test_library_versioned_refused);
     TEST_RUN(test_library_relro_read_only);
 
     /* Malformed-ELF hardening (C6) */
@@ -388,6 +427,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_library_oversized_filesz);
     TEST_RUN(test_library_dynamic_out_of_range);
     TEST_RUN(test_library_truncated_phdrs);
+    TEST_RUN(test_library_p_align_not_power_of_two);
 
     return test_main();
 }

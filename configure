@@ -223,7 +223,7 @@ EOF
 
 # Their build edges are under "Test plugins" in build.ninja below.
 TEST_PLUGINS=""
-for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
+for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k align ifunc ifunc_symbol versioned hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
     TEST_PLUGINS="$TEST_PLUGINS${TEST_PLUGINS:+ }\$builddir/plugins/$plugin.so"
 done
 
@@ -544,6 +544,11 @@ build \$builddir/plugins/page64k.so: cc_shared tests/plugins/page.c
   so_flags = -Wl,-z,relro,-z,max-page-size=0x10000,-z,common-page-size=0x10000
 build \$builddir/plugins/page4k.so: cc_shared tests/plugins/page.c
   so_flags = -Wl,-z,relro,-z,max-page-size=0x1000,-z,common-page-size=0x1000
+build \$builddir/plugins/align.so: cc_shared tests/plugins/align.c
+build \$builddir/plugins/ifunc.so: cc_shared tests/plugins/ifunc.c
+build \$builddir/plugins/ifunc_symbol.so: cc_shared tests/plugins/ifunc_symbol.c
+build \$builddir/plugins/versioned.so: cc_shared tests/plugins/versioned.c | tests/plugins/versioned.map
+  so_flags = -Wl,--version-script=tests/plugins/versioned.map
 build \$builddir/plugins/sysv_hash.so: cc_shared examples/test_plugin.c
   so_flags = -Wl,--hash-style=sysv
 build \$builddir/plugins/hash_cycle.so: corrupt_plugin \$builddir/plugins/sysv_hash.so | tests/plugins/corrupt.sh
@@ -614,10 +619,11 @@ build \$builddir/test_signal: link \$builddir/test_signal.o \$builddir/liblightc
 build \$builddir/test_lifecycle.o: cc_test tests/test_lifecycle.c
 build \$builddir/test_lifecycle: link \$builddir/test_lifecycle.o \$builddir/liblightc.a | \$ldscript
 
-# test_library loads test_plugin.so and plugins/page64k.so from its own
-# directory, so building the suite builds those plugins too.
+# test_library loads test_plugin.so, plugins/page64k.so and
+# plugins/versioned.so from its own directory, so building the suite builds
+# those plugins too.
 build \$builddir/test_library.o: cc_test tests/test_library.c
-build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so \$builddir/plugins/page64k.so
+build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so
 
 build \$builddir/test_thread_sync.o: cc_test tests/test_thread_sync.c
 build \$builddir/test_thread_sync: link \$builddir/test_thread_sync.o \$builddir/liblightc.a | \$ldscript
@@ -641,7 +647,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index | \$builddir/test_plugin.so \$builddir/plugins/page64k.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 

@@ -104,7 +104,7 @@
     X(DT_SYMENT) X(DT_INIT) X(DT_FINI) X(DT_RELACOUNT) X(STB_GLOBAL)        \
     X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF) X(STATX_SIZE)        \
     X(PT_TLS) X(PT_GNU_RELRO) X(DT_PLTRELSZ) X(DT_PLTREL) X(DT_JMPREL)      \
-    X(STT_TLS) X(SHN_ABS)
+    X(STT_TLS) X(SHN_ABS) X(DT_VERSYM)
 
 /* The same, on x86_64 only: aarch64 has no arch_prctl. */
 #define UAPI_CONSTANTS_X86_64(X)                                            \
@@ -175,12 +175,14 @@
  *                          does not know: 0 in the kernel's
  *                          include/linux/fs_types.h, which is not UAPI.
  *   DT_INIT_ARRAY, DT_FINI_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAYSZ,
- *   DT_RELRSZ, DT_RELR, DT_RELRENT, DT_GNU_HASH, R_X86_64_*, R_AARCH64_*
+ *   DT_RELRSZ, DT_RELR, DT_RELRENT, DT_FLAGS, DF_STATIC_TLS, DT_GNU_HASH,
+ *   STT_GNU_IFUNC, R_X86_64_*, R_AARCH64_*
  *                          ELF values that <linux/elf.h> leaves out: the
- *                          first seven are the ELF gABI's, DT_GNU_HASH is
- *                          GNU's, and the relocation types are each arch's
- *                          psABI's, in the kernel's arch/x86 and arch/arm64
- *                          asm/elf.h, which are not UAPI.
+ *                          first nine are the ELF gABI's, DT_GNU_HASH and
+ *                          STT_GNU_IFUNC are GNU's, and the relocation
+ *                          types are each arch's psABI's, in the kernel's
+ *                          arch/x86 and arch/arm64 asm/elf.h, which are not
+ *                          UAPI.
  */
 #define NO_UAPI_CHECK(X)                                                    \
     /* <lightc/syscall.h> */                                                \
@@ -193,11 +195,15 @@
     X(LC_DT_UNKNOWN)                                                        \
     /* src/kernel.h */                                                      \
     X(DT_INIT_ARRAY) X(DT_FINI_ARRAY) X(DT_INIT_ARRAYSZ) X(DT_FINI_ARRAYSZ) \
-    X(DT_RELRSZ) X(DT_RELR) X(DT_RELRENT)                                   \
-    X(DT_GNU_HASH) X(R_X86_64_NONE) X(R_X86_64_64) X(R_X86_64_GLOB_DAT)     \
-    X(R_X86_64_JUMP_SLOT) X(R_X86_64_RELATIVE) X(R_AARCH64_NONE)            \
+    X(DT_RELRSZ) X(DT_RELR) X(DT_RELRENT) X(DT_FLAGS) X(DF_STATIC_TLS)      \
+    X(DT_GNU_HASH) X(STT_GNU_IFUNC) X(R_X86_64_NONE) X(R_X86_64_64)         \
+    X(R_X86_64_GLOB_DAT) X(R_X86_64_JUMP_SLOT) X(R_X86_64_RELATIVE)         \
+    X(R_X86_64_DTPMOD64) X(R_X86_64_DTPOFF64) X(R_X86_64_TPOFF64)           \
+    X(R_X86_64_TLSDESC) X(R_X86_64_IRELATIVE) X(R_AARCH64_NONE)             \
     X(R_AARCH64_RELATIVE) X(R_AARCH64_GLOB_DAT) X(R_AARCH64_JUMP_SLOT)      \
-    X(R_AARCH64_ABS64) X(MSG_NOSIGNAL)
+    X(R_AARCH64_ABS64) X(R_AARCH64_TLS_DTPMOD) X(R_AARCH64_TLS_DTPREL)      \
+    X(R_AARCH64_TLS_TPREL) X(R_AARCH64_TLSDESC) X(R_AARCH64_IRELATIVE)      \
+    X(MSG_NOSIGNAL)
 
 /*
  * lightc's own sizes, limits, initializers and helpers: no kernel values.
@@ -375,6 +381,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef DT_JMPREL
 #undef STT_TLS
 #undef SHN_ABS
+#undef DT_VERSYM
 #undef ARCH_SET_FS
 #undef ELF64_ST_BIND
 #undef ELF64_ST_TYPE

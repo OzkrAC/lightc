@@ -267,6 +267,7 @@ lightc/result.h: enum { LC_ERR_TOOMANYREFS = 109, ... };
 lightc/result.h: enum { LC_ERR_TXTBSY = 26, ... };
 lightc/result.h: enum { LC_ERR_UCLEAN = 117, ... };
 lightc/result.h: enum { LC_ERR_UNATCH = 49, ... };
+lightc/result.h: enum { LC_ERR_UNSUPPORTED = 4104, ... };
 lightc/result.h: enum { LC_ERR_USERS = 87, ... };
 lightc/result.h: enum { LC_ERR_WOULDBLOCK = 11, ... };
 lightc/result.h: enum { LC_ERR_XDEV = 18, ... };

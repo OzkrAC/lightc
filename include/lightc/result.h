@@ -185,6 +185,7 @@ enum {
     LC_ERR_RELOC_FAILED   = 4101,
     LC_ERR_FULL           = 4102,  /* capacity exceeded (atexit table, etc.) */
     LC_ERR_MALFORMED_ELF  = 4103,  /* structurally invalid / out-of-bounds ELF */
+    LC_ERR_UNSUPPORTED    = 4104,  /* valid, but needs what the loader lacks: TLS, IFUNC, symbol versions */
 };
 
 /* --- Constructors --- */
@@ -398,6 +399,7 @@ static inline const char *lc_error_name(int32_t error) {
     case LC_ERR_RELOC_FAILED:   return "RELOC_FAILED";
     case LC_ERR_FULL:           return "FULL";
     case LC_ERR_MALFORMED_ELF:  return "MALFORMED_ELF";
+    case LC_ERR_UNSUPPORTED:    return "UNSUPPORTED";
     default:                    return "UNKNOWN";
     }
 }

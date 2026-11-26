@@ -34,17 +34,21 @@
 static uint64_t emulated_page = 4096;
 
 /* mmap on a kernel with emulated_page pages: the length is a whole number
- * of pages, and the address is aligned to one. */
-static void *emulated_map_memory(void *addr, size_t len, int32_t prot, int32_t flags,
-                                 int32_t fd, int64_t offset) {
-    size_t length = (len + emulated_page - 1) & ~(size_t)(emulated_page - 1);
+ * of pages, and the address is aligned to one. The loader makes mmap's
+ * raw call, to keep its errno, so this stands in for lc_syscall6 and
+ * passes every other call through. */
+static lc_sysret emulated_syscall6(int64_t n, int64_t a1, int64_t a2, int64_t a3,
+                                   int64_t a4, int64_t a5, int64_t a6) {
+    if (n != SYS_mmap) return lc_syscall6(n, a1, a2, a3, a4, a5, a6);
+    size_t length = ((size_t)a2 + emulated_page - 1) & ~(size_t)(emulated_page - 1);
     size_t span = length + emulated_page;
-    uint8_t *p = lc_kernel_map_memory(addr, span, prot, flags, fd, offset);
-    if (p == MAP_FAILED) return p;
+    lc_sysret r = lc_syscall6(SYS_mmap, a1, (int64_t)span, a3, a4, a5, a6);
+    if (r < 0) return r;
+    uint8_t *p = (uint8_t *)(uintptr_t)r;
     uint8_t *aligned = (uint8_t *)(((uintptr_t)p + emulated_page - 1) & ~(uintptr_t)(emulated_page - 1));
     if (aligned > p) lc_kernel_unmap_memory(p, (size_t)(aligned - p));
     if (p + span > aligned + length) lc_kernel_unmap_memory(aligned + length, (size_t)(p + span - (aligned + length)));
-    return aligned;
+    return (lc_sysret)(uintptr_t)aligned;
 }
 
 /* mprotect on such a kernel: EINVAL for an address that is not aligned to
@@ -54,10 +58,10 @@ static lc_sysret emulated_protect_memory(void *addr, size_t len, int32_t prot) {
     return lc_kernel_protect_memory(addr, len, prot);
 }
 
-#define lc_kernel_map_memory     emulated_map_memory
+#define lc_syscall6              emulated_syscall6
 #define lc_kernel_protect_memory emulated_protect_memory
 #include "../../src/library.c"
-#undef lc_kernel_map_memory
+#undef lc_syscall6
 #undef lc_kernel_protect_memory
 
 #include "test.h"

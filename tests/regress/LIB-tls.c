@@ -10,7 +10,8 @@
  * plugin's counter corrupted, so that the next heap allocation crashed.
  * With the general-dynamic model the first access called an unresolved
  * __tls_get_addr or TLS descriptor. A plugin with PT_TLS now fails to load
- * with LC_ERR_MALFORMED_ELF.
+ * with LC_ERR_UNSUPPORTED: a valid object that needs what the loader does
+ * not do.
  *
  * build/plugins/tls_ie.so (tests/plugins/tls_ie.c) uses the initial-exec
  * model, and build/plugins/tls_gd.so (tests/plugins/tls_gd.c) the
@@ -82,7 +83,7 @@ static void test_initial_exec_is_refused(void) {
     lc_heap_free(block.value);
 
     TEST_ASSERT_PTR_ERR(r);
-    TEST_ASSERT_EQ(r.error, LC_ERR_MALFORMED_ELF);
+    TEST_ASSERT_EQ(r.error, LC_ERR_UNSUPPORTED);
     TEST_ASSERT_EQ(after, before);
 }
 
@@ -92,7 +93,7 @@ static void test_general_dynamic_is_refused(void) {
     lc_result_ptr r = lc_library_open(PLUGIN_DIR "tls_gd.so");
     if (!lc_ptr_is_err(r)) lc_library_close(r.value);
     TEST_ASSERT_PTR_ERR(r);
-    TEST_ASSERT_EQ(r.error, LC_ERR_MALFORMED_ELF);
+    TEST_ASSERT_EQ(r.error, LC_ERR_UNSUPPORTED);
 }
 
 int main(int argc, char **argv, char **envp) {

@@ -64,4 +64,7 @@ ARENA-create-wrap       gating
 async-1                 gating
 async-2                 gating
 xm-wait-swallows-errors gating
+LIB-p-align             gating
+LIB-symvalue            gating
+LIB-errno               gating
 TIME-sleep-eintr        pending

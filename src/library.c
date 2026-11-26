@@ -50,16 +50,28 @@ struct lc_library {
  * Internal helpers
  * ======================================================================== */
 
-/* Read exactly `count` bytes from `fd`, retrying on short reads. */
-static bool read_all(int32_t fd, void *buf, size_t count) {
+/* Read exactly `count` bytes from `fd`, retrying on short reads and EINTR.
+ * Returns 0, the kernel's errno, such as EISDIR for a directory, or
+ * LC_ERR_MALFORMED_ELF when the file ends first: it is shorter than its
+ * headers say. */
+static int32_t read_all(int32_t fd, void *buf, size_t count) {
     uint8_t *p = (uint8_t *)buf;
     while (count > 0) {
         lc_sysret n = lc_kernel_read_bytes(fd, p, count);
-        if (n <= 0) return false;
+        if (n == -LC_ERR_INTR) continue;
+        if (n < 0) return (int32_t)-n;
+        if (n == 0) return LC_ERR_MALFORMED_ELF;
         p += n;
         count -= (size_t)n;
     }
-    return true;
+    return LC_OK;
+}
+
+/* mmap of a private anonymous region, giving the kernel's errno:
+ * lc_kernel_map_memory folds every error into MAP_FAILED. */
+static lc_sysret map_anonymous(size_t length) {
+    return lc_syscall6(SYS_mmap, 0, (int64_t)length, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
 /* ========================================================================
@@ -194,30 +206,58 @@ static Elf64_Sym *reloc_symbol(lc_library *lib, uint32_t sym_idx, size_t sym_cou
     return sym;
 }
 
+/* The address of `sym`, the S of the psABIs, for a lookup and for a
+ * relocation alike: the load bias plus its value, or for an absolute symbol
+ * (SHN_ABS) its value alone. An undefined symbol has none here
+ * (LC_ERR_NOENT). Nor has a symbol the loader cannot give one
+ * (LC_ERR_UNSUPPORTED): a TLS symbol's value is an offset in a TLS block
+ * the loader does not make, and an IFUNC symbol's is the address of a
+ * resolver to call for the address, which the loader does not call. */
+static int32_t symbol_address(const lc_library *lib, const Elf64_Sym *sym, uint64_t *out) {
+    if (sym->st_shndx == SHN_UNDEF) return LC_ERR_NOENT;
+    uint8_t type = ELF64_ST_TYPE(sym->st_info);
+    if (type == STT_TLS || type == STT_GNU_IFUNC) return LC_ERR_UNSUPPORTED;
+    *out = (sym->st_shndx == SHN_ABS) ? sym->st_value : lib->bias + sym->st_value;
+    return LC_OK;
+}
+
 /* The value of `sym` for a relocation: S. An undefined weak symbol is 0. An
  * undefined strong one has no definition to bind to, since the loader has
- * no other object to search, and a TLS symbol's value is an offset in a TLS
- * block the loader does not make: both fail the load. */
-static bool reloc_symbol_value(const lc_library *lib, const Elf64_Sym *sym, uint64_t *out) {
+ * no other object to search, so it fails the load with LC_ERR_RELOC_FAILED;
+ * a TLS or IFUNC symbol fails it with LC_ERR_UNSUPPORTED. */
+static int32_t reloc_symbol_value(const lc_library *lib, const Elf64_Sym *sym, uint64_t *out) {
     if (sym->st_shndx == SHN_UNDEF) {
-        if (ELF64_ST_BIND(sym->st_info) != STB_WEAK) return false;
+        if (ELF64_ST_BIND(sym->st_info) != STB_WEAK) return LC_ERR_RELOC_FAILED;
         *out = 0;
-        return true;
+        return LC_OK;
     }
-    if (ELF64_ST_TYPE(sym->st_info) == STT_TLS) return false;
-    *out = (sym->st_shndx == SHN_ABS) ? sym->st_value : lib->bias + sym->st_value;
-    return true;
+    return symbol_address(lib, sym, out);
+}
+
+/* Whether the relocation `type` is one of the TLS or IFUNC (IRELATIVE)
+ * types of the psABI, which the loader does not apply: a valid object that
+ * it cannot load correctly, not a corrupt one. */
+static bool reloc_type_unsupported(uint32_t type) {
+#if defined(__x86_64__)
+    return type == R_X86_64_DTPMOD64 || type == R_X86_64_DTPOFF64 || type == R_X86_64_TPOFF64 ||
+           type == R_X86_64_TLSDESC || type == R_X86_64_IRELATIVE;
+#elif defined(__aarch64__)
+    return type == R_AARCH64_TLS_DTPMOD || type == R_AARCH64_TLS_DTPREL ||
+           type == R_AARCH64_TLS_TPREL || type == R_AARCH64_TLSDESC || type == R_AARCH64_IRELATIVE;
+#endif
 }
 
 /* Apply `count` RELA entries of `table` (DT_RELA or DT_JMPREL). Every
  * entry is applied now, PLT slots too: there is no lazy binding. A target
  * outside the mapping, an unresolved symbol or a relocation type this
- * loader does not know fails the load, as anything it skipped would leave
- * a pointer that the plugin later follows to a wrong address. A NONE entry
- * has no target, so its offset is not looked at: GNU ld leaves all-zero
- * ones in a table it sized larger than it filled. */
-static bool process_rela_table(lc_library *lib, const Elf64_Rela *table, size_t count,
-                               size_t sym_count) {
+ * loader does not know fails the load with LC_ERR_RELOC_FAILED, as anything
+ * it skipped would leave a pointer that the plugin later follows to a wrong
+ * address; a TLS or IFUNC relocation, or one against a TLS or IFUNC
+ * symbol, fails it with LC_ERR_UNSUPPORTED. A NONE entry has no target, so
+ * its offset is not looked at: GNU ld leaves all-zero ones in a table it
+ * sized larger than it filled. Returns 0 when every entry is applied. */
+static int32_t process_rela_table(lc_library *lib, const Elf64_Rela *table, size_t count,
+                                  size_t sym_count) {
     for (size_t i = 0; i < count; i++) {
         const Elf64_Rela *rela = &table[i];
         uint32_t type = ELF64_R_TYPE(rela->r_info);
@@ -250,23 +290,27 @@ static bool process_rela_table(lc_library *lib, const Elf64_Rela *table, size_t 
             case R_AARCH64_ABS64: {
 #endif
                 Elf64_Sym *sym = reloc_symbol(lib, sym_idx, sym_count);
-                if (!sym || !reloc_symbol_value(lib, sym, &value)) return false;
+                if (!sym) return LC_ERR_RELOC_FAILED;
+                int32_t error = reloc_symbol_value(lib, sym, &value);
+                if (error != LC_OK) return error;
                 value += rela->r_addend;
                 break;
             }
 
             default:
-                /* TLS, IFUNC, COPY and every other type: not supported */
-                return false;
+                /* TLS and IRELATIVE: valid, but not done here. COPY, which
+                 * no shared object has, and every type no psABI defines:
+                 * the object is wrong. */
+                return reloc_type_unsupported(type) ? LC_ERR_UNSUPPORTED : LC_ERR_RELOC_FAILED;
         }
 
         /* The write is 8 bytes at `target`: it must lie wholly within the
          * mapping, or it is an arbitrary write. */
         uint64_t *target = mapped_address(lib, rela->r_offset);
-        if (!region_in_bounds(lib, target, sizeof(*target))) return false;
+        if (!region_in_bounds(lib, target, sizeof(*target))) return LC_ERR_RELOC_FAILED;
         *target = value;
     }
-    return true;
+    return LC_OK;
 }
 
 /* Apply DT_RELR, the packed relative relocations of ld -z
@@ -299,13 +343,15 @@ static bool process_relr_table(lc_library *lib) {
 }
 
 /* RELR first: it holds only relative relocations, which the others do not
- * read. */
-static bool process_relocations(lc_library *lib) {
+ * read. Returns 0, or the error of the first entry that failed. */
+static int32_t process_relocations(lc_library *lib) {
     size_t sym_count = get_symbol_count(lib);
-    if (lib->relr && !process_relr_table(lib)) return false;
-    if (lib->rela && !process_rela_table(lib, lib->rela, lib->rela_count, sym_count)) return false;
-    if (lib->jmprel && !process_rela_table(lib, lib->jmprel, lib->jmprel_count, sym_count)) return false;
-    return true;
+    if (lib->relr && !process_relr_table(lib)) return LC_ERR_RELOC_FAILED;
+    int32_t error = LC_OK;
+    if (lib->rela) error = process_rela_table(lib, lib->rela, lib->rela_count, sym_count);
+    if (error == LC_OK && lib->jmprel)
+        error = process_rela_table(lib, lib->jmprel, lib->jmprel_count, sym_count);
+    return error;
 }
 
 /* ========================================================================
@@ -333,7 +379,7 @@ static uint32_t gnu_hash_function(const char *name) {
  *
  * Chain values have bit 0 set on the last entry in the chain.
  */
-static void *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
+static const Elf64_Sym *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
     uint32_t *hash_table = lib->gnu_hash;
 
     /* The 4-word header must itself be readable before we trust its fields. */
@@ -389,10 +435,9 @@ static void *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
             Elf64_Sym *sym = &lib->symtab[symndx + chain_idx];
             if (region_in_bounds(lib, sym, sizeof(*sym)) &&
                 sym->st_name < lib->strtab_size &&
-                str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-                if (sym->st_shndx != SHN_UNDEF && ELF64_ST_TYPE(sym->st_info) != STT_TLS) {
-                    return mapped_address(lib, sym->st_value);
-                }
+                str_equal_bounded(lib->strtab + sym->st_name, str_end, name) &&
+                sym->st_shndx != SHN_UNDEF) {
+                return sym;
             }
         }
 
@@ -405,7 +450,7 @@ static void *find_symbol_with_gnu_hash(lc_library *lib, const char *name) {
 }
 
 /* Look up a symbol using the ELF hash table (DT_HASH). */
-static void *find_symbol_with_elf_hash(lc_library *lib, const char *name) {
+static const Elf64_Sym *find_symbol_with_elf_hash(lc_library *lib, const char *name) {
     uint32_t *hash_table = lib->elf_hash;
     /* Two-word header (nbucket, nchain) must be readable first. */
     if (!region_in_bounds(lib, hash_table, 2 * sizeof(uint32_t))) return NULL;
@@ -432,10 +477,9 @@ static void *find_symbol_with_elf_hash(lc_library *lib, const char *name) {
         Elf64_Sym *sym = &lib->symtab[idx];
         if (!region_in_bounds(lib, sym, sizeof(*sym))) break;
         if (sym->st_name < lib->strtab_size &&
-            str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-            if (sym->st_shndx != SHN_UNDEF && ELF64_ST_TYPE(sym->st_info) != STT_TLS) {
-                return mapped_address(lib, sym->st_value);
-            }
+            str_equal_bounded(lib->strtab + sym->st_name, str_end, name) &&
+            sym->st_shndx != SHN_UNDEF) {
+            return sym;
         }
         if (!region_in_bounds(lib, &chains[idx], sizeof(uint32_t))) break;
         idx = chains[idx];
@@ -494,7 +538,7 @@ static size_t get_symbol_count(lc_library *lib) {
 }
 
 /* Look up a symbol by linear scan of the symbol table. */
-static void *find_symbol_linear_scan(lc_library *lib, const char *name) {
+static const Elf64_Sym *find_symbol_linear_scan(lc_library *lib, const char *name) {
     size_t sym_count = get_symbol_count(lib);
     const char *str_end = lib->strtab + lib->strtab_size;
 
@@ -508,7 +552,7 @@ static void *find_symbol_linear_scan(lc_library *lib, const char *name) {
         if (sym->st_name >= lib->strtab_size) continue;
 
         if (str_equal_bounded(lib->strtab + sym->st_name, str_end, name)) {
-            return mapped_address(lib, sym->st_value);
+            return sym;
         }
     }
     return NULL;
@@ -519,18 +563,21 @@ static void *find_symbol_linear_scan(lc_library *lib, const char *name) {
  * ======================================================================== */
 
 lc_result_ptr lc_library_open(const char *path) {
-    /* --- Step 1: Open the file --- */
+    /* --- Step 1: Open the file. Its errors are the kernel's: ENOENT,
+     * EACCES, ENOTDIR and the rest; a directory opens, and its read below
+     * fails with EISDIR. --- */
     lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_CLOEXEC, 0);
     if (fd_ret < 0) {
-        return lc_err_ptr(LC_ERR_NOENT);
+        return lc_err_ptr((int32_t)-fd_ret);
     }
     int32_t fd = (int32_t)fd_ret;
 
     /* --- Step 2: Read and validate ELF header --- */
     Elf64_Ehdr ehdr;
-    if (!read_all(fd, &ehdr, sizeof(ehdr))) {
+    int32_t read_error = read_all(fd, &ehdr, sizeof(ehdr));
+    if (read_error != LC_OK) {
         lc_kernel_close_file(fd);
-        return lc_err_ptr(LC_ERR_IO);
+        return lc_err_ptr(read_error);
     }
     int32_t hdr_err = validate_elf_header(&ehdr);
     if (hdr_err != LC_OK) {
@@ -547,15 +594,17 @@ lc_result_ptr lc_library_open(const char *path) {
     }
     Elf64_Phdr *phdrs = (Elf64_Phdr *)phdr_alloc.value;
 
-    if (lc_kernel_seek_position(fd, (int64_t)ehdr.e_phoff, SEEK_SET) < 0) {
+    lc_sysret seek = lc_kernel_seek_position(fd, (int64_t)ehdr.e_phoff, SEEK_SET);
+    if (seek < 0) {
         lc_heap_free(phdrs);
         lc_kernel_close_file(fd);
-        return lc_err_ptr(LC_ERR_IO);
+        return lc_err_ptr((int32_t)-seek);
     }
-    if (!read_all(fd, phdrs, phdr_table_size)) {
+    read_error = read_all(fd, phdrs, phdr_table_size);
+    if (read_error != LC_OK) {
         lc_heap_free(phdrs);
         lc_kernel_close_file(fd);
-        return lc_err_ptr(LC_ERR_IO);
+        return lc_err_ptr(read_error);
     }
 
     /* --- Step 4: Compute total address span of LOAD segments --- */
@@ -564,6 +613,7 @@ lc_result_ptr lc_library_open(const char *path) {
     bool found_load = false;
     uint64_t prev_page_end = 0;     /* the end of the last PT_LOAD's pages */
     int32_t  prev_prot = 0;         /* and its protection */
+    uint64_t max_align = 0;         /* the largest p_align of the PT_LOADs */
 
     for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
         /* The loader makes no TLS block for the object, so its thread-local
@@ -572,9 +622,19 @@ lc_result_ptr lc_library_open(const char *path) {
         if (phdrs[i].p_type == PT_TLS) {
             lc_heap_free(phdrs);
             lc_kernel_close_file(fd);
-            return lc_err_ptr(LC_ERR_MALFORMED_ELF);
+            return lc_err_ptr(LC_ERR_UNSUPPORTED);
         }
         if (phdrs[i].p_type != PT_LOAD) continue;
+
+        /* p_align is 0 or 1 for none, or else a power of two, as the gABI
+         * has it. Step 5 places the mapping so that it holds. */
+        uint64_t align = phdrs[i].p_align;
+        if (align > 1 && (align & (align - 1)) != 0) {
+            lc_heap_free(phdrs);
+            lc_kernel_close_file(fd);
+            return lc_err_ptr(LC_ERR_MALFORMED_ELF);
+        }
+        if (align > max_align) max_align = align;
 
         /* Reject nonsensical/hostile segment sizes: more bytes in the file than
          * in memory would overflow the copy, and a vaddr+memsz that wraps would
@@ -626,19 +686,38 @@ lc_result_ptr lc_library_open(const char *path) {
     min_vaddr = PAGE_ALIGN_DOWN(min_vaddr);
     size_t total_size = (size_t)PAGE_ALIGN_UP(max_vaddr - min_vaddr);
 
-    /* --- Step 5: Map a single contiguous anonymous region --- */
-    void *base_ptr = lc_kernel_map_memory(
-        NULL, total_size,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1, 0
-    );
-    if (base_ptr == MAP_FAILED) {
+    /* --- Step 5: Map a single contiguous anonymous region ---
+     *
+     * Its base keeps the largest p_align of the PT_LOADs: the load bias is
+     * then a multiple of each, and every address of the object is aligned
+     * as the linker laid it out. ld gives a segment the alignment of its
+     * most aligned variable, which the compiler took as given, and gives
+     * every aarch64 object 64 KiB. mmap gives an address aligned to a page,
+     * so for a larger alignment the region is reserved longer by the
+     * alignment less a page, and what the base leaves at either end is
+     * unmapped. */
+    uint64_t align = max_align > PAGE_SIZE ? max_align : PAGE_SIZE;
+    size_t reserved;
+    if (__builtin_add_overflow(total_size, (size_t)(align - PAGE_SIZE), &reserved)) {
         lc_heap_free(phdrs);
         lc_kernel_close_file(fd);
-        return lc_err_ptr(LC_ERR_NOMEM);
+        return lc_err_ptr(LC_ERR_MALFORMED_ELF);
     }
-    uint8_t *base = (uint8_t *)base_ptr;
+    lc_sysret mapped = map_anonymous(reserved);
+    if (mapped < 0) {
+        lc_heap_free(phdrs);
+        lc_kernel_close_file(fd);
+        return lc_err_ptr((int32_t)-mapped);
+    }
+    uintptr_t region = (uintptr_t)mapped;
+    /* The first address of the region that is min_vaddr modulo the
+     * alignment: both are multiples of a page, so it is at most the
+     * alignment less a page in. */
+    uint8_t *base = (uint8_t *)(region + ((min_vaddr - region) & (align - 1)));
+    if ((uintptr_t)base > region)
+        lc_kernel_unmap_memory((void *)region, (uintptr_t)base - region);
+    if (region + reserved > (uintptr_t)base + total_size)
+        lc_kernel_unmap_memory(base + total_size, region + reserved - ((uintptr_t)base + total_size));
 
     /* Zero the entire region (MAP_ANONYMOUS should do this, but be safe for .bss) */
 
@@ -659,17 +738,19 @@ lc_result_ptr lc_library_open(const char *path) {
             return lc_err_ptr(LC_ERR_MALFORMED_ELF);
         }
 
-        if (lc_kernel_seek_position(fd, (int64_t)phdrs[i].p_offset, SEEK_SET) < 0) {
+        seek = lc_kernel_seek_position(fd, (int64_t)phdrs[i].p_offset, SEEK_SET);
+        if (seek < 0) {
             lc_kernel_unmap_memory(base, total_size);
             lc_heap_free(phdrs);
             lc_kernel_close_file(fd);
-            return lc_err_ptr(LC_ERR_IO);
+            return lc_err_ptr((int32_t)-seek);
         }
-        if (!read_all(fd, base + offset_in_map, (size_t)phdrs[i].p_filesz)) {
+        read_error = read_all(fd, base + offset_in_map, (size_t)phdrs[i].p_filesz);
+        if (read_error != LC_OK) {
             lc_kernel_unmap_memory(base, total_size);
             lc_heap_free(phdrs);
             lc_kernel_close_file(fd);
-            return lc_err_ptr(LC_ERR_IO);
+            return lc_err_ptr(read_error);
         }
         /* .bss (memsz > filesz) is already zero from MAP_ANONYMOUS */
     }
@@ -729,6 +810,7 @@ lc_result_ptr lc_library_open(const char *path) {
     size_t relr_total_size = 0;
     size_t relr_entry_size = 0;
     size_t sym_entry_size = 0;
+    bool   unsupported = false;   /* symbol versions, or static TLS */
     size_t dyn_max = (size_t)(dynamic_bytes / sizeof(Elf64_Dyn));
 
     for (size_t di = 0; di < dyn_max && dynamic[di].d_tag != DT_NULL; di++) {
@@ -797,6 +879,16 @@ lc_result_ptr lc_library_open(const char *path) {
             case DT_FINI_ARRAYSZ:
                 lib->fini_array_count = (size_t)dyn->d_un.d_val / sizeof(void *);
                 break;
+            case DT_VERSYM:
+                /* Symbol versions: a lookup by name alone could bind an old
+                 * version, foo@V1, where the default, foo@@V2, is meant. */
+                unsupported = true;
+                break;
+            case DT_FLAGS:
+                /* The static TLS model needs a TLS block the loader does
+                 * not make. */
+                if (dyn->d_un.d_val & DF_STATIC_TLS) unsupported = true;
+                break;
             default:
                 break;
         }
@@ -838,19 +930,20 @@ lc_result_ptr lc_library_open(const char *path) {
                                        (uint64_t)lib->init_array_count * sizeof(void *))) tables_ok = false;
     if (lib->fini_array && !region_in_bounds(lib, lib->fini_array,
                                        (uint64_t)lib->fini_array_count * sizeof(void *))) tables_ok = false;
-    if (!tables_ok) {
+    if (!tables_ok || unsupported) {
         lc_kernel_unmap_memory(base, total_size);
         lc_heap_free(phdrs);
         lc_heap_free(lib);
-        return lc_err_ptr(LC_ERR_MALFORMED_ELF);
+        return lc_err_ptr(tables_ok ? LC_ERR_UNSUPPORTED : LC_ERR_MALFORMED_ELF);
     }
 
     /* --- Step 9: Process relocations (mapping still fully RW) --- */
-    if (!process_relocations(lib)) {
+    int32_t reloc_error = process_relocations(lib);
+    if (reloc_error != LC_OK) {
         lc_kernel_unmap_memory(base, total_size);
         lc_heap_free(phdrs);
         lc_heap_free(lib);
-        return lc_err_ptr(LC_ERR_RELOC_FAILED);
+        return lc_err_ptr(reloc_error);
     }
 
     /* --- Step 10: Tighten page permissions now that relocations are done --- */
@@ -874,7 +967,7 @@ lc_result_ptr lc_library_open(const char *path) {
             lc_kernel_unmap_memory(base, total_size);
             lc_heap_free(phdrs);
             lc_heap_free(lib);
-            return lc_err_ptr(LC_ERR_IO);
+            return lc_err_ptr((int32_t)-ret);
         }
     }
 
@@ -890,12 +983,13 @@ lc_result_ptr lc_library_open(const char *path) {
         uint64_t page_end    = PAGE_ALIGN_DOWN(relro_start + phdrs[i].p_memsz);
         if (page_end <= page_start || page_end > total_size) continue;
 
-        if (lc_kernel_protect_memory(base + page_start, (size_t)(page_end - page_start),
-                                     PROT_READ) < 0) {
+        lc_sysret relro = lc_kernel_protect_memory(base + page_start, (size_t)(page_end - page_start),
+                                                   PROT_READ);
+        if (relro < 0) {
             lc_kernel_unmap_memory(base, total_size);
             lc_heap_free(phdrs);
             lc_heap_free(lib);
-            return lc_err_ptr(LC_ERR_IO);
+            return lc_err_ptr((int32_t)-relro);
         }
     }
 
@@ -924,7 +1018,7 @@ lc_result_ptr lc_library_find_symbol(lc_library *lib, const char *name) {
         return lc_err_ptr(LC_ERR_NOENT);
     }
 
-    void *sym = NULL;
+    const Elf64_Sym *sym = NULL;
 
     /* Try GNU hash table first (fast O(1) lookup, most common) */
     if (lib->gnu_hash) {
@@ -940,7 +1034,14 @@ lc_result_ptr lc_library_find_symbol(lc_library *lib, const char *name) {
     }
 
     if (!sym) return lc_err_ptr(LC_ERR_NOENT);
-    return lc_ok_ptr(sym);
+
+    /* The same address a relocation against it would get: an absolute
+     * symbol's value is not moved by the bias, and a TLS or IFUNC symbol
+     * has no address to give (LC_ERR_UNSUPPORTED). */
+    uint64_t address;
+    int32_t error = symbol_address(lib, sym, &address);
+    if (error != LC_OK) return lc_err_ptr(error);
+    return lc_ok_ptr((void *)(uintptr_t)address);
 }
 
 void lc_library_close(lc_library *lib) {

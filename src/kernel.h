@@ -301,6 +301,11 @@ typedef struct {
 #define DT_RELRENT      37
 #define DT_GNU_HASH     0x6ffffef5
 #define DT_RELACOUNT    0x6ffffff9
+#define DT_FLAGS        30
+#define DT_VERSYM       0x6ffffff0
+
+/* DT_FLAGS: the object uses the static TLS model */
+#define DF_STATIC_TLS   0x10
 
 /* Symbol binding/type extraction */
 #define ELF64_ST_BIND(i)  ((i) >> 4)
@@ -310,6 +315,7 @@ typedef struct {
 #define STT_FUNC   2
 #define STT_OBJECT 1
 #define STT_TLS    6
+#define STT_GNU_IFUNC 10
 #define SHN_UNDEF  0
 #define SHN_ABS    0xfff1
 
@@ -319,6 +325,11 @@ typedef struct {
 #define R_X86_64_GLOB_DAT  6
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE  8
+#define R_X86_64_DTPMOD64  16
+#define R_X86_64_DTPOFF64  17
+#define R_X86_64_TPOFF64   18
+#define R_X86_64_TLSDESC   36
+#define R_X86_64_IRELATIVE 37
 
 /* Relocation types (aarch64) */
 #define R_AARCH64_NONE      0
@@ -326,6 +337,11 @@ typedef struct {
 #define R_AARCH64_GLOB_DAT  1025
 #define R_AARCH64_JUMP_SLOT 1026
 #define R_AARCH64_ABS64     257
+#define R_AARCH64_TLS_DTPMOD 1028
+#define R_AARCH64_TLS_DTPREL 1029
+#define R_AARCH64_TLS_TPREL  1030
+#define R_AARCH64_TLSDESC    1031
+#define R_AARCH64_IRELATIVE  1032
 
 /* Relocation info extraction */
 #define ELF64_R_SYM(i)   ((i) >> 32)
