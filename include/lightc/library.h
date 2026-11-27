@@ -27,7 +27,9 @@
  *                         does not do: thread-local storage (PT_TLS,
  *                         DF_STATIC_TLS, a TLS relocation), IFUNC (an
  *                         IRELATIVE relocation, or one against an IFUNC
- *                         symbol) and symbol versions (DT_VERSYM);
+ *                         symbol) and symbol versions (DT_VERSYM); and for
+ *                         a library with its own copy of lightc, one that
+ *                         defines lc_heap_*, lc_tls_* or lc_abi_* symbols;
  *   LC_ERR_RELOC_FAILED   for a relocation against an undefined symbol that
  *                         is not weak (a weak one is 0), of a type no
  *                         psABI of the arch gives a shared object (COPY,
@@ -37,6 +39,14 @@
  *                         size other than ELF64's, a DT_PLTREL other than
  *                         DT_RELA, two PT_LOADs with different protections
  *                         on one page, or a table outside the library.
+ *
+ * A library must not link liblightc.a. Its copy of lightc would keep
+ * globals of its own but find its per-thread block through the thread
+ * pointer, which is the host's: its TLS keys would overwrite the host's,
+ * and its heap would run on the host's per-thread heap state. The check
+ * above is best effort, as --exclude-libs or hidden visibility hide the
+ * names it looks for. A library may use lightc's inline functions, which
+ * keep no state.
  *
  * lc_library_find_symbol gives the address a relocation against the symbol
  * would get: an absolute symbol's value as it is. It fails with

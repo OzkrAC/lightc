@@ -561,6 +561,36 @@ static const Elf64_Sym *find_symbol_linear_scan(lc_library *lib, const char *nam
     return NULL;
 }
 
+/* Whether `name`, which ends before `end`, starts with `prefix`. */
+static bool name_has_prefix(const char *name, const char *end, const char *prefix) {
+    for (; *prefix; name++, prefix++)
+        if (name >= end || *name != *prefix) return false;
+    return true;
+}
+
+/* Whether the library defines a function or variable of lightc's heap, of
+ * its TLS keys or its ABI tag: it has a copy of liblightc.a linked in. That
+ * copy keeps globals of its own, such as the count of TLS keys made and
+ * the heap's segments, but finds its per-thread block through the thread
+ * pointer, which is the host's: its first TLS key is the host's key 0, and
+ * its heap runs on the host's per-thread heap state. This is best effort:
+ * a copy linked with --exclude-libs, or built with hidden visibility,
+ * exports none of these names. */
+static bool embeds_lightc(lc_library *lib) {
+    static const char *const prefixes[] = { "lc_heap_", "lc_tls_", "lc_abi_" };
+    if (!lib->symtab || !lib->strtab) return false;
+    size_t count = get_symbol_count(lib);
+    const char *str_end = lib->strtab + lib->strtab_size;
+    for (size_t i = 1; i < count; i++) {
+        const Elf64_Sym *sym = &lib->symtab[i];
+        if (!region_in_bounds(lib, sym, sizeof(*sym))) break;
+        if (sym->st_shndx == SHN_UNDEF || sym->st_name >= lib->strtab_size) continue;
+        for (size_t p = 0; p < sizeof prefixes / sizeof prefixes[0]; p++)
+            if (name_has_prefix(lib->strtab + sym->st_name, str_end, prefixes[p])) return true;
+    }
+    return false;
+}
+
 /* ========================================================================
  * Public API
  * ======================================================================== */
@@ -935,6 +965,9 @@ lc_result_ptr lc_library_open(const char *path) {
                                        (uint64_t)lib->init_array_count * sizeof(void *))) tables_ok = false;
     if (lib->fini_array && !region_in_bounds(lib, lib->fini_array,
                                        (uint64_t)lib->fini_array_count * sizeof(void *))) tables_ok = false;
+    /* A copy of lightc of the library's own would share the host's
+     * per-thread block: refused before a relocation or constructor runs. */
+    if (tables_ok && !unsupported && embeds_lightc(lib)) unsupported = true;
     if (!tables_ok || unsupported) {
         lc_kernel_unmap_memory(base, total_size);
         lc_heap_free(phdrs);

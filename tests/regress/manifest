@@ -67,4 +67,5 @@ xm-wait-swallows-errors gating
 LIB-p-align             gating
 LIB-symvalue            gating
 LIB-errno               gating
+xm-plugin-tls-key-collision gating
 TIME-sleep-eintr        pending

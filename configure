@@ -223,7 +223,7 @@ EOF
 
 # Their build edges are under "Test plugins" in build.ninja below.
 TEST_PLUGINS=""
-for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k align ifunc ifunc_symbol versioned hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
+for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k align ifunc ifunc_symbol versioned embedded hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
     TEST_PLUGINS="$TEST_PLUGINS${TEST_PLUGINS:+ }\$builddir/plugins/$plugin.so"
 done
 
@@ -549,6 +549,12 @@ build \$builddir/plugins/ifunc.so: cc_shared tests/plugins/ifunc.c
 build \$builddir/plugins/ifunc_symbol.so: cc_shared tests/plugins/ifunc_symbol.c
 build \$builddir/plugins/versioned.so: cc_shared tests/plugins/versioned.c | tests/plugins/versioned.map
   so_flags = -Wl,--version-script=tests/plugins/versioned.map
+# embedded.so is linked with liblightc.a, compiled as the library is. Its
+# objects are compiled as the toolchain makes them by default, PIE where
+# that is the default: -Bsymbolic binds their references inside the
+# plugin, so they link into a shared object.
+build \$builddir/plugins/embedded.so: cc_shared tests/plugins/embedded.c \$builddir/liblightc.a
+  so_flags = \$cflags -Wl,-Bsymbolic
 build \$builddir/plugins/sysv_hash.so: cc_shared examples/test_plugin.c
   so_flags = -Wl,--hash-style=sysv
 build \$builddir/plugins/hash_cycle.so: corrupt_plugin \$builddir/plugins/sysv_hash.so | tests/plugins/corrupt.sh
