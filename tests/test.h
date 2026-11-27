@@ -375,4 +375,51 @@ static inline int test_main(void) {
     return 0;
 }
 
+/* --- Chaos points, in the faultinject build ---
+ *
+ * test_chaos_init(envp) seeds lightc's chaos points (<lightc/fault.h>) with
+ * the value of LC_CHAOS in `envp`, main's third argument: a decimal number
+ * below 2^64. It prints the seed, so a run that fails can be run again with
+ * it, as in LC_CHAOS=12345 build/test_fault. Unset, empty or 0 turns the
+ * points off. Any other value is a mistake that would quietly test less, so
+ * the suite then exits with status 2. In another build it does nothing.
+ */
+
+#include <lightc/fault.h>
+#include <lightc/syscall.h>
+
+static inline void test_chaos_init(char **envp) {
+#ifdef LC_FAULTINJECT
+    static const char name[] = "LC_CHAOS=";
+    const size_t name_length = sizeof name - 1;
+    const char *value = NULL;
+    for (char **e = envp; e != NULL && *e != NULL; e++) {
+        if (lc_string_length(*e) >= name_length &&
+            lc_string_equal(*e, name_length, name, name_length)) {
+            value = *e + name_length;
+            break;
+        }
+    }
+    uint64_t seed = 0;
+    for (const char *c = value; c != NULL && *c != '\0'; c++) {
+        uint64_t digit = (uint64_t)(*c - '0');
+        if (*c < '0' || *c > '9' || seed > (UINT64_MAX - digit) / 10) {
+            _test_print_text("LC_CHAOS=");
+            _test_print_text(value);
+            _test_print_text(": not a decimal number below 2^64\n");
+            lc_kernel_exit(2);
+        }
+        seed = seed * 10 + digit;
+    }
+    lc_chaos_seed(seed);
+    if (seed != 0) {
+        _test_print_text("Chaos points seeded with LC_CHAOS=");
+        lc_print_unsigned(TEST_FD, seed);
+        lc_print_newline(TEST_FD);
+    }
+#else
+    (void)envp;
+#endif
+}
+
 #endif /* LIGHTC_TEST_H */

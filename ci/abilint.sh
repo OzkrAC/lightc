@@ -18,6 +18,16 @@
 #           Any other lc_syscallN that is not a call whose first argument is
 #           a SYS_ name followed by "," or ")" fails, as the lint cannot
 #           tell which syscall it makes.
+#
+#           The faultinject build renames the assembly's lc_syscall0 to 6
+#           lc_fault_raw_syscall0 to 6, and src/fault.c defines lc_syscall0
+#           to 6 as shims that check the fault rules, then pass their nr on
+#           to those. The shims' definitions, "lc_syscallN(int64_t nr, ...)",
+#           are left out as the prototypes are, and the calls of the shims
+#           are checked as any other. A call of an lc_fault_raw_ function
+#           makes a system call that no fault rule checks, with whatever nr
+#           it is given, so any lc_fault_raw_ name outside src/fault.c
+#           fails.
 #   macros  Each macro that a header under include/ or src/ defines is named
 #           in exactly one of the lists of tests/abi_check.c: those it
 #           compares with the UAPI value (UAPI_CONSTANTS,
@@ -197,6 +207,23 @@ function scan(    rest, line, pre, prev, n, s, ident, c, where, name, found, nou
         }
     }
     files_with_calls += found
+    raw_names_in_text()
+}
+
+# The lc_fault_raw_ names in text, the stripped lines of file, each of which
+# fails outside src/fault.c. They are counted apart from the calls.
+function raw_names_in_text(    rest, line, pre) {
+    if (file == "src/fault.c")
+        return
+    rest = text
+    line = 1
+    while (match(rest, /lc_fault_raw_[A-Za-z0-9_]*/)) {
+        pre = substr(rest, 1, RSTART - 1)
+        line += gsub(/\n/, "", pre)
+        print "FAIL: " file ":" line ": " substr(rest, RSTART, RLENGTH) " is named outside src/fault.c: it makes a system call that no fault rule checks, so only the shims there may call it"
+        raw_names++
+        rest = substr(rest, RSTART + RLENGTH)
+    }
 }
 
 END {
@@ -208,7 +235,9 @@ END {
     } else {
         print "arity: " failures " of the " calls " lc_syscallN calls in " files_with_calls " files failed"
     }
-    exit (failures > 0 ? 1 : 0)
+    if (raw_names > 0)
+        print "arity: " raw_names " lc_fault_raw_ names outside src/fault.c"
+    exit (failures + raw_names > 0 ? 1 : 0)
 }
 '
 

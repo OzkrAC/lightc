@@ -3,6 +3,7 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/thread.h>
+#include <lightc/fault.h>    /* lc_chaos_point, in the faultinject build */
 #include <stdatomic.h>
 #include "kernel.h"          /* ARCH_SET_FS */
 #include "internal.h"        /* LC_SLOT_END */
@@ -290,6 +291,11 @@ static void remote_free_push(lc_heap_page *page, void *block_ptr) {
     do {
         old_head = atomic_load_explicit(&page->remote_free_list, memory_order_relaxed);
         node->next = old_head;
+#ifdef LC_FAULTINJECT
+        /* A chaos point between the load of the head and the CAS, so that
+         * the owner's drain and other remote frees come in between. */
+        lc_chaos_point();
+#endif
     } while (!atomic_compare_exchange_weak_explicit(
         &page->remote_free_list, &old_head, node,
         memory_order_release, memory_order_relaxed));

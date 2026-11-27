@@ -48,6 +48,15 @@ jobs:
           "$CC" --version | head -n 1
           ./configure ${{ matrix.mode }}
           ninja
+      # Only ./configure faultinject compiles the fault rules and chaos
+      # points of <lightc/fault.h>, so the library of each mode here must
+      # define none of their symbols.
+      - name: Check that the library has no fault injection
+        run: |
+          if nm -g --defined-only build/liblightc.a | grep -E ' (lc_fault_|lc_chaos_)'; then
+            echo "::error title=Fault injection::the ${{ matrix.mode }} build/liblightc.a defines the symbols above"
+            exit 1
+          fi
       # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
       - name: Allow unprivileged user namespaces

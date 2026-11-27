@@ -235,6 +235,8 @@
     X(LC_MUTEX_INIT) X(LC_CONDVAR_INIT) X(LC_RWLOCK_INIT) X(LC_ONCE_INIT)   \
     /* <lightc/log.h> */                                                    \
     X(LC_LOG_BUFFER_SIZE)                                                   \
+    /* <lightc/fault.h>, in the faultinject build */                        \
+    X(LC_FAULT_MAX_RULES)                                                   \
     /* <lightdata/list.h> */                                                \
     X(lc_list_entry) X(lc_list_for_each) X(lc_list_for_each_safe)
 
@@ -474,7 +476,7 @@ UAPI_FUNCTIONS(CHECK_FUNCTION)
     X(setuid) X(setgid) X(setgroups) X(io_uring_setup) X(io_uring_enter)    \
     X(io_uring_register) X(open_tree) X(move_mount) X(fsopen) X(fsconfig)   \
     X(fsmount) X(fspick) X(pidfd_open) X(clone3) X(close_range) X(openat2)  \
-    X(mount_setattr)
+    X(mount_setattr) X(sched_yield)
 #define SYSCALLS_X86_64_ONLY(X)                                             \
     X(open) X(arch_prctl)
 #define SYSCALLS_AARCH64_ONLY(X)

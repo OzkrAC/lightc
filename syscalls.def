@@ -158,6 +158,9 @@ syscall close_range        436     436      3    # 5.9
 syscall openat2            437     437      4    # 5.6
 syscall mount_setattr      442     442      5    # 5.12
 
+# fault injection: the chaos points of the faultinject build (src/fault.c)
+syscall sched_yield        24      124      0
+
 # --- Errno values ---
 #
 #     name             value  description

@@ -17,6 +17,10 @@
 /*
  * Generic syscalls, implemented in arch-specific assembly: lc_syscallN
  * makes system call nr with N arguments, up to 6, the Linux maximum.
+ *
+ * In the faultinject build (./configure faultinject) they are C functions,
+ * in src/fault.c, that first check the fault rules of <lightc/fault.h>: a
+ * call that an armed rule fails returns -errno without being made.
  */
 /* Make system call nr with no argument. */
 lc_sysret lc_syscall0(int64_t nr);
@@ -147,6 +151,9 @@ static inline lc_sysret lc_kernel_fork(void) {
  *
  * The caller must allocate the stack (e.g., via lc_kernel_map_memory)
  * and pass stack_top = base + size (stacks grow downward).
+ *
+ * In the faultinject build, the SYS_clone rules of <lightc/fault.h> are
+ * checked first, as for a clone made through lc_syscall5.
  */
 lc_sysret lc_kernel_clone(int64_t flags, void *stack_top,
                            int (*fn)(void *), void *arg);

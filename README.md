@@ -15,6 +15,7 @@ Requires GCC and ninja.
 ./configure release  # -O2 -DNDEBUG, stripped
 ./configure tiny     # -Os, minimal binary size
 ./configure ubsan    # -O1, undefined behavior checks that trap, safety checks on
+./configure faultinject  # -O1, system call fault injection and chaos points for tests
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
@@ -39,6 +40,8 @@ ninja all tests
 ```
 
 The ubsan mode compiles every check of `-fsanitize=undefined` to a trap instruction (`-fsanitize-trap=all`), so it needs no sanitizer runtime: a program that hits undefined behavior stops at once with SIGILL on x86_64 or SIGTRAP on aarch64. Its binaries are not stripped, and like every lightc binary they are static and not PIE, so the address the kernel logs for the trap maps straight to the check's source line: `sudo dmesg | sh ci/crash-report.sh` prints that line for each program in `build/` that a fault or trap killed (a timed-out suite, which timeout(1) stops with a signal, leaves no report). ubsan links with `lightc.ld`, as debug and release do, and `ninja install` writes the same `lightc.pc` in every mode.
+
+The faultinject mode is for testing what lightc does when the kernel refuses. It builds `lc_syscall0` to `lc_syscall6`, `lc_kernel_clone` and the clone of `lc_thread_create` as C functions that check a table of rules first: `lc_fault_arm` arms one, which fails the Nth call of a chosen system call, and as many after it as it says, with a chosen errno, as in an mmap that fails with ENOMEM or a clone with EAGAIN. It also compiles chaos points into `lc_spinlock_acquire` and the heap's lock-free remote free, which yield or spin at random once `lc_chaos_seed` seeds them; `test_fault`, `test_thread` and `test_thread_sync` take the seed from `LC_CHAOS` in the environment, as in `LC_CHAOS=12345 ninja test`, and print it. `<lightc/fault.h>` declares all of it, and only when `LC_FAULTINJECT` is defined, as this mode defines it for the library and the programs. There `ninja test` also runs `test_fault`, the suite of the mode, which no other mode builds, so its totals are those above plus that suite's. The other modes compile none of this: their `liblightc.a` has no `lc_fault_` or `lc_chaos_` symbol.
 
 The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensyscalls.sh` generates `include/lightc/arch/*/syscall_nr.h`, the `LC_ERR_*` errno lines of `include/lightc/result.h` and the lists `tests/abi_check.c` checks from it. Run it after editing `syscalls.def` and commit the files it changes with the edit: CI runs it too and fails when it changes a file.
 
@@ -75,6 +78,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `signal.h` | Signal handling (portable across x86_64/aarch64) |
 | `lifecycle.h` | `atexit` handler chain with SIGTERM integration |
 | `library.h` | Runtime shared library loading (ELF parser; self-contained libraries without TLS) |
+| `fault.h` | Fault rules that make chosen system calls fail, and chaos points: only in the faultinject build, and empty in the others |
 
 ### Data structures (`include/lightdata/`)
 

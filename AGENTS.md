@@ -44,6 +44,7 @@ ninja regress              # run the regress programs of fixed defects
 ninja smoke                # run the examples that check their own results
 ninja api-check            # check that api/ matches the tree
 CC=aarch64-linux-gnu-gcc ./configure release && ninja all tests   # aarch64 cross build
+./configure faultinject    # system calls that fail on request, for tests
 ```
 
 What `ninja regress` and `ninja test` need of the machine:
@@ -51,6 +52,8 @@ What `ninja regress` and `ninja test` need of the machine:
 - **Thread ids that wrap.** `HEAP-tid-reuse-tls` skips above a `kernel.pid_max` of 32768, which fails the run. Lower it with `sudo sysctl -w kernel.pid_max=32768`, or name the program in `LIGHTC_TEST_ALLOW_SKIP`.
 - **io_uring.** Without it, `test_async` and `test_lightio` skip every test, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names them.
 - **lld on aarch64.** `LIB-relr` needs a linker that packs relative relocations. GNU ld 2.42 does not on aarch64, so there `configure` links that plugin with lld, and without lld `LIB-relr` fails.
+
+In a tree built with `./configure faultinject`, every system call of the library first checks a table of fault rules, so a test can make the Nth call of one fail with the errno it chooses, and chaos points that `LC_CHAOS` seeds yield or spin in `lc_spinlock_acquire` and in the heap's remote frees: `<lightc/fault.h>` says how. Only that mode builds `tests/test_fault.c`, and `ninja test` runs it there; no other mode compiles any of it.
 
 The other checks CI runs: `sh ci/headers.sh` compiles each public header alone, `sh ci/elfcheck.sh build` checks the program headers of every binary built, and `sh ci/agents-check.sh` checks this file.
 

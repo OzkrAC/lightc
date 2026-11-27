@@ -393,6 +393,7 @@ static void test_tls_isolation(void) {
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
+    test_chaos_init(envp);   /* LC_CHAOS, in the faultinject build */
 
     /* Mutex */
     TEST_RUN(test_mutex_lock_unlock);

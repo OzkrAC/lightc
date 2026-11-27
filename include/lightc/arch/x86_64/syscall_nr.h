@@ -23,6 +23,7 @@
 #define SYS_rt_sigprocmask    14   /* 4 args */
 #define SYS_ioctl             16   /* 3 args */
 #define SYS_writev            20   /* 3 args */
+#define SYS_sched_yield       24   /* 0 args */
 #define SYS_madvise           28   /* 3 args */
 #define SYS_nanosleep         35   /* 2 args */
 #define SYS_setitimer         38   /* 3 args */

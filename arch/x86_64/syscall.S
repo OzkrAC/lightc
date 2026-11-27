@@ -13,6 +13,23 @@
  * Note: arg4 moves from %rcx (C ABI) to %r10 (syscall ABI).
  */
 
+/*
+ * The faultinject build, which configure's LC_FAULTINJECT selects, names
+ * these lc_fault_raw_syscall0 to lc_fault_raw_syscall6: src/fault.c then
+ * defines lc_syscall0 to lc_syscall6 as C functions that check the armed
+ * fault rules before they call these. Every other build names them
+ * lc_syscall0 to lc_syscall6, as here.
+ */
+#ifdef LC_FAULTINJECT
+#define lc_syscall0 lc_fault_raw_syscall0
+#define lc_syscall1 lc_fault_raw_syscall1
+#define lc_syscall2 lc_fault_raw_syscall2
+#define lc_syscall3 lc_fault_raw_syscall3
+#define lc_syscall4 lc_fault_raw_syscall4
+#define lc_syscall5 lc_fault_raw_syscall5
+#define lc_syscall6 lc_fault_raw_syscall6
+#endif
+
 .section .text
 
 .global lc_syscall0

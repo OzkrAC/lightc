@@ -91,6 +91,7 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 | `./configure release` | `-O2 -DNDEBUG`, stripped (default) |
 | `./configure tiny` | `-Os`, smallest binary |
 | `./configure ubsan` | `-O1 -g -fsanitize=undefined -fsanitize-trap=all`, safety checks on |
+| `./configure faultinject` | `-O1 -g -DLC_FAULTINJECT`, safety checks on: system calls that fail on request, and chaos points, for tests |
 
 | Target | Builds |
 |---|---|
@@ -114,6 +115,8 @@ ninja all tests
 ```
 
 In ubsan mode each undefined behavior check is a trap instruction, so no sanitizer runtime is linked: a program that hits one stops with SIGILL on x86_64 or SIGTRAP on aarch64. The binaries are not stripped, so `addr2line` maps the `ip` or `pc` that the kernel logs for it to the check's source line. ubsan links with `lightc.ld`, and the installed `lightc.pc` is the same in every mode.
+
+In faultinject mode, `lc_syscall0` to `lc_syscall6`, `lc_kernel_clone` and the clone that starts a thread are C functions that check a table of fault rules before they make their system call. A rule armed with `lc_fault_arm` fails the Nth call of one system call, and as many after it as it says, with the errno it names, without making it: a test can make mmap fail with ENOMEM, or clone with EAGAIN, and see what the library does then. The mode also compiles chaos points into `lc_spinlock_acquire` and the heap's lock-free remote free, which yield or spin at random once `lc_chaos_seed` seeds them, to make threads interleave in more ways; lightc's thread suites take the seed from `LC_CHAOS` in the environment. `<lightc/fault.h>` declares this API only when `LC_FAULTINJECT` is defined, as the mode defines it, and no other mode compiles any of it, so a release library has none of its symbols.
 
 ## Example {#example}
 

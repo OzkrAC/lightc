@@ -1,6 +1,7 @@
 #include <lightc/thread.h>
 #include <lightc/syscall.h>
 #include <lightc/memory.h>
+#include <lightc/fault.h>    /* lc_chaos_point, in the faultinject build */
 #include "kernel.h"          /* CLONE_* */
 
 /*
@@ -123,6 +124,12 @@ void lc_spinlock_acquire(lc_spinlock *lock) {
     while (atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) != 0) {
         /* spin */
     }
+#ifdef LC_FAULTINJECT
+    /* A chaos point with the lock held: a yield or spin here keeps every
+     * thread that wants the lock waiting, so the heap's critical sections
+     * last longer, and a fork or a signal comes in one more often. */
+    lc_chaos_point();
+#endif
 }
 
 void lc_spinlock_release(lc_spinlock *lock) {

@@ -285,6 +285,7 @@ static void test_thread_join_idempotent(void) {
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
+    test_chaos_init(envp);   /* LC_CHAOS, in the faultinject build */
 
     /* H1 regression — MUST be first: no main-thread heap allocation may
      * precede it, or the bootstrap race it targets cannot be observed. */
