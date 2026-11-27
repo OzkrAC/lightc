@@ -10,11 +10,13 @@
 
 #define S(literal) literal, sizeof(literal) - 1
 
-/* Helper: format, finish, and check result matches expected string */
+/* Helper: format, finish, and check result matches expected string. It
+ * compares what the buffer holds, lc_format_length's bytes. */
 static bool check(lc_format *fmt, const char *expected) {
-    size_t len = lc_format_finish(fmt);
+    size_t total = lc_format_finish(fmt);
+    size_t len = lc_format_length(fmt);
     size_t exp_len = lc_string_length(expected);
-    return len == exp_len && lc_string_equal(fmt->buffer, len, expected, exp_len);
+    return total == exp_len && len == exp_len && lc_string_equal(fmt->buffer, len, expected, exp_len);
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -158,7 +160,8 @@ int main(int argc, char **argv, char **envp) {
     lc_format_add_text(&fmt, " ");
     lc_format_add_unsigned(&fmt, 1024);
     lc_format_add_text(&fmt, "B");
-    size_t len = lc_format_finish(&fmt);
+    lc_format_finish(&fmt);
+    size_t len = lc_format_length(&fmt);
     say_pass_fail(lc_string_equal(buf, len,
         S("[00001234] GET    /hello 200 1024B")));
 

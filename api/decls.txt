@@ -50,6 +50,7 @@ lightc/format.h: [[gnu::hot]] void lc_format_add_unsigned(lc_format *fmt, uint64
 lightc/format.h: void lc_format_add_unsigned_padded(lc_format *fmt, uint64_t value, uint32_t width, char pad);
 lightc/format.h: size_t lc_format_finish(lc_format *fmt);
 lightc/format.h: [[gnu::pure]] bool lc_format_has_overflow(const lc_format *fmt);
+lightc/format.h: [[gnu::pure]] size_t lc_format_length(const lc_format *fmt);
 lightc/format.h: [[gnu::const]] lc_format lc_format_start(char *buffer, size_t capacity);
 lightc/heap.h: [[nodiscard, gnu::hot]] lc_result_ptr lc_heap_allocate(size_t size);
 lightc/heap.h: [[nodiscard, gnu::hot]] lc_result_ptr lc_heap_allocate_zeroed(size_t size);

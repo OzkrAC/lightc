@@ -116,6 +116,7 @@ int main(int argc, char **argv, char **envp) {
     lc_print_newline(STDOUT);
     now = lc_time_now();
     len = lc_time_format_iso8601(&now, buf, sizeof(buf));
+    if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;   /* the whole text's length; buf holds this much */
     lc_print_string(STDOUT, S("current time: "));
     lc_print_string(STDOUT, buf, len);
     lc_print_newline(STDOUT);

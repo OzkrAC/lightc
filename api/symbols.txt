@@ -68,6 +68,7 @@ T lc_format_add_unsigned
 T lc_format_add_unsigned_padded
 T lc_format_finish
 T lc_format_has_overflow
+T lc_format_length
 T lc_format_start
 T lc_free_pages
 T lc_hashmap_contains

@@ -53,7 +53,8 @@ static size_t build_prefix(char *buf, size_t buf_size, lc_log_level level) {
     lc_format_add_text(&fmt, "tid:");
     lc_format_add_unsigned(&fmt, (uint64_t)(uint32_t)lc_kernel_get_thread_id());
     lc_format_add_text(&fmt, "] ");
-    return lc_format_finish(&fmt);
+    lc_format_finish(&fmt);
+    return lc_format_length(&fmt);
 }
 
 /*
@@ -132,10 +133,8 @@ static void write_json_line(lc_log_level level, const char *message, size_t msg_
     lc_format_add_unsigned(&fmt, (uint64_t)(uint32_t)lc_kernel_get_thread_id());
     lc_format_add_text(&fmt, "}\n");
 
-    size_t len = lc_format_finish(&fmt);
-    if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;
-
-    lc_kernel_write_all(log_fd, buf, len);
+    lc_format_finish(&fmt);
+    lc_kernel_write_all(log_fd, buf, lc_format_length(&fmt));
 }
 
 /*
@@ -213,9 +212,6 @@ void lc_log_commit(lc_log_entry *entry) {
      * been lowered since. */
     if (entry->fmt.buffer == NULL || entry->level < log_min_level) return;
 
-    size_t msg_len = lc_format_finish(&entry->fmt);
-    /* Clamp to buffer if overflow */
-    if (msg_len > LC_LOG_BUFFER_SIZE - 1) msg_len = LC_LOG_BUFFER_SIZE - 1;
-
-    write_log_line(entry->level, entry->buffer, msg_len);
+    lc_format_finish(&entry->fmt);
+    write_log_line(entry->level, entry->buffer, lc_format_length(&entry->fmt));
 }

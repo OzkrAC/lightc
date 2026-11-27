@@ -69,7 +69,10 @@ static void handle_http(lio_stream *stream) {
         lc_format_add_text(&body_fmt, "not found");
     }
 
-    size_t body_len = lc_format_finish(&body_fmt);
+    /* What the body's buffer holds, which is what goes out and what
+     * Content-Length must say */
+    lc_format_finish(&body_fmt);
+    size_t body_len = lc_format_length(&body_fmt);
 
     /* Build full HTTP response */
     char response[8192];
@@ -84,9 +87,8 @@ static void handle_http(lio_stream *stream) {
     lc_format_add_text(&fmt, "\r\nConnection: close\r\n\r\n");
     lc_format_add_string(&fmt, body, body_len);
 
-    size_t resp_len = lc_format_finish(&fmt);
-
-    lio_write(stream, response, (uint32_t)resp_len);
+    lc_format_finish(&fmt);
+    lio_write(stream, response, (uint32_t)lc_format_length(&fmt));
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -116,7 +118,8 @@ int main(int argc, char **argv, char **envp) {
     lc_format fmt = lc_format_start(msg, sizeof(msg));
     lc_format_add_text(&fmt, "lightio http server on port ");
     lc_format_add_unsigned(&fmt, port);
-    lc_print_line(STDOUT, msg, lc_format_finish(&fmt));
+    lc_format_finish(&fmt);
+    lc_print_line(STDOUT, msg, lc_format_length(&fmt));
 
     lio_loop_run(loop);
 

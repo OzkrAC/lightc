@@ -87,6 +87,10 @@ size_t lc_format_finish(lc_format *fmt) {
     return fmt->used;
 }
 
+size_t lc_format_length(const lc_format *fmt) {
+    return fmt->used < fmt->capacity ? fmt->used : fmt->capacity;
+}
+
 bool lc_format_has_overflow(const lc_format *fmt) {
     return fmt->overflow;
 }

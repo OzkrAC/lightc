@@ -110,7 +110,7 @@ static void print_bar(uint64_t value, uint64_t max_val) {
     put("]");
 }
 
-/* Format a byte count with unit suffix */
+/* Format a byte count with unit suffix; returns the length buf holds. */
 static size_t format_bytes(char *buf, size_t cap, uint64_t bytes) {
     lc_format f = lc_format_start(buf, cap);
     if (bytes >= 1024 * 1024) {
@@ -127,7 +127,8 @@ static size_t format_bytes(char *buf, size_t cap, uint64_t bytes) {
         lc_format_add_unsigned(&f, bytes);
         lc_format_add_string(&f, " B", 2);
     }
-    return lc_format_finish(&f);
+    lc_format_finish(&f);
+    return lc_format_length(&f);
 }
 
 /* --- Stats dashboard --- */

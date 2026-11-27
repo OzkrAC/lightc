@@ -33,9 +33,17 @@ typedef struct {
 [[gnu::const]]
 lc_format lc_format_start(char *buffer, size_t capacity);
 
-/* Null-terminate and return the total length written.
- * If overflow occurred, returns what WOULD have been written (like snprintf). */
+/* Null-terminate and return the length the text would have: after an
+ * overflow, more than the buffer holds, as snprintf's return is. To write
+ * or print the buffer, take lc_format_length's length, not this one, which
+ * would read past the text. */
 size_t lc_format_finish(lc_format *fmt);
+
+/* Return the length of the text the buffer holds: at most its size less
+ * the terminator's byte, and less than lc_format_finish's after an
+ * overflow. It is the length to write or print. */
+[[gnu::pure]]
+size_t lc_format_length(const lc_format *fmt);
 
 /* Did we run out of buffer space? */
 [[gnu::pure]]
