@@ -159,9 +159,15 @@ bool lc_reader_is_end(const lc_reader *reader);
 #define LC_DT_REG      8
 #define LC_DT_LNK      10
 
+/* A directory being listed. error is 0, or the errno of the read that
+ * ended the listing early, as lc_reader's and lc_writer's error is: when
+ * lc_directory_next returns false with error 0, every entry was listed.
+ * The buffer, which getdents64 fills, is aligned to 8, as the records in it
+ * are. */
 typedef struct {
     int32_t fd;
-    uint8_t buffer[4096];
+    int32_t error;
+    _Alignas(8) uint8_t buffer[4096];
     size_t  filled;
     size_t  position;
     bool    done;
@@ -172,16 +178,21 @@ typedef struct {
     uint8_t     type;   /* LC_DT_REG, LC_DT_DIR, etc. */
 } lc_directory_entry;
 
-/* Open a directory for listing. */
+/* Open a directory for listing. When it fails, as for a path that is not a
+ * directory, *dir has no fd (-1) and is done, so lc_directory_next returns
+ * false and lc_directory_close closes nothing; dir->error is the errno. */
 [[nodiscard]] lc_result lc_directory_open(lc_directory *dir, const char *path);
 
-/* Get the next entry. Returns true if an entry was read, false when done.
+/* Get the next entry. Returns true if an entry was read, false when done:
+ * at the end, with dir->error 0, or when a read failed, with its errno in
+ * dir->error, such as EBADF for a fd closed underneath.
  * NOTE: entry->name points into the directory's internal buffer and is only
  * valid until the next lc_directory_next or lc_directory_close call — copy it
  * if you need to keep it. */
 bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry);
 
-/* Close the directory. */
+/* Close the directory. Its buffer is emptied, so lc_directory_next returns
+ * false afterwards; a second close closes nothing. */
 void lc_directory_close(lc_directory *dir);
 
 #endif /* LIGHTC_IO_H */

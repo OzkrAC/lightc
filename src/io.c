@@ -398,25 +398,34 @@ lc_result lc_file_get_size(const char *path) {
 
 /*
  * getdents64 returns entries in the format of struct linux_dirent64
- * (kernel.h). Only its offsets are used. getdents64 starts each record at
- * a multiple of 8 from the start of the buffer, but lc_directory's buffer
- * follows an int32_t, at offset 4, so every record is 4 bytes off this
- * struct's alignment and must not be read through a pointer to it
- * (IO-dirent-align).
+ * (kernel.h). Only its offsets are used: lc_directory_next copies each
+ * field out of the record, as it did when the buffer sat at offset 4 and
+ * every record was 4 bytes off the struct's alignment (IO-dirent-align).
+ * The buffer is aligned to 8 now, as getdents64 aligns its records.
  */
+_Static_assert(offsetof(lc_directory, buffer) % 8 == 0, "lc_directory's buffer must be aligned to 8");
 
 lc_result lc_directory_open(lc_directory *dir, const char *path) {
+    /* Empty and done before the open, so that one that fails leaves no fd
+     * of someone else's to close: the caller's dir may hold anything. */
+    dir->fd       = -1;
+    dir->error    = 0;
+    dir->filled   = 0;
+    dir->position = 0;
+    dir->done     = true;
+
     /* O_DIRECTORY makes the kernel reject a non-directory at open (-ENOTDIR),
      * instead of "opening" a regular file and later conflating getdents's
      * -ENOTDIR with end-of-directory. O_CLOEXEC keeps the fd out of exec'd
      * children. */
     lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
-    if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
+    if (fd_ret < 0) {
+        dir->error = (int32_t)(-fd_ret);
+        return lc_err(dir->error);
+    }
 
-    dir->fd       = (int32_t)fd_ret;
-    dir->filled   = 0;
-    dir->position = 0;
-    dir->done     = false;
+    dir->fd   = (int32_t)fd_ret;
+    dir->done = false;
     return lc_ok((int64_t)dir->fd);
 }
 
@@ -431,7 +440,8 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
              * and a record claiming to extend past the filled bytes would read
              * out of bounds. Either means the stream is unusable — stop. */
             if (reclen == 0 || dir->position + reclen > dir->filled) {
-                dir->done = true;
+                dir->done  = true;
+                dir->error = LC_ERR_IO;
                 return false;
             }
             entry->name = (const char *)record + offsetof(struct linux_dirent64, d_name);
@@ -445,7 +455,10 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
 
         lc_sysret ret = lc_kernel_read_directory(dir->fd, dir->buffer, sizeof(dir->buffer));
         if (ret <= 0) {
+            /* 0 is the end; a negative return is an error that ends the
+             * listing early, which the caller can tell by dir->error. */
             dir->done = true;
+            if (ret < 0) dir->error = (int32_t)(-ret);
             return false;
         }
 
@@ -459,5 +472,9 @@ void lc_directory_close(lc_directory *dir) {
         lc_kernel_close_file(dir->fd);
         dir->fd = -1;
     }
-    dir->done = true;
+    /* Empty the buffer too: entries left in it would otherwise come back
+     * from a lc_directory_next after the close. */
+    dir->filled   = 0;
+    dir->position = 0;
+    dir->done     = true;
 }

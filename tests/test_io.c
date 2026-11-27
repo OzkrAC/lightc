@@ -418,6 +418,33 @@ static void test_directory_open_notdir(void) {
     lc_directory_close(&dir);
 }
 
+/* lc_directory's error: 0 after a listing that reached its end, the errno
+ * of a failed open, which leaves no fd and nothing to list, and EBADF from
+ * a next whose fd was closed underneath it. */
+static void test_directory_error(void) {
+    lc_directory dir;
+    lc_directory_entry entry;
+    TEST_REQUIRE_OK(lc_directory_open(&dir, "."));
+    size_t entries = 0;
+    while (entries < 100000 && lc_directory_next(&dir, &entry)) entries++;
+    TEST_ASSERT(entries >= 2);   /* . and .. */
+    TEST_ASSERT_EQ(dir.error, 0);
+    lc_directory_close(&dir);
+
+    TEST_ASSERT_ERR(lc_directory_open(&dir, "/nonexistent/lightc/test_io"));
+    TEST_ASSERT_EQ(dir.error, LC_ERR_NOENT);
+    TEST_ASSERT_EQ(dir.fd, -1);
+    TEST_ASSERT(!lc_directory_next(&dir, &entry));
+    lc_directory_close(&dir);
+
+    TEST_REQUIRE_OK(lc_directory_open(&dir, "."));
+    lc_kernel_close_file(dir.fd);   /* closed underneath the listing */
+    TEST_ASSERT(!lc_directory_next(&dir, &entry));
+    TEST_ASSERT_EQ(dir.error, LC_ERR_BADF);
+    dir.fd = -1;                    /* closed already */
+    lc_directory_close(&dir);
+}
+
 /* /proc files report size 0 via SEEK_END; lc_file_read_all must still return
  * their contents by reading until EOF, not an empty buffer. */
 static void test_file_read_all_proc(void) {
@@ -460,6 +487,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_file_write_read_all);
     TEST_RUN(test_io_reader_eintr);
     TEST_RUN(test_directory_open_notdir);
+    TEST_RUN(test_directory_error);
     TEST_RUN(test_file_read_all_proc);
 
     return test_main();

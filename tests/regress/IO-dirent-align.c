@@ -3,15 +3,16 @@
  * through a misaligned pointer.
  *
  * getdents64 starts each record at a multiple of 8 from the start of the
- * buffer it fills. lc_directory's buffer follows an int32_t, at offset 4,
- * so every record sits 4 bytes off the alignment of struct linux_dirent64,
+ * buffer it fills. lc_directory's buffer followed an int32_t, at offset 4,
+ * so every record sat 4 bytes off the alignment of struct linux_dirent64,
  * which holds two 64-bit fields, and lc_directory_next read d_reclen and
  * d_type through a pointer to that struct: undefined behavior. x86_64 and
  * aarch64 load a misaligned 16-bit field without complaint, so only the
- * ubsan build shows the defect: its alignment check traps at the first
- * record, and the program dies with SIGILL. The other builds pass with or
- * without the fix, and in each this checks that lc_directory_next lists
- * a directory right.
+ * ubsan build showed the defect: its alignment check trapped at the first
+ * record, and the program died with SIGILL. lc_directory_next now copies
+ * the fields out at their offsets, and the buffer is also aligned to 8.
+ * The other builds pass with or without the fix, and in each this checks
+ * that lc_directory_next lists a directory right.
  *
  * The directory holds entries with names of different lengths, so its
  * records have different lengths too. It goes in build/regress, so run this

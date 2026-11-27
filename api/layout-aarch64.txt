@@ -68,7 +68,8 @@ lc_date_time.day_of_week offset 24 size 4: int32_t
 lc_date_time.day_of_year offset 28 size 4: int32_t
 lc_directory size 4128 align 8
 lc_directory.fd offset 0 size 4: int32_t
-lc_directory.buffer offset 4 size 4096: uint8_t[4096]
+lc_directory.error offset 4 size 4: int32_t
+lc_directory.buffer offset 8 size 4096: _Alignas(8) uint8_t[4096]
 lc_directory.filled offset 4104 size 8: size_t
 lc_directory.position offset 4112 size 8: size_t
 lc_directory.done offset 4120 size 1: bool

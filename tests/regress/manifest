@@ -83,3 +83,4 @@ NET-no-cloexec          gating
 NET-uring-sigpipe       gating
 TIME-sleep-eintr        gating
 TIME-format-retlen      gating
+IO-dir-close-fd         gating
