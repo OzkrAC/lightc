@@ -77,6 +77,8 @@ Each module is one public header. Linked modules have a reference page; the rest
 | Allocation | Allocating calls are `[[nodiscard]]` and return `lc_result_ptr`. |
 | Thread safety | Noted per function. The heap and synchronization primitives are thread-safe; most data-structure handles are not, unless stated. |
 
+[Contracts](contracts.html) gives the rest of what a program can count on and what it must do itself: how to link, what a signal handler may call, how EINTR and SIGPIPE are handled, close-on-exec, fork and exit, plugins, rings and the kernel lightc needs. Each default there names the test that enforces it.
+
 ## Building {#building}
 
 A shell `configure` script selects a build mode and writes `build.ninja`; `ninja` builds. The toolchain requirement is GCC and ninja only.

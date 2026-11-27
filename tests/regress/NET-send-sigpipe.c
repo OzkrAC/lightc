@@ -11,8 +11,9 @@
  * A child connects over loopback to a listener, whose end of the
  * connection then closes with SO_LINGER 0, which resets it. The child sends
  * until a send fails: it must get EPIPE, perhaps after the reset's
- * ECONNRESET, and live. Once with lc_socket_send_to, once with
- * lc_socket_send_to_sockaddr.
+ * ECONNRESET, and live. Once each with lc_socket_send_to,
+ * lc_socket_send_to_sockaddr and lc_socket_send, whose MSG_NOSIGNAL an
+ * earlier fix added.
  */
 
 #include "test.h"
@@ -49,13 +50,16 @@ static int32_t reset_connection(void) {
     return (int32_t)c.value;
 }
 
-static int32_t send_until_it_fails(int32_t use_sockaddr) {
+enum { SEND_TO, SEND_TO_SOCKADDR, SEND };
+
+static int32_t send_until_it_fails(int32_t how) {
     (void)lc_signal_reset(LC_SIGPIPE);   /* SIGPIPE's default action: end the process */
     int32_t fd = reset_connection();
     if (fd < 0) return 10;
     for (int i = 0; i < 100; i++) {
-        lc_result r = use_sockaddr ? lc_socket_send_to_sockaddr(fd, "x", 1, 0, NULL, 0)
-                                   : lc_socket_send_to(fd, "x", 1, NULL);
+        lc_result r = how == SEND_TO          ? lc_socket_send_to(fd, "x", 1, NULL)
+                    : how == SEND_TO_SOCKADDR ? lc_socket_send_to_sockaddr(fd, "x", 1, 0, NULL, 0)
+                    :                           lc_socket_send(fd, "x", 1);
         if (r.error == LC_ERR_PIPE) return 0;
         if (r.error != 0 && r.error != LC_ERR_CONNRESET) return 20;
     }
@@ -63,9 +67,9 @@ static int32_t send_until_it_fails(int32_t use_sockaddr) {
 }
 
 /* The exit status of a child that runs send_until_it_fails. */
-static int32_t in_child(int32_t use_sockaddr) {
+static int32_t in_child(int32_t how) {
     lc_sysret pid = lc_kernel_fork();
-    if (pid == 0) lc_kernel_exit(send_until_it_fails(use_sockaddr));
+    if (pid == 0) lc_kernel_exit(send_until_it_fails(how));
     if (pid < 0) return -1;
     int32_t status = -1;
     (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
@@ -73,13 +77,19 @@ static int32_t in_child(int32_t use_sockaddr) {
 }
 
 static void test_send_to_a_reset_peer(void) {
-    int32_t status = in_child(0);
+    int32_t status = in_child(SEND_TO);
     TEST_ASSERT_EQ(status & 0x7f, 0);   /* the defect: 13, SIGPIPE */
     TEST_ASSERT_EQ(status, 0);
 }
 
 static void test_send_to_sockaddr_to_a_reset_peer(void) {
-    int32_t status = in_child(1);
+    int32_t status = in_child(SEND_TO_SOCKADDR);
+    TEST_ASSERT_EQ(status & 0x7f, 0);
+    TEST_ASSERT_EQ(status, 0);
+}
+
+static void test_send_to_a_reset_peer_without_an_address(void) {
+    int32_t status = in_child(SEND);
     TEST_ASSERT_EQ(status & 0x7f, 0);
     TEST_ASSERT_EQ(status, 0);
 }
@@ -89,5 +99,6 @@ int main(int argc, char **argv, char **envp) {
     test_init(argc, argv);
     TEST_RUN(test_send_to_a_reset_peer);
     TEST_RUN(test_send_to_sockaddr_to_a_reset_peer);
+    TEST_RUN(test_send_to_a_reset_peer_without_an_address);
     return test_main();
 }

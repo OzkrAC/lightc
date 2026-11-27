@@ -4,7 +4,9 @@
 
 #include "test.h"
 #include <lightc/io.h>
+#include <lightc/signal.h>
 #include <lightc/syscall.h>
+#include <lightc/time.h>
 
 /* ===== lc_kernel_mount =====
  *
@@ -261,6 +263,96 @@ static void test_clock_sleep(void) {
     TEST_ASSERT_EQ(lc_kernel_clock_sleep(9999, 0, &duration, NULL), -(lc_sysret)LC_ERR_INVAL);
 }
 
+/* lc_kernel_read_all, lc_kernel_read_retry and lc_kernel_write_all go on
+ * after a handled signal interrupts them, where the other wrappers return
+ * -EINTR. Each blocks on a pipe, a SIGALRM comes at 20 ms, and a child
+ * gives the data, or makes room, at 60 ms. */
+#define ITIMER_REAL 0
+#define F_GETFL     3
+#define F_SETFL     4
+
+static volatile int32_t eintr_alarms;
+static void count_eintr_alarm(int signo) { (void)signo; eintr_alarms++; }
+
+static void alarm_at_20_ms(void) {
+    int64_t timer[4] = { 0, 0, 0, 20000 };   /* struct itimerval: 20 ms, once */
+    (void)lc_syscall3(SYS_setitimer, ITIMER_REAL, (int64_t)timer, 0);
+}
+
+static void test_read_write_retry_eintr(void) {
+    TEST_REQUIRE_OK(lc_signal_handle(LC_SIGALRM, count_eintr_alarm));
+    int32_t pipe_fds[2];
+    TEST_REQUIRE_EQ(lc_kernel_create_pipe(pipe_fds, 0), 0);
+
+    eintr_alarms = 0;
+    lc_sysret pid = lc_kernel_fork();
+    if (pid == 0) {
+        lc_time_sleep_milliseconds(60);
+        lc_kernel_exit(lc_kernel_write_all(pipe_fds[1], "DATA", 4) == 4 ? 0 : 1);
+    }
+    TEST_REQUIRE(pid > 0);
+    alarm_at_20_ms();
+    char got[4];
+    TEST_ASSERT_EQ(lc_kernel_read_all(pipe_fds[0], got, sizeof got), (lc_sysret)4);
+    TEST_ASSERT_STR_EQ(got, 4, "DATA", 4);
+    TEST_ASSERT_EQ(eintr_alarms, 1);
+    int32_t status = -1;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status, 0);
+
+    /* lc_kernel_read_retry: one read, made again after the signal. */
+    pid = lc_kernel_fork();
+    if (pid == 0) {
+        lc_time_sleep_milliseconds(60);
+        lc_kernel_exit(lc_kernel_write_all(pipe_fds[1], "R", 1) == 1 ? 0 : 1);
+    }
+    TEST_REQUIRE(pid > 0);
+    alarm_at_20_ms();
+    TEST_ASSERT_EQ(lc_kernel_read_retry(pipe_fds[0], got, sizeof got), (lc_sysret)1);
+    TEST_ASSERT_EQ(got[0], 'R');
+    TEST_ASSERT_EQ(eintr_alarms, 2);
+    status = -1;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status, 0);
+
+    /* Fill the pipe, so that the next write waits for room. */
+    static char block[4096];
+    int64_t flags = lc_syscall3(SYS_fcntl, pipe_fds[1], F_GETFL, 0);
+    TEST_REQUIRE(flags >= 0);
+    TEST_REQUIRE_EQ(lc_syscall3(SYS_fcntl, pipe_fds[1], F_SETFL, flags | O_NONBLOCK), 0);
+    size_t filled = 0;
+    for (;;) {
+        lc_sysret n = lc_kernel_write_bytes(pipe_fds[1], block, sizeof block);
+        if (n <= 0) break;
+        filled += (size_t)n;
+    }
+    TEST_REQUIRE_EQ(lc_syscall3(SYS_fcntl, pipe_fds[1], F_SETFL, flags), 0);
+
+    size_t total = filled + sizeof block;
+    pid = lc_kernel_fork();
+    if (pid == 0) {
+        lc_kernel_close_file(pipe_fds[1]);   /* so a write cut short ends the drain */
+        lc_time_sleep_milliseconds(60);
+        size_t drained = 0;
+        while (drained < total) {
+            lc_sysret n = lc_kernel_read_bytes(pipe_fds[0], block, sizeof block);
+            if (n <= 0) break;
+            drained += (size_t)n;
+        }
+        lc_kernel_exit(drained == total ? 0 : 1);
+    }
+    TEST_REQUIRE(pid > 0);
+    alarm_at_20_ms();
+    TEST_ASSERT_EQ(lc_kernel_write_all(pipe_fds[1], block, sizeof block), (lc_sysret)sizeof block);
+    TEST_ASSERT_EQ(eintr_alarms, 3);
+    lc_kernel_close_file(pipe_fds[1]);
+    status = -1;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status, 0);
+    lc_kernel_close_file(pipe_fds[0]);
+    TEST_ASSERT_OK(lc_signal_reset(LC_SIGALRM));
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
@@ -268,6 +360,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_mount_tmpfs);
     TEST_RUN(test_fchmodat_symlink_nofollow);
     TEST_RUN(test_clock_sleep);
+    TEST_RUN(test_read_write_retry_eintr);
 
     return test_main();
 }

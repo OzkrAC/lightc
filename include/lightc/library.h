@@ -46,7 +46,7 @@
  * and its heap would run on the host's per-thread heap state. The check
  * above is best effort, as --exclude-libs or hidden visibility hide the
  * names it looks for. A library may use lightc's inline functions, which
- * keep no state.
+ * keep no state. docs/contracts.html gives the rules for plugins.
  *
  * lc_library_find_symbol gives the address a relocation against the symbol
  * would get: an absolute symbol's value as it is. It fails with

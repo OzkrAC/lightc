@@ -1,7 +1,7 @@
 /*
  * test_lightio.c — tests for the lightio async event loop.
  *
- * lightio needs io_uring (kernel 5.1+); if it is unavailable every test
+ * lightio needs io_uring (Linux 5.10+); if it is unavailable every test
  * skips, as in test_async. These exercise the accept -> coroutine ->
  * lio_read/lio_write -> completion -> slot-cleanup path end to end (previously
  * untested), which is exactly the path the H4 submission-handling and
@@ -21,7 +21,7 @@
 
 /* Set by main's probe; without io_uring each test skips. */
 static bool io_uring_available;
-#define NO_IO_URING "io_uring not available (kernel 5.1+ required)"
+#define NO_IO_URING "io_uring not available (Linux 5.10+ required)"
 
 /* ===== Echo handler + server thread ===== */
 

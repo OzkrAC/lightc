@@ -11,7 +11,7 @@
 # qemu-user has no io_uring, so every test in these suites skips, one SKIP:
 # line each. Adding a test to either suite adds one here. The job's
 # LIGHTC_TEST_ALLOW_SKIP names both, so tests/run.sh lets them skip every test.
-test_async      12
+test_async      14
 test_lightio    5
 
 # The tmpfs mount case: unshare(CLONE_NEWUSER) fails in a threaded process,

@@ -8,7 +8,9 @@
 
 #include "test.h"
 #include <lightc/signal.h>
+#include <lightc/socket.h>
 #include <lightc/syscall.h>
+#include <lightc/time.h>
 
 static void dummy_handler(int signo) {
     (void)signo;
@@ -73,6 +75,71 @@ static void test_signal_delivery_roundtrip(void) {
     (void)lc_signal_reset(SIGUSR1);
 }
 
+/* ===== No SA_RESTART: a handled signal ends a blocking call with EINTR ===== */
+
+#define SA_RESTART  0x10000000
+#define ITIMER_REAL 0
+#define SIGKILL     9
+
+static volatile int32_t alarms;
+static void count_alarm(int signo) { (void)signo; alarms++; }
+
+/* SIGALRM once, `ms` milliseconds from now. */
+static void alarm_in(int64_t ms) {
+    int64_t timer[4] = { 0, 0, ms / 1000, (ms % 1000) * 1000 };   /* struct itimerval */
+    (void)lc_syscall3(SYS_setitimer, ITIMER_REAL, (int64_t)timer, 0);
+}
+
+/* lc_signal_handle sets no SA_RESTART, so the kernel does not restart a
+ * call the handler interrupted: a raw lc_kernel_* call returns -EINTR, and
+ * a socket call LC_ERR_INTR, to the caller, which decides. A read of a pipe
+ * and an accept each wait, a SIGALRM comes at 20 ms, and a child ends both
+ * waits at 300 ms, so that a restarted call fails the test, not hangs it. */
+static void test_signal_handle_no_restart(void) {
+    TEST_REQUIRE_OK(lc_signal_handle(LC_SIGALRM, count_alarm));
+    lc_kernel_sigaction installed;
+    TEST_REQUIRE_EQ(lc_syscall4(SYS_rt_sigaction, LC_SIGALRM, 0, (int64_t)&installed, 8), 0);
+    TEST_ASSERT_EQ(installed.flags & SA_RESTART, (uint64_t)0);
+
+    int32_t pipe_fds[2];
+    TEST_REQUIRE_EQ(lc_kernel_create_pipe(pipe_fds, 0), 0);
+    lc_socket_address addr = lc_socket_address_create(127, 0, 0, 1, 0);
+    lc_result listener = lc_socket_listen_on(&addr, 1);
+    TEST_REQUIRE_OK(listener);
+    lc_socket_address bound;
+    uint32_t size = sizeof bound;
+    TEST_REQUIRE_EQ(lc_kernel_getsockname((int32_t)listener.value, &bound, &size), 0);
+
+    lc_sysret pid = lc_kernel_fork();
+    if (pid == 0) {
+        lc_time_sleep_milliseconds(300);
+        (void)lc_kernel_write_bytes(pipe_fds[1], "x", 1);
+        lc_result c = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
+        if (lc_is_ok(c)) (void)lc_socket_connect((int32_t)c.value, &bound);
+        lc_kernel_exit(0);
+    }
+    TEST_REQUIRE(pid > 0);
+
+    char byte;
+    alarms = 0;
+    alarm_in(20);
+    TEST_ASSERT_EQ(lc_kernel_read_bytes(pipe_fds[0], &byte, 1), -(lc_sysret)LC_ERR_INTR);
+    TEST_ASSERT_EQ(alarms, 1);
+
+    alarm_in(20);
+    lc_result accepted = lc_socket_accept_flags((int32_t)listener.value, NULL, NULL, 0);
+    TEST_ASSERT_EQ(accepted.error, LC_ERR_INTR);
+    TEST_ASSERT_EQ(alarms, 2);
+
+    (void)lc_kernel_send_signal((int32_t)pid, SIGKILL);
+    (void)lc_kernel_wait_for_child((int32_t)pid, NULL, 0);
+    if (lc_is_ok(accepted)) lc_socket_close((int32_t)accepted.value);
+    lc_socket_close((int32_t)listener.value);
+    lc_kernel_close_file(pipe_fds[0]);
+    lc_kernel_close_file(pipe_fds[1]);
+    TEST_ASSERT_OK(lc_signal_reset(LC_SIGALRM));
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
@@ -82,6 +149,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_signal_ignore);
     TEST_RUN(test_signal_reset_call);
     TEST_RUN(test_signal_delivery_roundtrip);
+    TEST_RUN(test_signal_handle_no_restart);
 
     return test_main();
 }

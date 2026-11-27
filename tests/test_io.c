@@ -9,6 +9,8 @@
 #include <lightc/signal.h>
 #include <lightc/time.h>
 #include <lightc/heap.h>
+#include <lightc/format.h>
+#include <lightc/thread.h>
 
 /* Helper: create a pipe pair, returning 0 on success. */
 static int pipe_create(int32_t *read_fd, int32_t *write_fd) {
@@ -445,6 +447,162 @@ static void test_directory_error(void) {
     lc_directory_close(&dir);
 }
 
+/* ===== Close-on-exec of the fds the io module opens ===== */
+
+#define F_GETFD     1
+#define F_GETFL     3
+#define F_SETFL     4
+#define FD_CLOEXEC  1
+#define S_IFIFO     0010000
+#define CLOEXEC_FIFO "build/test_io_cloexec.fifo"
+
+static void test_directory_fd_close_on_exec(void) {
+    lc_directory dir;
+    TEST_REQUIRE_OK(lc_directory_open(&dir, "."));
+    TEST_ASSERT((lc_syscall3(SYS_fcntl, dir.fd, F_GETFD, 0) & FD_CLOEXEC) != 0);
+    lc_directory_close(&dir);
+}
+
+/* The octal flags in /proc/self/fdinfo of the fd of this process on the
+ * FIFO other than `mine`, waiting up to 2 s for one; -1 when none comes. */
+static int64_t fifo_fd_flags(int32_t mine) {
+    for (int tries = 0; tries < 200; tries++) {
+        for (int64_t fd = 0; fd < 1024; fd++) {
+            if (fd == mine) continue;
+            char path[64], target[256];
+            lc_format f = lc_format_start(path, sizeof path);
+            lc_format_add_text(&f, "/proc/self/fd/");
+            lc_format_add_signed(&f, fd);
+            lc_format_finish(&f);
+            lc_sysret n = lc_kernel_readlinkat(AT_FDCWD, path, target, sizeof target);
+            if (n <= 0 || !lc_string_ends_with(target, (size_t)n, "/test_io_cloexec.fifo", 21)) continue;
+
+            f = lc_format_start(path, sizeof path);
+            lc_format_add_text(&f, "/proc/self/fdinfo/");
+            lc_format_add_signed(&f, fd);
+            lc_format_finish(&f);
+            uint8_t *info = NULL;
+            size_t size = 0;
+            if (lc_file_read_all(path, &info, &size).error) return -1;
+            int64_t flags = -1;
+            int64_t at = lc_string_find_substring((const char *)info, size, "flags:", 6);
+            if (at >= 0) {
+                size_t i = (size_t)at + 6;
+                while (i < size && (info[i] == ' ' || info[i] == '\t')) i++;
+                flags = 0;
+                while (i < size && info[i] >= '0' && info[i] <= '7') flags = flags * 8 + (info[i++] - '0');
+            }
+            lc_heap_free(info);
+            return flags;
+        }
+        lc_time_sleep_milliseconds(10);
+    }
+    return -1;
+}
+
+static int32_t read_all_of_fifo(void *arg) {
+    (void)arg;
+    uint8_t *data = NULL;
+    size_t size = 0;
+    if (lc_is_ok(lc_file_read_all(CLOEXEC_FIFO, &data, &size))) lc_heap_free(data);
+    return 0;
+}
+
+static int32_t write_all_to_fifo(void *arg) {
+    (void)arg;
+    static char big[256 * 1024];   /* more than a pipe holds: the write waits */
+    (void)lc_file_write_all(CLOEXEC_FIFO, big, sizeof big);
+    return 0;
+}
+
+/* lc_file_read_all and lc_file_write_all hold their fd only during the
+ * call, but a program another thread execs meanwhile would inherit it if
+ * it were not close-on-exec. On a FIFO each call waits, in its read or its
+ * write, while /proc/self/fdinfo shows the fd's flags. */
+static void test_file_functions_close_on_exec(void) {
+    (void)lc_kernel_unlinkat(AT_FDCWD, CLOEXEC_FIFO, 0);
+    TEST_REQUIRE_EQ(lc_kernel_mknodat(AT_FDCWD, CLOEXEC_FIFO, S_IFIFO | 0600, 0), 0);
+
+    lc_thread reader;
+    TEST_REQUIRE_OK(lc_thread_create(&reader, read_all_of_fifo, NULL));
+    lc_sysret writer_fd = lc_kernel_open_file(CLOEXEC_FIFO, O_WRONLY, 0);   /* meets the reader's open */
+    TEST_REQUIRE(writer_fd >= 0);
+    int64_t read_flags = fifo_fd_flags((int32_t)writer_fd);
+    lc_kernel_close_file((int32_t)writer_fd);   /* the reader reaches the end */
+    lc_thread_join(&reader);
+
+    lc_thread writer;
+    TEST_REQUIRE_OK(lc_thread_create(&writer, write_all_to_fifo, NULL));
+    lc_sysret reader_fd = lc_kernel_open_file(CLOEXEC_FIFO, O_RDONLY, 0);
+    TEST_REQUIRE(reader_fd >= 0);
+    int64_t write_flags = fifo_fd_flags((int32_t)reader_fd);
+    static char sink[65536];
+    while (lc_kernel_read_bytes((int32_t)reader_fd, sink, sizeof sink) > 0) {}   /* until the writer closes */
+    lc_kernel_close_file((int32_t)reader_fd);
+    lc_thread_join(&writer);
+    (void)lc_kernel_unlinkat(AT_FDCWD, CLOEXEC_FIFO, 0);
+
+    TEST_ASSERT(read_flags >= 0 && (read_flags & O_CLOEXEC) != 0);
+    TEST_ASSERT(write_flags >= 0 && (write_flags & O_CLOEXEC) != 0);
+}
+
+/* ===== lc_writer's flush goes on after EINTR ===== */
+
+static volatile int32_t writer_alarms;
+static void count_writer_alarm(int signo) { (void)signo; writer_alarms++; }
+
+/* The flush waits for room in a full pipe; a SIGALRM interrupts it at
+ * 20 ms, and a child makes room at 60 ms. The flush must go on and write
+ * every byte. */
+static void test_writer_flush_retries_eintr(void) {
+    TEST_REQUIRE_OK(lc_signal_handle(LC_SIGALRM, count_writer_alarm));
+    int32_t rfd, wfd;
+    TEST_REQUIRE_EQ(pipe_create(&rfd, &wfd), 0);
+
+    static char block[4096];
+    int64_t flags = lc_syscall3(SYS_fcntl, wfd, F_GETFL, 0);
+    TEST_REQUIRE(flags >= 0);
+    TEST_REQUIRE_EQ(lc_syscall3(SYS_fcntl, wfd, F_SETFL, flags | O_NONBLOCK), 0);
+    size_t filled = 0;
+    for (;;) {
+        lc_sysret n = lc_kernel_write_bytes(wfd, block, sizeof block);
+        if (n <= 0) break;
+        filled += (size_t)n;
+    }
+    TEST_REQUIRE_EQ(lc_syscall3(SYS_fcntl, wfd, F_SETFL, flags), 0);
+
+    size_t total = filled + 100;
+    lc_sysret pid = lc_kernel_fork();
+    if (pid == 0) {
+        lc_kernel_close_file(wfd);   /* so a flush cut short ends the drain */
+        lc_time_sleep_milliseconds(60);
+        size_t drained = 0;
+        while (drained < total) {
+            lc_sysret n = lc_kernel_read_bytes(rfd, block, sizeof block);
+            if (n <= 0) break;
+            drained += (size_t)n;
+        }
+        lc_kernel_exit(drained == total ? 0 : 1);
+    }
+    TEST_REQUIRE(pid > 0);
+
+    lc_writer w = lc_writer_create(wfd, 256);
+    (void)lc_writer_put_string(&w, block, 100);
+    writer_alarms = 0;
+    int64_t timer[4] = { 0, 0, 0, 20000 };   /* struct itimerval: 20 ms, once */
+    (void)lc_syscall3(SYS_setitimer, 0 /* ITIMER_REAL */, (int64_t)timer, 0);
+    lc_result r = lc_writer_flush(&w);
+    TEST_ASSERT_OK(r);
+    TEST_ASSERT_EQ(writer_alarms, 1);
+    (void)lc_writer_destroy(&w);
+    lc_kernel_close_file(wfd);
+    int32_t status = -1;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status, 0);   /* every byte arrived */
+    lc_kernel_close_file(rfd);
+    TEST_ASSERT_OK(lc_signal_reset(LC_SIGALRM));
+}
+
 /* /proc files report size 0 via SEEK_END; lc_file_read_all must still return
  * their contents by reading until EOF, not an empty buffer. */
 static void test_file_read_all_proc(void) {
@@ -488,6 +646,9 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_io_reader_eintr);
     TEST_RUN(test_directory_open_notdir);
     TEST_RUN(test_directory_error);
+    TEST_RUN(test_directory_fd_close_on_exec);
+    TEST_RUN(test_file_functions_close_on_exec);
+    TEST_RUN(test_writer_flush_retries_eintr);
     TEST_RUN(test_file_read_all_proc);
 
     return test_main();

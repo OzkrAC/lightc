@@ -1,0 +1,152 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Contracts · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: What a program built on lightc can count on and what it must do — how to link, what a signal handler may call, how EINTR and SIGPIPE are handled, close-on-exec, fork and exit, plugins, ring ownership and the kernel it needs — each default with the test that holds lightc to it.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Contracts {#top}
+
+{.brief}
+What a program built on lightc can count on, and what it must do itself. Each default below names the test that fails if lightc stops keeping it: a regress program of `tests/regress/` (`ninja regress`), a suite of `tests/` (`ninja test`), or a CI script of `ci/`.
+
+::toc
+
+## Linking {#linking}
+
+| Rule | Enforced by |
+|---|---|
+| Compile with the flags of `pkg-config --cflags lightc`, or the ones of [the example](index.html#example). On aarch64 they add `-mno-outline-atomics`, so that atomic operations are instructions, not calls to libgcc's helpers, which a lightc link does not include. | `ci/consumer.sh` |
+| Link with the flags of `pkg-config --libs lightc`: `-static -nostdlib -nostartfiles`, and `-T` with lightc's linker script, `lightc.ld`. A program linked so has no writable and executable segment, and a stack that is not executable. | `ci/consumer.sh`, `ci/elfcheck.sh` |
+| `thread_local`, constructors and destructors fail the link with a `lightc:` message from the linker script: nothing makes a TLS block or runs `.init_array` and `.fini_array`. Keep per-thread data in the [`lc_tls_*` keys](threads.html#tls) and call setup code from `main`. | `ci/consumer.sh` |
+| The headers and `liblightc.a` must be of one minor version. Each object compiled with the headers refers to the ABI tag `lc_abi_MAJOR_MINOR`, which only the library of that version defines, so a mix fails to link instead of running with structs of another layout. | `ci/consumer.sh` |
+| Against an install, `LC_STATS` is the library's: `<lightc/config.h>`, which `ninja install` writes, stops a build that sets another. A program built with another `NDEBUG` than the library agrees with it on every struct's layout, as no struct has a field that `NDEBUG` or `LC_STATS` adds. | `ci/consumer.sh`, `regress/ARENA-abi-lcstats` |
+
+`_start` passes `main` the environment as its third argument, `int main(int argc, char **argv, char **envp)`: there is no global `environ`.
+
+lightc's own regress run needs lld on aarch64, where GNU ld 2.42 does not pack relative relocations: `configure` links `LIB-relr`'s plugin, which needs `DT_RELR`, with lld, and without lld `LIB-relr` fails.
+
+## Plugins {#plugins}
+
+`lc_library_open` loads an ELF64 shared object of this arch that needs no other object: it searches none for the symbols the plugin imports.
+
+| Rule | Enforced by |
+|---|---|
+| A plugin must not link `liblightc.a`. Its copy of lightc would keep globals of its own but find its per-thread block through the thread pointer, which is the host's: its TLS keys would overwrite the host's, and its heap would run on the host's per-thread heap state. `lc_library_open` refuses a plugin that defines `lc_heap_*`, `lc_tls_*` or `lc_abi_*` symbols with `LC_ERR_UNSUPPORTED`. The check is best effort, as `--exclude-libs` or hidden visibility hide those names, so the rule is the plugin author's to keep. | `regress/xm-plugin-tls-key-collision` |
+| A plugin may use lightc's inline functions, which keep no state, such as `lc_ok` and the byte-order helpers, and be built with the installed headers and `-fPIC`. | `ci/consumer.sh` |
+| What a valid plugin may need and the loader does not do fails with `LC_ERR_UNSUPPORTED`: thread-local storage, IFUNC and symbol versions. | `regress/LIB-tls`, `regress/LIB-symvalue`, `test_library` |
+| The loader keeps each segment's `p_align`, also above the page size, and follows the kernel's page size. | `regress/LIB-p-align`, `regress/LIB-pagesize` |
+
+## Signals {#signals}
+
+### Handlers {#handlers}
+
+| Default | Enforced by |
+|---|---|
+| `lc_signal_handle` installs a handler without `SA_RESTART`, so a handled signal ends a blocking system call with EINTR instead of restarting it. What each lightc call then does is in [the next table](#eintr). | `test_signal`: `test_signal_handle_no_restart` |
+| A function that `api/index.md` marks clone-safe touches no state of the library: it reads no thread pointer and writes no variable of the library. Nothing it uses is shared with the code a signal interrupts, then, but the objects it is passed. | `test_index`, which runs each clone-safe function of the main headers with the program's writable data read-only and the thread pointer at a page that cannot be read |
+
+A signal handler may call a clone-safe function when the objects it passes are not ones the interrupted code is using: a writer, a ring, a lightio stream or its loop, or a lock, since a handler that takes a lock the interrupted code holds waits for ever. `lc_log`, the `lc_print_*` functions and the `lc_kernel_*` wrappers take no such object, so a handler can call them at any time. A handler must not call a function the index marks `no`: the heap and everything that allocates, `lc_tls_*`, the coroutine scheduler and `lc_thread_create`. `lc_exit` is one of these too, but for the [shutdown signals](#exit); `lc_kernel_exit` ends the process from anywhere.
+
+### EINTR {#eintr}
+
+| Call | When a handled signal interrupts it | Enforced by |
+|---|---|---|
+| `lc_kernel_*`, but the three below | returns `-EINTR`: the caller decides | `test_signal`: `test_signal_handle_no_restart` |
+| `lc_kernel_read_retry`, `lc_kernel_read_all`, `lc_kernel_write_all` | go on: `lc_kernel_read_retry` reads again, and the other two go on from what they had read or written | `test_syscall`: `test_read_write_retry_eintr` |
+| `lc_print_*`, `lc_file_read_all`, `lc_file_write_all` | go on, as they read and write with the three above | `test_syscall`: `test_read_write_retry_eintr` |
+| `lc_socket_*` | returns `LC_ERR_INTR` | `test_signal`: `test_signal_handle_no_restart` |
+| `lc_reader` | its refill reads again: a signal is not the end of the stream | `test_io`: `test_io_reader_eintr` |
+| `lc_writer` | its flush goes on | `test_io`: `test_writer_flush_retries_eintr` |
+| `lc_log` | writes the rest of the line | `test_log`: `test_log_short_write_finishes_line` |
+| `lc_time_sleep_milliseconds`, `lc_time_sleep_microseconds`, and `lc_time_sleep_until`, which they sleep with | sleep on to the same deadline, so signals cannot keep them from ending | `regress/TIME-sleep-eintr` |
+| `lc_async_wait` | waits again | `test_async`: `test_async_wait_retries_a_signal` |
+| `lc_async_wait_ex` | returns with error 0, so a loop can look at what its handler set | `test_async`: `test_async_wait_ex_returns_on_a_signal` |
+
+### SIGPIPE {#sigpipe}
+
+| Default | Enforced by |
+|---|---|
+| Every send passes `MSG_NOSIGNAL`, so a send to a peer that has closed fails with `LC_ERR_PIPE`, or `-EPIPE`, instead of raising SIGPIPE, whose default action ends the process: `lc_socket_send`, `lc_socket_send_to`, `lc_socket_send_to_sockaddr`, `lc_async_submit_send`, and `lio_write`, which sends. | `regress/NET-send-sigpipe`, `regress/NET-uring-sigpipe` |
+
+A `write(2)` to a pipe, or to a socket, whose reading end has closed still raises SIGPIPE: `lc_kernel_write_bytes` and `lc_kernel_write_all`, `lc_writer`, `lc_file_write_all` on a FIFO, `lc_print_*`, `lc_log` and `lc_async_submit_write` all write. A program that writes to a pipe or a socket that another may close calls `lc_signal_ignore(LC_SIGPIPE)`, so that the write fails with `EPIPE` instead, or uses the sends on sockets.
+
+## File descriptors {#fds}
+
+| Default | Enforced by |
+|---|---|
+| Every fd a lightc module opens or accepts is close-on-exec, so a program that a thread execs inherits none of them. | below |
+| Sockets: `lc_socket_open`, `lc_socket_accept_flags`, the IPv4 and IPv6 helpers, and the connections lightio accepts. `LC_SOCK_INHERIT`, in a socket's type or accept flags, opts one out, for a program to hand to one it execs. | `regress/NET-no-cloexec`, `test_socket`: `test_socket_inherit` |
+| Files: the fds `lc_file_read_all` and `lc_file_write_all` hold during the call. | `test_io`: `test_file_functions_close_on_exec` |
+| Directories: the fd of `lc_directory_open`. | `test_io`: `test_directory_fd_close_on_exec` |
+| Plugins: the fd `lc_library_open` holds while it reads the file. | `regress/LIB-cloexec` |
+| Rings: the fd of `lc_async_ring_create`, as the kernel makes every io_uring fd. | `test_async`: `test_async_ring_fd_close_on_exec` |
+
+The `lc_kernel_*` wrappers pass the flags the caller gives, as the system call does: `lc_kernel_open_file(path, O_RDONLY, 0)` is not close-on-exec.
+
+## Buffered output {#writer}
+
+| Default | Enforced by |
+|---|---|
+| Each `lc_writer` put and flush returns what it did. `LC_ERR_AGAIN`, from a non-blocking fd that would block, leaves the bytes not written in the buffer: flush again once the fd is writable. Any other error, such as `ENOSPC` or `EPIPE`, is sticky: it stays in the writer's `error`, and every later put, flush and destroy returns it. On a blocking fd, checking the last flush or the destroy is enough. `<lightc/io.h>` gives the whole contract. | `regress/IO-writer-drops-data` |
+
+A writer's buffer is the program's memory: a fork copies it, so flush a writer before forking, or both processes write its bytes.
+
+## Logging {#logging}
+
+| Default | Enforced by |
+|---|---|
+| A text line goes out in one `writev` and a JSON line in one `write`, so in an `O_APPEND` file, and in a pipe when the line is at most 4096 bytes, lines from other threads and processes never mix into it. | `regress/LOG-interleave` |
+| No lock is held: threads behind a blocked write sleep in the kernel instead of spinning, and a child can log after fork. | `regress/LOG-spin-across-write`, `regress/LOG-fork-deadlock` |
+
+## Processes and threads {#processes}
+
+### Fork {#fork}
+
+lightc has no stdio buffers to duplicate, and its log takes no lock, so a child of `lc_kernel_fork` can log at once. Two things are not fork-safe:
+
+- **The heap.** A fork while another thread holds one of the heap's locks leaves the child stuck at its first allocation that takes it, and a child keeps the parent's per-thread heap identity. Until a later release makes the heap fork-safe, the child of a process with more than one thread calls only the clone-safe functions of `api/index.md` until it execs or exits, and a child that goes on without exec creates no thread.
+- **Locks.** The mutex, condition variable, read-write lock, barrier and once of `<lightc/thread.h>` are private to one process: in `MAP_SHARED` memory that two processes share, a waiter in one is never woken by the other. A child's copy of a lock is a lock of its own, in the state the fork found it.
+
+The child of a raw `clone` system call, which has no lightc thread of its own, may call only the clone-safe functions of `api/index.md`, as [`test_index`](#handlers) checks.
+
+### Exit {#exit}
+
+| Default | Enforced by |
+|---|---|
+| Returning from `main` calls `exit_group` with its value, which ends every thread of the process. It runs no `lc_atexit` handler. | `regress/RT-main-exit`, `test_lifecycle`: `test_main_return_ends_process` |
+| `lc_exit` runs the `lc_atexit` handlers once, last registered first, then calls `exit_group`. A second `lc_exit`, from a handler or a signal, ends the process at once, without running them again. `lc_kernel_exit` calls `exit_group` directly. | `test_lifecycle`: `test_exit_reentrancy_guard` |
+| `lc_lifecycle_enable_shutdown_signals` makes SIGTERM and SIGINT call `lc_exit(0)`. One that comes while the exit handlers run is ignored, so they finish. | `test_lifecycle`: `test_shutdown_signal_runs_handlers` |
+
+With the shutdown signals, the exit handlers run in a signal handler, in the middle of whatever the signal interrupted: each then keeps to [what a handler may call](#handlers), as what it frees, closes or flushes may be in use at that moment.
+
+A thread ends when its function returns, and only that thread does. Its return value is its exit status, which nothing collects: hand a result back through the thread's argument.
+
+## Async I/O {#rings}
+
+- **A ring belongs to one thread at a time.** The `lc_async_*` calls take no lock, so threads that share a ring do so under a lock of their own, as `examples/httpd.c` does.
+- **A lightio loop belongs to the thread that runs it.** `lio_loop_run_threaded` gives each worker a ring and a coroutine pool of its own. `lio_read`, `lio_write` and `lio_sleep` are called only from a handler's coroutine.
+- **An entry stays queued until the kernel takes it.** An `io_uring_enter` that fails with `EAGAIN` or `EBUSY` leaves its entries for the next flush or wait, and `lc_async_flush_ex` and `lc_async_wait_ex` report its errno. See [Async & lightio](async.html#async).
+
+## Kernel {#kernel}
+
+lightc 0.2.0 needs Linux 5.10 or later, on x86_64 or aarch64. 5.10 is the oldest long-term kernel with every system call and io_uring feature lightc uses:
+
+| Needs | From | For |
+|---|---|---|
+| `IORING_FEAT_NODROP` | 5.5 | `lc_async_ring_create` fails with `LC_ERR_OPNOTSUPP` without it, as a full completion queue would drop completions |
+| `IORING_OP_READ`, `IORING_OP_WRITE`, `IORING_OP_SEND`, `IORING_OP_RECV` | 5.6 | the ring's reads, writes, sends and receives, and lightio |
+| `faccessat2` | 5.8 | `lc_kernel_faccessat2` |
+
+`lc_kernel_fchmodat` with flags uses `fchmodat2`, from Linux 6.6. On an older kernel it returns `-EOPNOTSUPP` rather than drop the flags (`regress/RT-fchmodat-flags`).
+
+{.source}
+The headers say the rest: `<lightc/io.h>` for the writer and reader, `<lightc/log.h>` for logging, `<lightc/thread.h>` for threads and locks, `<lightc/library.h>` for the loader, `<lightc/async.h>` and `<lightio/lightio.h>` for the ring and the loop. `AGENTS.md`, at the root of the source tree, is the guide for changing lightc itself.

@@ -10,7 +10,8 @@
 #     (GNU_STACK RW, no PT_TLS, no RWX header, text and data on pages of
 #     their own), and must run and exit 0;
 #   - a program with a thread_local variable must compile, then fail to link
-#     with the linker script's "lightc: thread_local" message;
+#     with the linker script's "lightc: thread_local" message, as must one
+#     with a constructor or a destructor, with the script's message for it;
 #   - the ABI guard of <lightc/version.h> and the installed <lightc/config.h>:
 #     hello must fail to link against a liblightc.a whose ABI tag is another
 #     minor version's, naming the tag it lacks; tests/regress/ARENA-abi-lcstats.c,
@@ -145,6 +146,31 @@ if ! grep -q 'lightc: thread_local is not supported' "$work/tls.log"; then
 fi
 echo "ok: thread_local program fails to link:"
 grep 'lightc: thread_local' "$work/tls.log"
+
+# A constructor or a destructor: nothing would run it, so the link fails.
+for kind in constructor destructor; do
+    cat > "$work/$kind.c" << EOF
+#include <lightc/syscall.h>
+
+static int ran;
+__attribute__(($kind)) static void hook(void) { ran = 1; }
+
+int main(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
+    return ran;
+}
+EOF
+    $CC $cstd $cflags -c "$work/$kind.c" -o "$work/$kind.o" ||
+        fail "the $kind program did not compile"
+    if $CC "$work/$kind.o" $libs -o "$work/$kind" 2> "$work/$kind.log"; then
+        fail "the $kind program linked"
+    fi
+    if ! grep -q "lightc: ${kind}s are not supported" "$work/$kind.log"; then
+        cat "$work/$kind.log" >&2
+        fail "the $kind program's link failed without lightc's message"
+    fi
+    echo "ok: a $kind fails to link: $(grep -o "lightc: ${kind}s are not supported" "$work/$kind.log")"
+done
 
 # --- The ABI tag: another minor version's library does not link ---
 

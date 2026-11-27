@@ -10,10 +10,11 @@
 #include <lightc/string.h>
 #include <lightc/time.h>
 
-/* Every test needs io_uring (kernel 5.1+). main probes for it once, and
- * without it each test skips. */
+/* Every test needs io_uring as lightc uses it, from Linux 5.10 on (see
+ * docs/contracts.html). main probes for it once, and without it each test
+ * skips. */
 static bool io_uring_available;
-#define NO_IO_URING "io_uring not available (kernel 5.1+ required)"
+#define NO_IO_URING "io_uring not available (Linux 5.10+ required)"
 
 /* ===== lc_async_ring_create / destroy ===== */
 
@@ -451,6 +452,73 @@ static void test_async_wait_ex_returns_on_a_signal(void) {
     lc_async_ring_destroy(ring);
 }
 
+/* lc_async_wait waits again after a signal, where lc_async_wait_ex returns:
+ * a timeout of 100 ms is queued and a SIGALRM comes at 20 ms, so the wait
+ * must return the timeout's completion, -ETIME, after it has expired. */
+#define IORING_OP_TIMEOUT 11
+
+static void test_async_wait_retries_a_signal(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+    lc_result_ptr rp = lc_async_ring_create(4);
+    TEST_REQUIRE(lc_ptr_is_ok(rp));
+    lc_async_ring *ring = rp.value;
+    TEST_REQUIRE(lc_is_ok(lc_signal_handle(LC_SIGALRM, on_alarm)));
+
+    static int64_t timeout[2] = { 0, 100000000 };   /* struct __kernel_timespec: 100 ms */
+    TEST_REQUIRE(lc_is_ok(lc_async_submit_raw(ring, IORING_OP_TIMEOUT, -1, (uint64_t)(uintptr_t)timeout,
+                                              1, 0, 0, 7)));
+    alarms = 0;
+    int64_t start = lc_time_now_monotonic();
+    int64_t timer[4] = { 0, 0, 0, 20000 };   /* struct itimerval: 20 ms, once */
+    TEST_REQUIRE(lc_syscall3(SYS_setitimer, UF_ITIMER_REAL, (int64_t)timer, 0) == 0);
+    lc_async_result r[4] = {0};
+    uint32_t n = lc_async_wait(ring, r, 4);
+    int64_t waited = lc_time_now_monotonic() - start;
+
+    TEST_ASSERT_EQ(alarms, 1);
+    TEST_ASSERT_EQ(n, (uint32_t)1);
+    TEST_ASSERT_EQ(r[0].tag, (uint64_t)7);
+    TEST_ASSERT_EQ(r[0].result, -LC_ERR_TIME);
+    TEST_ASSERT(waited >= 90000000);   /* the timeout's, not the signal's */
+    TEST_ASSERT(lc_is_ok(lc_signal_reset(LC_SIGALRM)));
+    lc_async_ring_destroy(ring);
+}
+
+/* The ring's fd is close-on-exec, as the kernel makes every io_uring fd:
+ * the fd of /proc/self/fd that is anon_inode:[io_uring] after the create
+ * and not before must have FD_CLOEXEC. */
+#define UF_F_GETFD    1
+#define UF_FD_CLOEXEC 1
+
+static bool is_ring_fd(int64_t fd) {
+    char path[32] = "/proc/self/fd/";
+    size_t at = 14;
+    char digits[20];
+    size_t n = 0;
+    do { digits[n++] = (char)('0' + fd % 10); fd /= 10; } while (fd > 0);
+    while (n > 0) path[at++] = digits[--n];
+    path[at] = 0;
+    char target[64];
+    lc_sysret len = lc_kernel_readlinkat(AT_FDCWD, path, target, sizeof target);
+    return len > 0 && lc_string_equal(target, (size_t)len, "anon_inode:[io_uring]", 21);
+}
+
+static void test_async_ring_fd_close_on_exec(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+    static bool before[1024];
+    for (int64_t fd = 0; fd < 1024; fd++) before[fd] = is_ring_fd(fd);
+    lc_result_ptr rp = lc_async_ring_create(4);
+    TEST_REQUIRE(lc_ptr_is_ok(rp));
+    int32_t found = 0;
+    for (int64_t fd = 0; fd < 1024; fd++) {
+        if (before[fd] || !is_ring_fd(fd)) continue;
+        found++;
+        TEST_ASSERT((lc_syscall3(SYS_fcntl, fd, UF_F_GETFD, 0) & UF_FD_CLOEXEC) != 0);
+    }
+    TEST_ASSERT_EQ(found, 1);
+    lc_async_ring_destroy(rp.value);
+}
+
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
@@ -488,6 +556,8 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_async_ex_report_a_kept_error);
     TEST_RUN(test_async_flush_ex_on_a_full_cq_returns);
     TEST_RUN(test_async_wait_ex_returns_on_a_signal);
+    TEST_RUN(test_async_wait_retries_a_signal);
+    TEST_RUN(test_async_ring_fd_close_on_exec);
 
     return test_main();
 }
