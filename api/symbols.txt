@@ -125,6 +125,7 @@ T lc_print_newline
 T lc_print_signed
 T lc_print_string
 T lc_print_unsigned
+T lc_probe_kernel
 T lc_reader_create
 T lc_reader_destroy
 T lc_reader_is_end

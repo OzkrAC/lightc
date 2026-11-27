@@ -433,10 +433,11 @@ build \$builddir/containers.o: cc src/containers.c
 build \$builddir/signal.o: cc src/signal.c
 build \$builddir/lifecycle.o: cc src/lifecycle.c
 build \$builddir/version.o: cc src/version.c
+build \$builddir/probe.o: cc src/probe.c
 
 # --- Library ---
 
-build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o
+build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o \$builddir/probe.o
 
 # --- Examples ---
 
@@ -655,8 +656,10 @@ build \$builddir/test_syscall.o: cc_test tests/test_syscall.c
 build \$builddir/test_syscall: link \$builddir/test_syscall.o \$builddir/liblightc.a | \$ldscript
 build \$builddir/test_index.o: cc_test tests/test_index.c
 build \$builddir/test_index: link \$builddir/test_index.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_probe.o: cc_test tests/test_probe.c
+build \$builddir/test_probe: link \$builddir/test_probe.o \$builddir/liblightc.a | \$ldscript
 
-build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe
 
 # tests/run.sh runs every suite, even after one fails, each with a time
 # limit, and ends with a summary. The console pool streams each suite's
@@ -667,7 +670,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 

@@ -146,7 +146,48 @@ lightc 0.2.0 needs Linux 5.10 or later, on x86_64 or aarch64. 5.10 is the oldest
 | `IORING_OP_READ`, `IORING_OP_WRITE`, `IORING_OP_SEND`, `IORING_OP_RECV` | 5.6 | the ring's reads, writes, sends and receives, and lightio |
 | `faccessat2` | 5.8 | `lc_kernel_faccessat2` |
 
-`lc_kernel_fchmodat` with flags uses `fchmodat2`, from Linux 6.6. On an older kernel it returns `-EOPNOTSUPP` rather than drop the flags (`regress/RT-fchmodat-flags`).
+Two system calls lightc can make are newer than 5.10: `fchmodat2`, from 6.6, and `mount_setattr`, from 5.12. And a call the kernel has can still be taken away: a seccomp filter can answer it with `ENOSYS`, as container runtimes do for `clone3`, or with `EPERM`, and the sysctl `kernel.io_uring_disabled`, from 6.6, can forbid io_uring.
+
+### Feature probes {#probes}
+
+`lc_probe_kernel(LC_KFEAT_*)`, in `<lightc/probe.h>`, tells whether this process can use a feature. Its error is 0 when it can, `LC_ERR_NOSYS` when a call of the feature answers `ENOSYS`, and `LC_ERR_PERM` when one answers `EPERM` where the kernel itself would not, or when `kernel.io_uring_disabled` forbids this process io_uring. A feature that is present can still fail for want of a resource, as a ring does without memory.
+
+| Feature | `LC_KFEAT_` | From | Without it | Enforced by |
+|---|---|---|---|---|
+| `fchmodat2` | `FCHMODAT2` | 6.6 | `lc_kernel_fchmodat` with flags returns `-EOPNOTSUPP` and changes nothing; [below](#fchmodat2) is what a caller can do instead | `test_probe`: `test_fchmodat_without_fchmodat2`, `regress/RT-fchmodat-flags` |
+| `faccessat2` | `FACCESSAT2` | 5.8 | `lc_kernel_faccessat2` returns `-ENOSYS`: lightc has no `faccessat` to fall back to | `test_probe`: `test_faccessat2_without_faccessat2` |
+| `openat2` | `OPENAT2` | 5.6 | nothing in lightc uses it | `test_probe`: `test_each_probe_is_absent_under_enosys` |
+| `close_range` | `CLOSE_RANGE` | 5.9 | nothing in lightc uses it | as above |
+| `clone3` | `CLONE3` | 5.3 | nothing in lightc uses it | as above |
+| `pidfd_open` | `PIDFD` | 5.3 | nothing in lightc uses it | as above |
+| The mount API: `open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount` and `fspick` | `MOUNT_API` | 5.2 | nothing in lightc uses it; absent when any one of the six is | as above |
+| `mount_setattr` | `MOUNT_SETATTR` | 5.12 | nothing in lightc uses it. It is a feature of its own, as 5.10 and 5.11 have the rest of the mount API without it | as above |
+| io_uring: `io_uring_setup`, and that `kernel.io_uring_disabled` lets this process create rings | `IO_URING` | 5.1; the ring needs 5.6, as above | `lc_async_ring_create` fails with the errno of `io_uring_setup`, such as `LC_ERR_NOSYS` or `LC_ERR_PERM`, and `lio_loop_create` returns `NULL`: lightc has no other way to do their I/O | `test_probe`: `test_rings_without_io_uring` |
+
+| Default | Enforced by |
+|---|---|
+| The first probe of a feature makes each of its calls once, or once per thread when threads make it at the same moment, with arguments the kernel refuses before it does anything, such as a flag no call defines: it changes nothing, opens nothing and starts no process. It keeps the answer, and later probes make no system call. | `test_probe`: `test_an_answer_is_kept` |
+| Threads that probe at once each get the same answer. | `test_probe`: `test_threads_probing_at_once_agree` |
+| A probe's answer agrees with a real use of the feature. | `test_probe`: `test_probes_agree_with_real_uses` |
+| A filter that answers any one call of a feature with `ENOSYS` makes it absent with `LC_ERR_NOSYS`, and one that answers with `EPERM` makes it absent with `LC_ERR_PERM`. `fsopen`, `fsmount`, `fspick` and `move_mount` answer a caller without `CAP_SYS_ADMIN` with `EPERM` themselves, so an `EPERM` from them leaves the mount API present. | `test_probe`: `test_each_probe_is_absent_under_enosys`, `test_an_eperm_filter_makes_a_feature_absent` |
+| A probe makes only the system calls `api/syscalls.tsv` lists for `lc_probe_kernel`. | `test_index`: `test_probe_h` |
+
+The answers belong to the process. A child of fork inherits them, and a seccomp filter installed after a feature's first probe does not change that feature's answer. A program that execs starts with none, so the program a launcher execs under a filter probes what the filter leaves it.
+
+On 5.10 and later only `fchmodat2` and `mount_setattr` can be missing from the kernel itself, so there the probes mostly find what a seccomp filter or a sysctl takes away.
+
+### fchmodat2 and the O_PATH fallback {#fchmodat2}
+
+`lc_kernel_fchmodat` with flags 0 is `fchmodat`, which follows a symlink. The kernel's `fchmodat` takes no flags, so with flags such as `AT_SYMLINK_NOFOLLOW` the call is `fchmodat2`, from Linux 6.6. Without it, the call returns `-EOPNOTSUPP` for every file, and never drops the flags to change the mode of a symlink's target.
+
+Before 6.6 no system call changes the mode at a path without following a symlink there. `fchmodat` takes no flags, so no `AT_EMPTY_PATH` either. `fchmod` needs a descriptor opened to read or write: it fails with `EBADF` on an `O_PATH` one, and such an open needs permission to read or write the file and wakes a FIFO or a device. Where `lc_probe_kernel(LC_KFEAT_FCHMODAT2)` fails, a caller can do what glibc does, as `test_fchmodat_without_fchmodat2` does under a filter:
+
+1. Open `path` with `O_PATH | O_NOFOLLOW | O_CLOEXEC`. The descriptor holds the file without opening it, so it reads nothing and wakes no FIFO or device, and for a symlink it holds the symlink, not its target. `<lightc/syscall.h>` does not define `O_PATH`: it is `010000000` on both arches.
+2. `fstat` the descriptor, or `statx` it with `AT_EMPTY_PATH` (`0x1000`), and stop with `EOPNOTSUPP` if it is a symlink.
+3. Otherwise call `lc_kernel_fchmodat(AT_FDCWD, "/proc/self/fd/<fd>", mode, 0)`, which follows the `/proc` link to the file the descriptor holds: the one step 2 looked at, even if `path` has been renamed or replaced since. It needs `/proc` mounted, and fails with `ENOENT` without it.
+4. Close the descriptor.
+
+A symlink has no fallback, as it has no mode to change: Linux checks no symlink's mode bits. From 6.6 the kernel refuses to change them, with `EOPNOTSUPP`. Before 6.6 a chmod through `/proc` of a symlink's descriptor does what the filesystem does, and some change the bits and then fail with `EOPNOTSUPP`. So step 2 refuses a symlink, as `lc_kernel_fchmodat` with `AT_SYMLINK_NOFOLLOW` does on every kernel.
 
 {.source}
 The headers say the rest: `<lightc/io.h>` for the writer and reader, `<lightc/log.h>` for logging, `<lightc/thread.h>` for threads and locks, `<lightc/library.h>` for the loader, `<lightc/async.h>` and `<lightio/lightio.h>` for the ring and the loop. `AGENTS.md`, at the root of the source tree, is the guide for changing lightc itself.

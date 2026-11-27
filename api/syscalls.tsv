@@ -235,6 +235,20 @@ lc_print_newline	write	x86_64 aarch64
 lc_print_signed	write	x86_64 aarch64
 lc_print_string	write	x86_64 aarch64
 lc_print_unsigned	write	x86_64 aarch64
+lc_probe_kernel	clone3	x86_64 aarch64
+lc_probe_kernel	close_range	x86_64 aarch64
+lc_probe_kernel	faccessat2	x86_64 aarch64
+lc_probe_kernel	fchmodat2	x86_64 aarch64
+lc_probe_kernel	fsconfig	x86_64 aarch64
+lc_probe_kernel	fsmount	x86_64 aarch64
+lc_probe_kernel	fsopen	x86_64 aarch64
+lc_probe_kernel	fspick	x86_64 aarch64
+lc_probe_kernel	io_uring_setup	x86_64 aarch64
+lc_probe_kernel	mount_setattr	x86_64 aarch64
+lc_probe_kernel	move_mount	x86_64 aarch64
+lc_probe_kernel	open_tree	x86_64 aarch64
+lc_probe_kernel	openat2	x86_64 aarch64
+lc_probe_kernel	pidfd_open	x86_64 aarch64
 lc_reader_create	arch_prctl	x86_64
 lc_reader_create	gettid	x86_64 aarch64
 lc_reader_create	mmap	x86_64 aarch64

@@ -144,6 +144,20 @@ syscall io_uring_setup     425     425      2
 syscall io_uring_enter     426     426      6
 syscall io_uring_register  427     427      4
 
+# the calls lc_probe_kernel tests for (src/probe.c), with the Linux release
+# that added each; fchmodat2, faccessat2 and io_uring_setup are above
+syscall open_tree          428     428      3    # 5.2, the mount API
+syscall move_mount         429     429      5    # 5.2, the mount API
+syscall fsopen             430     430      2    # 5.2, the mount API
+syscall fsconfig           431     431      5    # 5.2, the mount API
+syscall fsmount            432     432      3    # 5.2, the mount API
+syscall fspick             433     433      3    # 5.2, the mount API
+syscall pidfd_open         434     434      2    # 5.3
+syscall clone3             435     435      2    # 5.3
+syscall close_range        436     436      3    # 5.9
+syscall openat2            437     437      4    # 5.6
+syscall mount_setattr      442     442      5    # 5.12
+
 # --- Errno values ---
 #
 #     name             value  description

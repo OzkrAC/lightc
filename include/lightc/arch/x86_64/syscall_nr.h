@@ -81,7 +81,18 @@
 #define SYS_io_uring_setup    425  /* 2 args */
 #define SYS_io_uring_enter    426  /* 6 args */
 #define SYS_io_uring_register 427  /* 4 args */
+#define SYS_open_tree         428  /* 3 args */
+#define SYS_move_mount        429  /* 5 args */
+#define SYS_fsopen            430  /* 2 args */
+#define SYS_fsconfig          431  /* 5 args */
+#define SYS_fsmount           432  /* 3 args */
+#define SYS_fspick            433  /* 3 args */
+#define SYS_pidfd_open        434  /* 2 args */
+#define SYS_clone3            435  /* 2 args */
+#define SYS_close_range       436  /* 3 args */
+#define SYS_openat2           437  /* 4 args */
 #define SYS_faccessat2        439  /* 4 args */
+#define SYS_mount_setattr     442  /* 5 args */
 #define SYS_fchmodat2         452  /* 4 args */
 
 #endif /* LIGHTC_SYSCALL_NR_X86_64_H */

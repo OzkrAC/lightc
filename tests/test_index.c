@@ -36,6 +36,7 @@
 #include <lightc/log.h>
 #include <lightc/memory.h>
 #include <lightc/print.h>
+#include <lightc/probe.h>
 #include <lightc/signal.h>
 #include <lightc/socket.h>
 #include <lightc/string.h>
@@ -646,6 +647,15 @@ static void case_lc_log_begin(void) { lc_log_entry e; quiet(); enter(); lc_log_b
 static void case_lc_log_commit(void) { lc_log_entry e; quiet(); lc_log_begin(&e, LC_LOG_INFO); enter(); lc_log_commit(&e); }
 static void case_lc_log_is_enabled(void) { enter(); (void)lc_log_is_enabled(LC_LOG_INFO); }
 
+/* lightc/probe.h: the child has no answer kept yet, as the suite never
+ * probes, so each probe makes its calls. */
+
+static void case_lc_probe_kernel(void) {
+    enter();
+    for (int32_t f = LC_KFEAT_FCHMODAT2; f <= (int32_t)LC_KFEAT_IO_URING; f++)
+        (void)lc_probe_kernel((lc_kernel_feature)f);
+}
+
 /* --- The table --- */
 
 typedef struct {
@@ -714,6 +724,8 @@ static const index_case cases[] = {
 
     CASE(lc_log_set_level), CASE(lc_log_set_output), CASE(lc_log_set_format), CASE(lc_log),
     CASE(lc_log_string), CASE(lc_log_begin), CASE(lc_log_commit), CASE(lc_log_is_enabled),
+
+    CASE(lc_probe_kernel),
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])
@@ -722,6 +734,7 @@ static const index_case cases[] = {
 static const char *const covered[] = {
     "lightc/syscall.h", "lightc/io.h", "lightc/socket.h", "lightc/time.h",
     "lightc/signal.h", "lightc/print.h", "lightc/log.h",
+    "lightc/probe.h",
 };
 
 /* --- Running a case --- */
@@ -886,6 +899,7 @@ static void test_time_h(void)     { check_header("lightc/time.h"); }
 static void test_signal_h(void)   { check_header("lightc/signal.h"); }
 static void test_print_h(void)    { check_header("lightc/print.h"); }
 static void test_log_h(void)      { check_header("lightc/log.h"); }
+static void test_probe_h(void)    { check_header("lightc/probe.h"); }
 
 static void test_every_function_has_a_case(void) {
     TEST_REQUIRE(load_all());
@@ -940,5 +954,6 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_signal_h);
     TEST_RUN(test_print_h);
     TEST_RUN(test_log_h);
+    TEST_RUN(test_probe_h);
     return test_main();
 }

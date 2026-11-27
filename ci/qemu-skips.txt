@@ -20,9 +20,15 @@ test_lightio    5
 test_syscall    2
 
 # qemu-user does not run a guest's seccomp filter, and test_index runs each
-# function under one, so its seven tests that do skip. The eighth, that every
+# function under one, so its eight tests that do skip. The ninth, that every
 # covered function has a case, needs no filter and runs.
-test_index      7
+test_index      8
+
+# test_probe stands in for a kernel without a feature with a seccomp filter,
+# so its six tests that install one skip. The other three run: the probes'
+# answers agree with real uses of the features, whatever qemu-user
+# implements, and threads that probe at once agree.
+test_probe      6
 
 # The regress programs of the async ring's and lightio's defects need
 # io_uring, and async-1 seccomp too, and LOG-ts-uninit needs seccomp, so

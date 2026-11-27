@@ -18,7 +18,7 @@ Requires GCC and ninja.
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
-ninja test           # build and run the test suites (312 tests in 21 suites)
+ninja test           # build and run the test suites (322 tests in 22 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
@@ -57,6 +57,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | Header | Description |
 |---|---|
 | `syscall.h` | Raw Linux syscall wrappers (inline assembly) |
+| `probe.h` | `lc_probe_kernel`: whether this process can use a newer kernel feature, such as `fchmodat2`, `openat2` or io_uring, tested once with a harmless call |
 | `types.h` | `uint8_t`, `size_t` and the like, from the compiler's own freestanding `<stdint.h>` and `<stddef.h>` (not libc's); `lc_sysret`, `version.h` and `result.h` |
 | `version.h` | The version (`LC_VERSION_*`, `lc_version()`), the one place it is written, and the ABI tag that makes a program fail to link against a library of another minor version |
 | `string.h` | String ops (`length`, `find`, `compare`) and byte ops (`copy`, `fill`, `compare`) via `__builtin_*` |

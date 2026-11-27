@@ -472,7 +472,9 @@ UAPI_FUNCTIONS(CHECK_FUNCTION)
     X(readlinkat) X(fchownat) X(fchmodat) X(fchmodat2) X(faccessat2)        \
     X(unshare) X(setns) X(sethostname) X(prctl) X(seccomp) X(getuid)        \
     X(setuid) X(setgid) X(setgroups) X(io_uring_setup) X(io_uring_enter)    \
-    X(io_uring_register)
+    X(io_uring_register) X(open_tree) X(move_mount) X(fsopen) X(fsconfig)   \
+    X(fsmount) X(fspick) X(pidfd_open) X(clone3) X(close_range) X(openat2)  \
+    X(mount_setattr)
 #define SYSCALLS_X86_64_ONLY(X)                                             \
     X(open) X(arch_prctl)
 #define SYSCALLS_AARCH64_ONLY(X)
