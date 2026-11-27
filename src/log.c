@@ -62,6 +62,8 @@ static size_t build_prefix(char *buf, size_t buf_size, lc_log_level level) {
  * \u00XX — a raw control byte would make the line invalid JSON. Stops early
  * once `soft_limit` bytes have been used, and never emits a partial escape, so
  * the caller can always append the closing `"}` and newline and stay valid.
+ * Nor does it end on part of a UTF-8 sequence, which JSON's UTF-8 does not
+ * allow: when it stops inside one, it drops the bytes of it already added.
  */
 static void format_add_json_escaped(lc_format *fmt, const char *msg, size_t len,
                                     size_t soft_limit) {
@@ -69,7 +71,20 @@ static void format_add_json_escaped(lc_format *fmt, const char *msg, size_t len,
     for (size_t i = 0; i < len; i++) {
         /* An escape is at most 6 bytes (\u00XX); stop if it would not leave room
          * under the soft limit, so the fixed closing always fits afterwards. */
-        if (fmt->used + 6 > soft_limit) break;
+        if (fmt->used + 6 > soft_limit) {
+            /* msg[i], not added, continues a sequence: back up over the
+             * continuation bytes added before it, at most 3, and their lead
+             * byte. Bytes from 0x80 up go out as they are, one for one, so
+             * those are the last bytes of the buffer. */
+            if (((uint8_t)msg[i] & 0xC0) == 0x80) {
+                size_t start = i;
+                while (start > 0 && i - start < 3 && ((uint8_t)msg[start - 1] & 0xC0) == 0x80) start--;
+                if (start > 0 && (uint8_t)msg[start - 1] >= 0xC0) start--;
+                if (start < i && ((uint8_t)msg[start] & 0xC0) == 0xC0 && fmt->used >= i - start)
+                    fmt->used -= i - start;
+            }
+            break;
+        }
         char c = msg[i];
         switch (c) {
         case '"':  lc_format_add_string(fmt, "\\\"", 2); break;
@@ -98,9 +113,10 @@ static void write_json_line(lc_log_level level, const char *message, size_t msg_
     char buf[1024];
     lc_format fmt = lc_format_start(buf, sizeof(buf));
 
-    /* Get timestamp */
-    lc_timespec ts;
-    lc_kernel_get_clock(LC_CLOCK_REALTIME, &ts);
+    /* Get timestamp: 0 when the clock cannot be read, as lc_time_now gives,
+     * rather than what the stack held */
+    lc_timespec ts = {0};
+    if (lc_kernel_get_clock(LC_CLOCK_REALTIME, &ts) < 0) ts.seconds = 0;
 
     /* Build JSON */
     lc_format_add_text(&fmt, "{\"ts\":");

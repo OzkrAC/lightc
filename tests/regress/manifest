@@ -76,4 +76,6 @@ THR-tls-key-fail        gating
 THR-create-fail         gating
 THR-stack-size          gating
 lio-3                   gating
+LOG-ts-uninit           gating
+LOG-utf8-truncation     gating
 TIME-sleep-eintr        pending

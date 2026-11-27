@@ -369,17 +369,17 @@ jobs:
             exit 1
           fi
       # The gating regress programs run as the suites do: those of the async
-      # ring's and lightio's defects need io_uring, so each of their tests
-      # skips, which LIGHTC_TEST_ALLOW_SKIP lets them, and ci/qemu-skips.txt
-      # lists them as regress/<id>. The SKIP: lines of each program must
-      # equal the count there, so any other program that skips fails the
-      # step. Their output stays out of build/test.log, whose SKIP: lines
-      # the step above counts.
+      # ring's and lightio's defects need io_uring, and LOG-ts-uninit
+      # seccomp, so each of their tests skips, which LIGHTC_TEST_ALLOW_SKIP
+      # lets them, and ci/qemu-skips.txt lists them as regress/<id>. The
+      # SKIP: lines of each program must equal the count there, so any other
+      # program that skips fails the step. Their output stays out of
+      # build/test.log, whose SKIP: lines the step above counts.
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors LIO-coro-stack-align lio-3" ninja regress 2>&1 | tee build/regress.log
+          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors LIO-coro-stack-align lio-3 LOG-ts-uninit" ninja regress 2>&1 | tee build/regress.log
           awk '/^--- build\/regress\/[A-Za-z0-9-]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
                /^[ \t]*SKIP:/ { skips[prog]++ }
                END { for (p in skips) print p, skips[p] }' build/regress.log | sort > build/regress-skips.actual
