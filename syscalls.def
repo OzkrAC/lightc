@@ -98,6 +98,7 @@ syscall wait4              61      260      4
 syscall pipe2              293     59       2
 syscall dup3               292     24       3
 syscall setsid             112     157      0
+syscall prlimit64          302     261      4    # only tests/regress uses it
 
 # signals
 syscall rt_sigaction       13      134      4

@@ -70,6 +70,7 @@
 #define SYS_madvise           233  /* 3 args */
 #define SYS_accept4           242  /* 4 args */
 #define SYS_wait4             260  /* 4 args */
+#define SYS_prlimit64         261  /* 4 args */
 #define SYS_setns             268  /* 2 args */
 #define SYS_seccomp           277  /* 3 args */
 #define SYS_statx             291  /* 5 args */

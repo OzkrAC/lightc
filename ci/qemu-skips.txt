@@ -32,3 +32,4 @@ regress/async-1                  2
 regress/async-2                  2
 regress/xm-wait-swallows-errors  1
 regress/LIO-coro-stack-align     1
+regress/lio-3                    1

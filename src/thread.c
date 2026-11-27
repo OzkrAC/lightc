@@ -35,11 +35,31 @@ lc_result lc_thread_create(lc_thread *thread, lc_thread_func func, void *arg) {
 
 lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, void *arg,
                                       size_t stack_size) {
+    /* The handle is all zeros until the thread runs, and stays so when the
+     * create fails: a join of it then returns at once and unmaps nothing,
+     * where stale or uninitialised fields made it unmap a mapping of
+     * someone else's or wait for ever on `alive`. */
+    thread->tid        = 0;
+    thread->stack_base = NULL;
+    thread->stack_size = 0;
+    atomic_store_explicit(&thread->alive, 0, memory_order_relaxed);
+
+    /* A stack smaller than LC_THREAD_MIN_STACK_SIZE has no room for the
+     * thread's first calls, and the guard page above all would leave none:
+     * the thread would fault, and take the process with it. */
+    if (stack_size < LC_THREAD_MIN_STACK_SIZE) return lc_err(LC_ERR_INVAL);
+
     /* One real page of guard. mprotect rounds a sub-page length up to a full
      * page, so using the kernel's actual page size keeps the guard from eating
-     * into the usable stack on 16K/64K-page aarch64 kernels. */
+     * into the usable stack on 16K/64K-page aarch64 kernels. The total is a
+     * whole number of pages, so the stack's top is aligned to a page, and a
+     * size near SIZE_MAX, whose total would wrap to a small one, fails. */
     size_t guard_size = lc_runtime_page_size();
-    size_t total_size = stack_size + guard_size;
+    size_t total_size;
+    if (__builtin_add_overflow(stack_size, guard_size, &total_size) ||
+        __builtin_add_overflow(total_size, guard_size - 1, &total_size))
+        return lc_err(LC_ERR_INVAL);
+    total_size &= ~(guard_size - 1);
 
     void *stack = lc_kernel_map_memory(NULL, total_size,
                                        PROT_READ | PROT_WRITE,
@@ -70,6 +90,7 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
                                   func, arg);
     if (tid < 0) {
         thread->stack_base = NULL;  /* so a join cannot unmap it a second time */
+        thread->stack_size = 0;
         lc_kernel_unmap_memory(stack, total_size);
         return lc_err((int32_t)(-tid));
     }

@@ -24,6 +24,9 @@
 #
 # configure reads this file and writes the build edges, so run ./configure
 # again after editing it; the regress-pending job reads its pending ids too.
+# A program that needs link flags of its own, such as -Wl,--wrap=NAME to
+# stand in for a library function, has them in tests/regress/<id>.ldflags,
+# which configure reads too.
 # Format: one "id state" pair per line, "#" starts a comment. An id has only
 # letters, digits and dashes.
 
@@ -70,4 +73,7 @@ LIB-errno               gating
 xm-plugin-tls-key-collision gating
 LIO-coro-stack-align    gating
 THR-tls-key-fail        gating
+THR-create-fail         gating
+THR-stack-size          gating
+lio-3                   gating
 TIME-sleep-eintr        pending

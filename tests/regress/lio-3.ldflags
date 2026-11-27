@@ -1,0 +1,1 @@
+-Wl,--wrap=lc_thread_create -Wl,--wrap=lc_thread_join

@@ -619,14 +619,19 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count) {
     lc_thread threads[LIO_MAX_WORKERS];
 
     /* Spawn worker threads (all share the same server fd) */
+    /* The workers that start are packed at the front: each goes into the
+     * next unused handle, so threads[0 .. created_count) are exactly the
+     * live ones, the ones joined below. A create that fails reuses its
+     * handle for the next try. */
     uint32_t created_count = 0;
     for (uint32_t i = 0; i < thread_count; i++) {
-        args[i].server_fd = loop->server_fd;
-        args[i].handler = loop->accept_handler;
-        args[i].worker_id = i;
-        args[i].stop_flag = &stop_flag;
-        args[i].error = 0;
-        if (lc_is_ok(lc_thread_create(&threads[i], lio_worker_thread, &args[i]))) {
+        lio_worker_args *a = &args[created_count];
+        a->server_fd = loop->server_fd;
+        a->handler = loop->accept_handler;
+        a->worker_id = i;
+        a->stop_flag = &stop_flag;
+        a->error = 0;
+        if (lc_is_ok(lc_thread_create(&threads[created_count], lio_worker_thread, a))) {
             created_count++;
         }
     }

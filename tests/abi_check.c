@@ -224,7 +224,8 @@
     /* <lightc/coroutine.h> */                                              \
     X(LC_COROUTINE_STACK_SIZE) X(LC_MAX_COROUTINES)                         \
     /* <lightc/thread.h> */                                                 \
-    X(LC_DEFAULT_STACK_SIZE) X(LC_TLS_MAX_KEYS) X(LC_SPINLOCK_INIT)         \
+    X(LC_DEFAULT_STACK_SIZE) X(LC_THREAD_MIN_STACK_SIZE) X(LC_TLS_MAX_KEYS) \
+    X(LC_SPINLOCK_INIT)                                                     \
     X(LC_MUTEX_INIT) X(LC_CONDVAR_INIT) X(LC_RWLOCK_INIT) X(LC_ONCE_INIT)   \
     /* <lightc/log.h> */                                                    \
     X(LC_LOG_BUFFER_SIZE)                                                   \
@@ -456,13 +457,13 @@ UAPI_FUNCTIONS(CHECK_FUNCTION)
     X(gettid) X(futex) X(exit_group) X(getdents64) X(socket) X(connect)     \
     X(sendto) X(recvfrom) X(shutdown) X(bind) X(listen) X(getsockname)      \
     X(setsockopt) X(accept4) X(clock_gettime) X(nanosleep) X(setitimer)     \
-    X(execve) X(wait4) X(pipe2) X(dup3) X(setsid) X(rt_sigaction)           \
-    X(rt_sigprocmask) X(kill) X(signalfd4) X(mount) X(umount2)              \
-    X(pivot_root) X(chdir) X(fstat) X(statx) X(mknodat) X(mkdirat)          \
-    X(symlinkat) X(unlinkat) X(readlinkat) X(fchownat) X(fchmodat)          \
-    X(fchmodat2) X(faccessat2) X(unshare) X(setns) X(sethostname) X(prctl)  \
-    X(seccomp) X(getuid) X(setuid) X(setgid) X(setgroups) X(io_uring_setup) \
-    X(io_uring_enter) X(io_uring_register)
+    X(execve) X(wait4) X(pipe2) X(dup3) X(setsid) X(prlimit64)              \
+    X(rt_sigaction) X(rt_sigprocmask) X(kill) X(signalfd4) X(mount)         \
+    X(umount2) X(pivot_root) X(chdir) X(fstat) X(statx) X(mknodat)          \
+    X(mkdirat) X(symlinkat) X(unlinkat) X(readlinkat) X(fchownat)           \
+    X(fchmodat) X(fchmodat2) X(faccessat2) X(unshare) X(setns)              \
+    X(sethostname) X(prctl) X(seccomp) X(getuid) X(setuid) X(setgid)        \
+    X(setgroups) X(io_uring_setup) X(io_uring_enter) X(io_uring_register)
 #define SYSCALLS_X86_64_ONLY(X)                                             \
     X(open) X(arch_prctl)
 #define SYSCALLS_AARCH64_ONLY(X)

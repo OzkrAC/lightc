@@ -17,6 +17,7 @@
  */
 
 #define LC_DEFAULT_STACK_SIZE (1024 * 1024) /* 1 MiB */
+#define LC_THREAD_MIN_STACK_SIZE (16 * 1024) /* the least lc_thread_create_with_stack takes */
 
 /* Thread function signature: takes one argument, returns exit code. */
 typedef int32_t (*lc_thread_func)(void *arg);
@@ -28,10 +29,15 @@ typedef struct {
     _Atomic(int32_t) alive;       /* tid while running, 0 when exited (cleared by kernel) */
 } lc_thread;
 
-/* Create a new thread running func(arg). value = tid on success. */
+/* Create a new thread running func(arg). value = tid on success. When it
+ * fails, *thread is all zeros, and joining it returns at once. */
 [[nodiscard]] lc_result lc_thread_create(lc_thread *thread, lc_thread_func func, void *arg);
 
-/* Create a new thread with a custom stack size. value = tid on success. */
+/* Create a new thread with a custom stack size. value = tid on success.
+ * stack_size is at least LC_THREAD_MIN_STACK_SIZE, and is rounded up to a
+ * whole number of pages; a smaller one, or one so large that it and the
+ * guard page do not fit in a size_t, fails with LC_ERR_INVAL. As with
+ * lc_thread_create, a failed create leaves *thread all zeros. */
 [[nodiscard]] lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, void *arg,
                                  size_t stack_size);
 

@@ -71,6 +71,7 @@
 #define SYS_signalfd4         289  /* 4 args */
 #define SYS_dup3              292  /* 3 args */
 #define SYS_pipe2             293  /* 2 args */
+#define SYS_prlimit64         302  /* 4 args */
 #define SYS_setns             308  /* 2 args */
 #define SYS_seccomp           317  /* 3 args */
 #define SYS_statx             332  /* 5 args */

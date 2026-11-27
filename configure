@@ -327,10 +327,24 @@ LINE
             echo "$where: there is no tests/regress/$id.c"
             exit 1
         fi
+        # tests/regress/<id>.ldflags, when there is one, holds link flags
+        # of that program's own, such as -Wl,--wrap=NAME to stand in for a
+        # library function. Only letters, digits, spaces and _=,.- may be in
+        # it, which ninja and the shell take as they are.
+        link_flags=""
+        if [ -f "tests/regress/$id.ldflags" ]; then
+            link_flags=$(cat "tests/regress/$id.ldflags")
+            case $link_flags in
+                *[!A-Za-z0-9_=,.\ -]*)
+                    echo "tests/regress/$id.ldflags: only letters, digits, spaces and _=,.- may be in it"
+                    exit 1 ;;
+            esac
+        fi
         regress_ids="$regress_ids$id "
         REGRESS_BUILDS="${REGRESS_BUILDS}build \$builddir/regress/$id.o: cc_test tests/regress/$id.c
 build \$builddir/regress/$id: link \$builddir/regress/$id.o \$builddir/liblightc.a | \$ldscript || $TEST_PLUGINS
-
+${link_flags:+  ldflags = \$ldflags $link_flags
+}
 "
     done < "$REGRESS_MANIFEST"
 fi
