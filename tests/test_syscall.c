@@ -236,12 +236,38 @@ static void test_fchmodat_symlink_nofollow(void) {
     TEST_ASSERT_EQ(lc_kernel_unlinkat(AT_FDCWD, CHMOD_TARGET, 0), 0);
 }
 
+/* lc_kernel_clock_sleep: a deadline that has passed returns at once, one
+ * 20 ms ahead returns once it has passed, a duration sleeps, and a clock
+ * that does not exist is refused. */
+static void test_clock_sleep(void) {
+    lc_timespec now;
+    TEST_REQUIRE(lc_kernel_get_clock(LC_CLOCK_MONOTONIC, &now) == 0);
+    TEST_ASSERT_EQ(lc_kernel_clock_sleep(LC_CLOCK_MONOTONIC, LC_TIMER_ABSTIME, &now, NULL), 0);
+
+    lc_timespec deadline = now;
+    deadline.nanoseconds += 20000000;
+    if (deadline.nanoseconds >= 1000000000) {
+        deadline.seconds++;
+        deadline.nanoseconds -= 1000000000;
+    }
+    TEST_ASSERT_EQ(lc_kernel_clock_sleep(LC_CLOCK_MONOTONIC, LC_TIMER_ABSTIME, &deadline, NULL), 0);
+    lc_timespec after;
+    TEST_REQUIRE(lc_kernel_get_clock(LC_CLOCK_MONOTONIC, &after) == 0);
+    TEST_ASSERT(after.seconds > deadline.seconds ||
+                (after.seconds == deadline.seconds && after.nanoseconds >= deadline.nanoseconds));
+
+    lc_timespec duration = { 0, 1000000 }, remaining = { 7, 7 };
+    TEST_ASSERT_EQ(lc_kernel_clock_sleep(LC_CLOCK_MONOTONIC, 0, &duration, &remaining), 0);
+    TEST_ASSERT_EQ(lc_kernel_clock_sleep(9999, 0, &duration, NULL), -(lc_sysret)LC_ERR_INVAL);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
 
     TEST_RUN(test_mount_tmpfs);
     TEST_RUN(test_fchmodat_symlink_nofollow);
+    TEST_RUN(test_clock_sleep);
 
     return test_main();
 }

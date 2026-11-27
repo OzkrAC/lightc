@@ -59,6 +59,7 @@
 #define SYS_futex             202  /* 6 args */
 #define SYS_getdents64        217  /* 3 args */
 #define SYS_clock_gettime     228  /* 2 args */
+#define SYS_clock_nanosleep   230  /* 4 args */
 #define SYS_exit_group        231  /* 1 arg */
 #define SYS_openat            257  /* 4 args */
 #define SYS_mkdirat           258  /* 3 args */

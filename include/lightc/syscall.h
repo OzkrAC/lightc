@@ -365,6 +365,9 @@ static inline lc_sysret lc_kernel_futex_wake(int32_t *addr, int32_t count) {
 #define LC_CLOCK_REALTIME  0
 #define LC_CLOCK_MONOTONIC 1
 
+/* lc_kernel_clock_sleep's flag: the time is a deadline on the clock */
+#define LC_TIMER_ABSTIME   1
+
 typedef struct {
     int64_t seconds;
     int64_t nanoseconds;
@@ -378,6 +381,16 @@ static inline lc_sysret lc_kernel_get_clock(int32_t clock_id, lc_timespec *ts) {
 /* Sleep for `*duration`. An interrupting signal ends it early with -EINTR. */
 static inline lc_sysret lc_kernel_sleep(const lc_timespec *duration) {
     return lc_syscall2(SYS_nanosleep, (int64_t)duration, 0);
+}
+
+/* Sleep on the clock `clock_id` until `*request`, a deadline on it when
+ * flags has LC_TIMER_ABSTIME, or else for `*request` as a duration. An
+ * interrupting signal ends it early with -EINTR; a duration's sleep then
+ * writes what was left to `*remaining`, unless it is NULL. A deadline is the
+ * same after an interruption, so sleeping again to it loses no time. */
+static inline lc_sysret lc_kernel_clock_sleep(int32_t clock_id, int32_t flags,
+                                              const lc_timespec *request, lc_timespec *remaining) {
+    return lc_syscall4(SYS_clock_nanosleep, clock_id, flags, (int64_t)request, (int64_t)remaining);
 }
 
 /* --- Signals --- */

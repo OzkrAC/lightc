@@ -217,9 +217,11 @@ T lc_time_format_time
 T lc_time_from_unix
 T lc_time_now
 T lc_time_now_monotonic
+T lc_time_now_ns
 T lc_time_now_unix
 T lc_time_sleep_microseconds
 T lc_time_sleep_milliseconds
+T lc_time_sleep_until
 T lc_time_start_timer
 T lc_time_to_unix
 T lc_tls_get

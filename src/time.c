@@ -90,8 +90,12 @@ int64_t lc_time_now_unix(void) {
 }
 
 int64_t lc_time_now_monotonic(void) {
+    return lc_time_now_ns(LC_CLOCK_MONOTONIC);
+}
+
+int64_t lc_time_now_ns(int32_t clock_id) {
     lc_timespec ts;
-    if (lc_kernel_get_clock(LC_CLOCK_MONOTONIC, &ts) < 0) {
+    if (lc_kernel_get_clock(clock_id, &ts) < 0) {
         return 0;
     }
     return ts.seconds * 1000000000LL + ts.nanoseconds;
@@ -214,26 +218,35 @@ size_t lc_time_format_iso8601(const lc_date_time *dt, char *buf, size_t buf_size
 /* Sleep                                                              */
 /* ------------------------------------------------------------------ */
 
-void lc_time_sleep_milliseconds(int64_t ms) {
-    lc_timespec ts;
-    ts.seconds     = ms / 1000;
-    ts.nanoseconds = (ms % 1000) * 1000000;
-
-    /* Retry if interrupted by a signal */
-    while (lc_kernel_sleep(&ts) == -LC_ERR_INTR) {
-        /* ts is not modified by our wrapper, but the kernel would update
-         * the remaining time in the second argument. We pass 0 for that,
-         * so just retry with the original duration. For short sleeps
-         * this is fine — worst case we sleep slightly longer. */
+/* A sleep that a signal interrupts sleeps again to the same deadline, so
+ * the interruptions cost no more than the handlers' own time. Sleeping
+ * again for the whole duration, as the sleeps did, never ended while a
+ * signal came more often than the duration was long. */
+void lc_time_sleep_until(int64_t deadline_ns) {
+    if (deadline_ns <= 0) return;
+    lc_timespec deadline;
+    deadline.seconds     = deadline_ns / 1000000000LL;
+    deadline.nanoseconds = deadline_ns % 1000000000LL;
+    while (lc_kernel_clock_sleep(LC_CLOCK_MONOTONIC, LC_TIMER_ABSTIME, &deadline, NULL) == -LC_ERR_INTR) {
+        /* interrupted: the same deadline again */
     }
 }
 
-void lc_time_sleep_microseconds(int64_t us) {
-    lc_timespec ts;
-    ts.seconds     = us / 1000000;
-    ts.nanoseconds = (us % 1000000) * 1000;
+/* now + amount * unit, or INT64_MAX when that does not fit. */
+static int64_t deadline_after(int64_t amount, int64_t unit) {
+    int64_t span, deadline;
+    if (__builtin_mul_overflow(amount, unit, &span) ||
+        __builtin_add_overflow(lc_time_now_ns(LC_CLOCK_MONOTONIC), span, &deadline))
+        return INT64_MAX;
+    return deadline;
+}
 
-    while (lc_kernel_sleep(&ts) == -LC_ERR_INTR) {
-        /* retry on EINTR */
-    }
+void lc_time_sleep_milliseconds(int64_t ms) {
+    if (ms <= 0) return;
+    lc_time_sleep_until(deadline_after(ms, 1000000));
+}
+
+void lc_time_sleep_microseconds(int64_t us) {
+    if (us <= 0) return;
+    lc_time_sleep_until(deadline_after(us, 1000));
 }

@@ -91,6 +91,7 @@ syscall accept4            288     242      4
 # time
 syscall clock_gettime      228     113      2
 syscall nanosleep          35      101      2
+syscall clock_nanosleep    230     115      4
 syscall setitimer          38      103      3    # only tests/regress uses it
 
 # processes

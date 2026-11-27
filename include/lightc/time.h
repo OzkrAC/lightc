@@ -38,6 +38,10 @@ int64_t lc_time_now_unix(void);
 /* Get a monotonic timestamp in nanoseconds (for measuring elapsed time). */
 int64_t lc_time_now_monotonic(void);
 
+/* Read the clock `clock_id`, LC_CLOCK_REALTIME or LC_CLOCK_MONOTONIC, in
+ * nanoseconds. 0 when the clock cannot be read. */
+int64_t lc_time_now_ns(int32_t clock_id);
+
 /* --- Conversion --- */
 
 /* Convert Unix epoch seconds to broken-down date/time (UTC). */
@@ -85,10 +89,18 @@ size_t lc_time_format_iso8601(const lc_date_time *dt, char *buf, size_t buf_size
 
 /* --- Sleep --- */
 
-/* Sleep for the given number of milliseconds. */
+/* Sleep until CLOCK_MONOTONIC reaches `deadline_ns`, a time of
+ * lc_time_now_ns(LC_CLOCK_MONOTONIC). A signal handler that interrupts the
+ * sleep only delays its end by its own run, as the deadline stays where it
+ * was. A deadline that has passed returns at once. */
+void lc_time_sleep_until(int64_t deadline_ns);
+
+/* Sleep for the given number of milliseconds, until a deadline that far
+ * ahead, as lc_time_sleep_until; 0 or less returns at once. */
 void lc_time_sleep_milliseconds(int64_t ms);
 
-/* Sleep for the given number of microseconds. */
+/* Sleep for the given number of microseconds, until a deadline that far
+ * ahead, as lc_time_sleep_until; 0 or less returns at once. */
 void lc_time_sleep_microseconds(int64_t us);
 
 #endif /* LIGHTC_TIME_H */

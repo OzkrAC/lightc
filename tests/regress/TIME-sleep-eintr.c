@@ -3,14 +3,17 @@
  * lc_time_sleep_microseconds must return once their time has passed,
  * however often a signal handler interrupts them.
  *
- * The defect is not fixed yet. Each time a handled signal interrupts the
- * nanosleep, they start the whole sleep again, so a periodic signal that
- * comes more often than the sleep is long keeps them from ever returning.
+ * Each time a handled signal interrupted the nanosleep, they started the
+ * whole sleep again, so a periodic signal that came more often than the
+ * sleep was long kept them from ever returning. They now sleep with
+ * clock_nanosleep to an absolute CLOCK_MONOTONIC deadline, the same after
+ * every interruption.
  *
  * Each test sleeps 50 ms while setitimer sends SIGALRM every 20 ms. The
  * handler stops the timer at the 100th signal, 2 s in, so that with the
  * defect the sleep returns 50 ms after that instead of never. The sleep
- * must return while the signals still come, and not before 50 ms.
+ * must return while the signals still come, not before 50 ms, and before
+ * 80 ms.
  */
 
 #include "test.h"
@@ -66,6 +69,7 @@ static void check_sleep(void (*sleep)(int64_t), int64_t amount) {
     _test_print_text(" signals\n");
     TEST_ASSERT(seen < MAX_SIGNALS);    /* returned while the signals still came */
     TEST_ASSERT(slept >= SLEEP_MS);     /* and slept its whole time */
+    TEST_ASSERT(slept < 80);            /* and no more than the deadline's lateness */
 }
 
 static void test_sleep_milliseconds_with_periodic_signal(void) {

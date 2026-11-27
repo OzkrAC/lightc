@@ -81,4 +81,4 @@ LOG-utf8-truncation     gating
 NET-send-sigpipe        gating
 NET-no-cloexec          gating
 NET-uring-sigpipe       gating
-TIME-sleep-eintr        pending
+TIME-sleep-eintr        gating

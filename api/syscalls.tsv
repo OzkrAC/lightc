@@ -130,6 +130,7 @@ lc_heap_tls_slots	gettid	x86_64 aarch64
 lc_heap_tls_slots	mmap	x86_64 aarch64
 lc_kernel_advise_memory	madvise	x86_64 aarch64
 lc_kernel_chdir	chdir	x86_64 aarch64
+lc_kernel_clock_sleep	clock_nanosleep	x86_64 aarch64
 lc_kernel_clone	clone	x86_64 aarch64
 lc_kernel_clone	exit_group	x86_64 aarch64
 lc_kernel_close_file	close	x86_64 aarch64
@@ -335,9 +336,13 @@ lc_time_elapsed_milliseconds	clock_gettime	x86_64 aarch64
 lc_time_elapsed_nanoseconds	clock_gettime	x86_64 aarch64
 lc_time_now	clock_gettime	x86_64 aarch64
 lc_time_now_monotonic	clock_gettime	x86_64 aarch64
+lc_time_now_ns	clock_gettime	x86_64 aarch64
 lc_time_now_unix	clock_gettime	x86_64 aarch64
-lc_time_sleep_microseconds	nanosleep	x86_64 aarch64
-lc_time_sleep_milliseconds	nanosleep	x86_64 aarch64
+lc_time_sleep_microseconds	clock_gettime	x86_64 aarch64
+lc_time_sleep_microseconds	clock_nanosleep	x86_64 aarch64
+lc_time_sleep_milliseconds	clock_gettime	x86_64 aarch64
+lc_time_sleep_milliseconds	clock_nanosleep	x86_64 aarch64
+lc_time_sleep_until	clock_nanosleep	x86_64 aarch64
 lc_time_start_timer	clock_gettime	x86_64 aarch64
 lc_tls_get	arch_prctl	x86_64
 lc_tls_get	gettid	x86_64 aarch64
@@ -391,6 +396,8 @@ lio_loop_run	mmap	x86_64 aarch64
 lio_loop_run	mprotect	x86_64 aarch64
 lio_loop_run	munmap	x86_64 aarch64
 lio_loop_run_threaded	arch_prctl	x86_64
+lio_loop_run_threaded	clock_gettime	x86_64 aarch64
+lio_loop_run_threaded	clock_nanosleep	x86_64 aarch64
 lio_loop_run_threaded	clone	x86_64 aarch64
 lio_loop_run_threaded	close	x86_64 aarch64
 lio_loop_run_threaded	connect	x86_64 aarch64
@@ -404,7 +411,6 @@ lio_loop_run_threaded	madvise	x86_64 aarch64
 lio_loop_run_threaded	mmap	x86_64 aarch64
 lio_loop_run_threaded	mprotect	x86_64 aarch64
 lio_loop_run_threaded	munmap	x86_64 aarch64
-lio_loop_run_threaded	nanosleep	x86_64 aarch64
 lio_loop_run_threaded	socket	x86_64 aarch64
 lio_loop_run_threaded	write	x86_64 aarch64
 lio_read	io_uring_enter	x86_64 aarch64

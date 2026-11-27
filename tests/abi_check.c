@@ -124,7 +124,7 @@
     /* <lightc/syscall.h> */                                                \
     X(LC_SIG_BLOCK, SIG_BLOCK) X(LC_SIG_UNBLOCK, SIG_UNBLOCK)               \
     X(LC_SIG_SETMASK, SIG_SETMASK) X(LC_CLOCK_REALTIME, CLOCK_REALTIME)     \
-    X(LC_CLOCK_MONOTONIC, CLOCK_MONOTONIC)                                  \
+    X(LC_CLOCK_MONOTONIC, CLOCK_MONOTONIC) X(LC_TIMER_ABSTIME, TIMER_ABSTIME) \
     /* <lightc/signal.h> */                                                 \
     X(LC_SIGINT, SIGINT) X(LC_SIGQUIT, SIGQUIT) X(LC_SIGABRT, SIGABRT)      \
     X(LC_SIGBUS, SIGBUS) X(LC_SIGSEGV, SIGSEGV) X(LC_SIGPIPE, SIGPIPE)      \
@@ -465,13 +465,14 @@ UAPI_FUNCTIONS(CHECK_FUNCTION)
     X(gettid) X(futex) X(exit_group) X(getdents64) X(socket) X(connect)     \
     X(sendto) X(recvfrom) X(shutdown) X(bind) X(listen) X(getsockname)      \
     X(setsockopt) X(getsockopt) X(accept4) X(clock_gettime) X(nanosleep)    \
-    X(setitimer) X(execve) X(wait4) X(pipe2) X(dup3) X(fcntl) X(setsid)     \
-    X(prlimit64) X(rt_sigaction) X(rt_sigprocmask) X(kill) X(signalfd4)     \
-    X(mount) X(umount2) X(pivot_root) X(chdir) X(fstat) X(statx) X(mknodat) \
-    X(mkdirat) X(symlinkat) X(unlinkat) X(readlinkat) X(fchownat)           \
-    X(fchmodat) X(fchmodat2) X(faccessat2) X(unshare) X(setns)              \
-    X(sethostname) X(prctl) X(seccomp) X(getuid) X(setuid) X(setgid)        \
-    X(setgroups) X(io_uring_setup) X(io_uring_enter) X(io_uring_register)
+    X(clock_nanosleep) X(setitimer) X(execve) X(wait4) X(pipe2) X(dup3)     \
+    X(fcntl) X(setsid) X(prlimit64) X(rt_sigaction) X(rt_sigprocmask)       \
+    X(kill) X(signalfd4) X(mount) X(umount2) X(pivot_root) X(chdir)         \
+    X(fstat) X(statx) X(mknodat) X(mkdirat) X(symlinkat) X(unlinkat)        \
+    X(readlinkat) X(fchownat) X(fchmodat) X(fchmodat2) X(faccessat2)        \
+    X(unshare) X(setns) X(sethostname) X(prctl) X(seccomp) X(getuid)        \
+    X(setuid) X(setgid) X(setgroups) X(io_uring_setup) X(io_uring_enter)    \
+    X(io_uring_register)
 #define SYSCALLS_X86_64_ONLY(X)                                             \
     X(open) X(arch_prctl)
 #define SYSCALLS_AARCH64_ONLY(X)

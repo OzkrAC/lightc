@@ -456,6 +456,7 @@ static void case_lc_kernel_futex_wait(void) { int32_t w = 0; enter(); (void)lc_k
 static void case_lc_kernel_futex_wake(void) { int32_t w = 0; enter(); (void)lc_kernel_futex_wake(&w, 1); }
 static void case_lc_kernel_get_clock(void) { lc_timespec ts; enter(); (void)lc_kernel_get_clock(LC_CLOCK_MONOTONIC, &ts); }
 static void case_lc_kernel_sleep(void) { lc_timespec ts = { 0, 0 }; enter(); (void)lc_kernel_sleep(&ts); }
+static void case_lc_kernel_clock_sleep(void) { lc_timespec ts = { 0, 0 }; enter(); (void)lc_kernel_clock_sleep(LC_CLOCK_MONOTONIC, LC_TIMER_ABSTIME, &ts, NULL); }
 static void case_lc_kernel_reset_signal(void) { enter(); (void)lc_kernel_reset_signal(LC_SIGQUIT); }
 static void case_lc_kernel_set_signal_mask(void) { uint64_t none = 0; enter(); (void)lc_kernel_set_signal_mask(LC_SIG_BLOCK, &none, NULL); }
 static void case_lc_kernel_create_signal_fd(void) { uint64_t none = 0; enter(); (void)lc_kernel_create_signal_fd(-1, &none, 0); }
@@ -596,6 +597,7 @@ static void case_lc_socket_connect6(void) { lc_socket_address6 a = lc_socket_add
 static void case_lc_time_now(void) { enter(); (void)lc_time_now(); }
 static void case_lc_time_now_unix(void) { enter(); (void)lc_time_now_unix(); }
 static void case_lc_time_now_monotonic(void) { enter(); (void)lc_time_now_monotonic(); }
+static void case_lc_time_now_ns(void) { enter(); (void)lc_time_now_ns(LC_CLOCK_REALTIME); }
 static void case_lc_time_from_unix(void) { enter(); (void)lc_time_from_unix(0); }
 static void case_lc_time_to_unix(void) { lc_date_time dt = lc_time_from_unix(0); enter(); (void)lc_time_to_unix(&dt); }
 static void case_lc_time_start_timer(void) { enter(); (void)lc_time_start_timer(); }
@@ -608,6 +610,7 @@ static void case_lc_time_format_time(void) { lc_date_time dt = lc_time_from_unix
 static void case_lc_time_format_iso8601(void) { lc_date_time dt = lc_time_from_unix(0); char b[64]; enter(); (void)lc_time_format_iso8601(&dt, b, sizeof b); }
 static void case_lc_time_sleep_milliseconds(void) { enter(); lc_time_sleep_milliseconds(1); }
 static void case_lc_time_sleep_microseconds(void) { enter(); lc_time_sleep_microseconds(1); }
+static void case_lc_time_sleep_until(void) { enter(); lc_time_sleep_until(1); }
 
 /* lightc/signal.h */
 
@@ -668,7 +671,7 @@ static const index_case cases[] = {
     CASE(lc_kernel_getsockname), CASE(lc_kernel_map_memory), CASE(lc_kernel_unmap_memory),
     CASE(lc_kernel_protect_memory), CASE(lc_kernel_set_heap_end), CASE(lc_kernel_advise_memory),
     CASE(lc_kernel_get_thread_id), CASE(lc_kernel_futex_wait), CASE(lc_kernel_futex_wake),
-    CASE(lc_kernel_get_clock), CASE(lc_kernel_sleep), CASE(lc_kernel_reset_signal),
+    CASE(lc_kernel_get_clock), CASE(lc_kernel_sleep), CASE(lc_kernel_clock_sleep), CASE(lc_kernel_reset_signal),
     CASE(lc_kernel_set_signal_mask), CASE(lc_kernel_create_signal_fd), CASE(lc_kernel_send_signal),
     CASE(lc_kernel_mount), CASE(lc_kernel_umount), CASE(lc_kernel_pivot_root), CASE(lc_kernel_chdir),
     CASE(lc_kernel_mkdirat), CASE(lc_kernel_mknodat), CASE(lc_kernel_symlinkat), CASE(lc_kernel_unlinkat),
@@ -699,7 +702,8 @@ static const index_case cases[] = {
     CASE(lc_time_to_unix), CASE(lc_time_start_timer), CASE(lc_time_elapsed_nanoseconds),
     CASE(lc_time_elapsed_microseconds), CASE(lc_time_elapsed_milliseconds), CASE(lc_time_format),
     CASE(lc_time_format_date), CASE(lc_time_format_time), CASE(lc_time_format_iso8601),
-    CASE(lc_time_sleep_milliseconds), CASE(lc_time_sleep_microseconds),
+    CASE(lc_time_sleep_milliseconds), CASE(lc_time_sleep_microseconds), CASE(lc_time_now_ns),
+    CASE(lc_time_sleep_until),
 
     CASE(lc_signal_handle), CASE(lc_signal_block), CASE(lc_signal_unblock), CASE(lc_on_crash),
     CASE(lc_on_shutdown), CASE(lc_signal_ignore), CASE(lc_signal_reset),

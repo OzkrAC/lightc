@@ -3,6 +3,7 @@
  */
 
 #include "test.h"
+#include <lightc/syscall.h>   /* LC_CLOCK_* */
 #include <lightc/time.h>
 
 /* ===== lc_time_now_monotonic ===== */
@@ -29,6 +30,30 @@ static void test_sleep_milliseconds(void) {
     TEST_ASSERT(elapsed_us >= 4000);
     /* Should not have slept for more than 500ms (generous upper bound) */
     TEST_ASSERT(elapsed_us < 500000);
+}
+
+/* ===== lc_time_now_ns and lc_time_sleep_until ===== */
+
+static void test_now_ns(void) {
+    int64_t monotonic = lc_time_now_ns(LC_CLOCK_MONOTONIC);
+    int64_t realtime = lc_time_now_ns(LC_CLOCK_REALTIME);
+    int64_t unix_now = lc_time_now_unix();
+    TEST_ASSERT(monotonic > 0);
+    TEST_ASSERT(realtime / 1000000000 >= unix_now - 2 && realtime / 1000000000 <= unix_now + 2);
+    TEST_ASSERT_EQ(lc_time_now_ns(9999), (int64_t)0);   /* no such clock */
+}
+
+static void test_sleep_until(void) {
+    int64_t start = lc_time_now_ns(LC_CLOCK_MONOTONIC);
+    lc_time_sleep_until(start - 1000000);   /* passed: returns at once */
+    lc_time_sleep_until(0);
+    TEST_ASSERT(lc_time_now_ns(LC_CLOCK_MONOTONIC) - start < 50000000);
+
+    int64_t deadline = lc_time_now_ns(LC_CLOCK_MONOTONIC) + 10000000;   /* 10 ms */
+    lc_time_sleep_until(deadline);
+    int64_t after = lc_time_now_ns(LC_CLOCK_MONOTONIC);
+    TEST_ASSERT(after >= deadline);
+    TEST_ASSERT(after - deadline < 500000000);
 }
 
 /* ===== lc_time_now (wall clock) ===== */
@@ -93,6 +118,8 @@ int main(int argc, char **argv, char **envp) {
 
     /* Sleep */
     TEST_RUN(test_sleep_milliseconds);
+    TEST_RUN(test_now_ns);
+    TEST_RUN(test_sleep_until);
 
     /* Wall clock */
     TEST_RUN(test_time_now_reasonable);
