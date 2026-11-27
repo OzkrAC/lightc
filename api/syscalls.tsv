@@ -55,13 +55,11 @@ lc_condvar_broadcast	futex	x86_64 aarch64
 lc_condvar_signal	futex	x86_64 aarch64
 lc_condvar_wait	futex	x86_64 aarch64
 lc_coroutine_create	arch_prctl	x86_64
-lc_coroutine_create	futex	x86_64 aarch64
 lc_coroutine_create	gettid	x86_64 aarch64
 lc_coroutine_create	mmap	x86_64 aarch64
 lc_coroutine_create	mprotect	x86_64 aarch64
 lc_coroutine_create	munmap	x86_64 aarch64
 lc_coroutine_yield	arch_prctl	x86_64
-lc_coroutine_yield	futex	x86_64 aarch64
 lc_coroutine_yield	gettid	x86_64 aarch64
 lc_coroutine_yield	mmap	x86_64 aarch64
 lc_directory_close	close	x86_64 aarch64
@@ -275,14 +273,12 @@ lc_scheduler_create_with_capacity	mmap	x86_64 aarch64
 lc_scheduler_create_with_capacity	munmap	x86_64 aarch64
 lc_scheduler_destroy	arch_prctl	x86_64
 lc_scheduler_destroy	exit_group	x86_64 aarch64
-lc_scheduler_destroy	futex	x86_64 aarch64
 lc_scheduler_destroy	gettid	x86_64 aarch64
 lc_scheduler_destroy	madvise	x86_64 aarch64
 lc_scheduler_destroy	mmap	x86_64 aarch64
 lc_scheduler_destroy	munmap	x86_64 aarch64
 lc_scheduler_destroy	write	x86_64 aarch64
 lc_scheduler_run	arch_prctl	x86_64
-lc_scheduler_run	futex	x86_64 aarch64
 lc_scheduler_run	gettid	x86_64 aarch64
 lc_scheduler_run	mmap	x86_64 aarch64
 lc_signal_block	rt_sigprocmask	x86_64 aarch64
@@ -383,10 +379,10 @@ lio_loop_destroy	munmap	x86_64 aarch64
 lio_loop_destroy	write	x86_64 aarch64
 lio_loop_run	arch_prctl	x86_64
 lio_loop_run	close	x86_64 aarch64
-lio_loop_run	futex	x86_64 aarch64
 lio_loop_run	gettid	x86_64 aarch64
 lio_loop_run	io_uring_enter	x86_64 aarch64
 lio_loop_run	mmap	x86_64 aarch64
+lio_loop_run	mprotect	x86_64 aarch64
 lio_loop_run	munmap	x86_64 aarch64
 lio_loop_run_threaded	arch_prctl	x86_64
 lio_loop_run_threaded	clone	x86_64 aarch64

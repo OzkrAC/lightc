@@ -5,6 +5,7 @@
 #include <lightc/thread.h>
 #include <stdatomic.h>
 #include "kernel.h"          /* ARCH_SET_FS */
+#include "internal.h"        /* LC_SLOT_END */
 
 /*
  * Block header — sits right before the pointer we return.
@@ -150,7 +151,7 @@ typedef struct lc_heap_local {
     int32_t tid;
     _Atomic(struct lc_heap_local *) next;  /* hash chain — walked locklessly */
     lc_heap_page *pages[BUCKET_COUNT]; /* per-bucket page list */
-    void *tls_slots[64];             /* per-thread TLS data (used by lc_tls_get/set) */
+    void *tls_slots[LC_SLOT_END];    /* lc_tls_get/set's slots, then the library's (internal.h) */
 } lc_heap_local;
 
 /* Hash table for thread-local heaps */

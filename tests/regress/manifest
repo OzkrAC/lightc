@@ -68,4 +68,6 @@ LIB-p-align             gating
 LIB-symvalue            gating
 LIB-errno               gating
 xm-plugin-tls-key-collision gating
+LIO-coro-stack-align    gating
+THR-tls-key-fail        gating
 TIME-sleep-eintr        pending

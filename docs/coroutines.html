@@ -44,7 +44,7 @@ On aarch64 the low 64 bits of `d8`–`d15` are callee-saved by the ABI, so the s
 Each coroutine gets its own `mmap`'d stack of `LC_COROUTINE_STACK_SIZE` (64 KiB) with a one-page `PROT_NONE` guard at the low end, sized from the kernel's real page size. `lc_scheduler_destroy` unmaps every stack.
 
 :::tip
-Coroutines compose with threads: each thread can run its own scheduler (the scheduler is anchored in thread-local storage), so a pool of event loops is one scheduler per thread — how [`lio_loop_run_threaded`](async.html#lio_loop_run) scales a server across cores.
+Coroutines compose with threads: each thread can run its own scheduler (the current one is kept in a per-thread slot reserved for the library, so it takes none of the program's TLS keys), so a pool of event loops is one scheduler per thread — how [`lio_loop_run_threaded`](async.html#lio_loop_run) scales a server across cores.
 :::
 
 ## Macros and types {#types}

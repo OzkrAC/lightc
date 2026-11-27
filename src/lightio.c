@@ -10,6 +10,7 @@
 #include <lightc/time.h>
 #include <stdatomic.h>
 #include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, lio_kernel_timespec */
+#include "internal.h"        /* LC_SLOT_LIO_LOOP, guarded_stack_map */
 
 /* ========================================================================
  * Constants
@@ -43,6 +44,7 @@ typedef struct {
     int32_t              state;
     int32_t              fd;
     void                *stack_base;
+    size_t               stack_size;     /* of the mapping, guard included */
     int32_t              pending_result;
     lc_coroutine_context context;
     lio_handler          handler;
@@ -79,24 +81,19 @@ extern void lc_coroutine_switch(lc_coroutine_context *save,
                                 lc_coroutine_context *restore);
 
 /* ========================================================================
- * Per-thread: the trampoline needs to know which loop is current
+ * Per-thread: the trampoline needs to know which loop is current. It is in
+ * the library's slot of the per-thread block, not in a TLS key, which a
+ * program that took every key would have shared.
  * ======================================================================== */
 
-static lc_tls_key loop_tls_key;
-static lc_once loop_tls_init = LC_ONCE_INIT;
-
-static void init_loop_tls(void) {
-    lc_tls_key_create(&loop_tls_key);
-}
-
 static lio_loop *get_current_loop(void) {
-    lc_call_once(&loop_tls_init, init_loop_tls);
-    return (lio_loop *)lc_tls_get(loop_tls_key);
+    void **slots = lc_heap_tls_slots();
+    return slots ? (lio_loop *)slots[LC_SLOT_LIO_LOOP] : NULL;
 }
 
 static void set_current_loop(lio_loop *loop) {
-    lc_call_once(&loop_tls_init, init_loop_tls);
-    lc_tls_set(loop_tls_key, loop);
+    void **slots = lc_heap_tls_slots();
+    if (slots) slots[LC_SLOT_LIO_LOOP] = loop;
 }
 
 /* ========================================================================
@@ -142,17 +139,15 @@ static void connection_trampoline(void) {
 static void init_coroutine_for_slot(lio_loop *loop, int32_t slot) {
     lio_slot *s = &loop->slots[slot];
 
-    /* Allocate stack via mmap */
-    s->stack_base = lc_kernel_map_memory(NULL, LIO_STACK_SIZE,
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (s->stack_base == MAP_FAILED) {
+    /* A stack with a guard page below it, as coroutine.c's: an overflow
+     * faults instead of running into the mapping below. */
+    s->stack_base = guarded_stack_map(LIO_STACK_SIZE, &s->stack_size);
+    if (s->stack_base == NULL) {
         /* Roll the slot fully back to FREE. Marking it SLOT_FINISHED would
          * strand it: the event loop only cleans up FINISHED slots on the path
          * out of a RUNNING coroutine, which this slot never entered — so the
          * client fd, the slot, and its active_count would all leak, and the
          * phantom count would keep the loop from ever going idle. */
-        s->stack_base = NULL;
         if (s->fd >= 0) {
             lc_kernel_close_file(s->fd);
             s->fd = -1;
@@ -162,43 +157,8 @@ static void init_coroutine_for_slot(lio_loop *loop, int32_t slot) {
         return;
     }
 
-    /* Zero the context */
-    lc_bytes_fill(&s->context, 0, sizeof(s->context));
-
-    /*
-     * Set up the initial context so that lc_coroutine_switch "returns"
-     * into connection_trampoline.
-     */
-#if defined(__x86_64__)
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)s->stack_base + LIO_STACK_SIZE);
-
-    /* Reserve 16 bytes and put the trampoline "return address" in the low
-     * slot, as coroutine.c does: context.rsp stays 16-byte aligned, so the
-     * `ret` of lc_coroutine_switch enters the trampoline with rsp ≡ 8 mod 16,
-     * as the System V ABI requires. */
-    stack_top -= 2;
-    *stack_top = (uint64_t)connection_trampoline;
-
-    s->context.rsp = (uint64_t)stack_top;
-    s->context.rbp = 0;
-    s->context.rbx = 0;
-    s->context.r12 = 0;
-    s->context.r13 = 0;
-    s->context.r14 = 0;
-    s->context.r15 = 0;
-#elif defined(__aarch64__)
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)s->stack_base + LIO_STACK_SIZE);
-    stack_top = (uint64_t *)((uintptr_t)stack_top & ~15ULL);
-
-    s->context.sp  = (uint64_t)stack_top;
-    s->context.x30 = (uint64_t)connection_trampoline;  /* lr */
-    s->context.x29 = 0;                                /* fp */
-    s->context.x19 = 0; s->context.x20 = 0;
-    s->context.x21 = 0; s->context.x22 = 0;
-    s->context.x23 = 0; s->context.x24 = 0;
-    s->context.x25 = 0; s->context.x26 = 0;
-    s->context.x27 = 0; s->context.x28 = 0;
-#endif
+    /* Enter connection_trampoline on it, aligned as after a call. */
+    coroutine_context_init(&s->context, s->stack_base, s->stack_size, connection_trampoline);
 }
 
 /* ========================================================================
@@ -246,7 +206,7 @@ void lio_loop_destroy(lio_loop *loop) {
     /* Free all active slot stacks */
     for (int32_t i = 0; i < LIO_MAX_SLOTS; i++) {
         if (loop->slots[i].state != SLOT_FREE && loop->slots[i].stack_base) {
-            lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+            lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
         }
     }
 
@@ -290,7 +250,7 @@ void lio_loop_run(lio_loop *loop) {
                         loop->slots[i].fd = -1;
                     }
                     if (loop->slots[i].stack_base) {
-                        lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+                        lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
                         loop->slots[i].stack_base = NULL;
                     }
                     loop->slots[i].state = SLOT_FREE;
@@ -586,7 +546,7 @@ static int32_t lio_worker_thread(void *arg) {
                         loop->slots[i].fd = -1;
                     }
                     if (loop->slots[i].stack_base) {
-                        lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+                        lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
                         loop->slots[i].stack_base = NULL;
                     }
                     loop->slots[i].state = SLOT_FREE;

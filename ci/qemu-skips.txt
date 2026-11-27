@@ -12,7 +12,7 @@
 # line each. Adding a test to either suite adds one here. The job's
 # LIGHTC_TEST_ALLOW_SKIP names both, so tests/run.sh lets them skip every test.
 test_async      12
-test_lightio    3
+test_lightio    5
 
 # The tmpfs mount case: unshare(CLONE_NEWUSER) fails in a threaded process,
 # and qemu-user runs threads of its own. The fchmodat case's check of the
@@ -24,9 +24,11 @@ test_syscall    2
 # covered function has a case, needs no filter and runs.
 test_index      7
 
-# The regress programs of the async ring's defects need io_uring, and
-# async-1 seccomp too, so under qemu-user each of their tests skips. The
-# job's LIGHTC_TEST_ALLOW_SKIP names them, so tests/run.sh lets them.
+# The regress programs of the async ring's and lightio's defects need
+# io_uring, and async-1 seccomp too, so under qemu-user each of their tests
+# skips. The job's LIGHTC_TEST_ALLOW_SKIP names them, so tests/run.sh lets
+# them.
 regress/async-1                  2
 regress/async-2                  2
 regress/xm-wait-swallows-errors  1
+regress/LIO-coro-stack-align     1
