@@ -36,11 +36,13 @@
 #define SYS_listen            50   /* 2 args */
 #define SYS_getsockname       51   /* 3 args */
 #define SYS_setsockopt        54   /* 5 args */
+#define SYS_getsockopt        55   /* 5 args */
 #define SYS_clone             56   /* 5 args */
 #define SYS_execve            59   /* 3 args */
 #define SYS_exit              60   /* 1 arg */
 #define SYS_wait4             61   /* 4 args */
 #define SYS_kill              62   /* 2 args */
+#define SYS_fcntl             72   /* 3 args */
 #define SYS_chdir             80   /* 1 arg */
 #define SYS_getuid            102  /* 0 args */
 #define SYS_setuid            105  /* 1 arg */

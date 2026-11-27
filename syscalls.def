@@ -85,6 +85,7 @@ syscall bind               49      200      3
 syscall listen             50      201      2
 syscall getsockname        51      204      3
 syscall setsockopt         54      208      5
+syscall getsockopt         55      209      5
 syscall accept4            288     242      4
 
 # time
@@ -97,6 +98,7 @@ syscall execve             59      221      3
 syscall wait4              61      260      4
 syscall pipe2              293     59       2
 syscall dup3               292     24       3
+syscall fcntl              72      25       3    # only tests/regress uses it
 syscall setsid             112     157      0
 syscall prlimit64          302     261      4    # only tests/regress uses it
 

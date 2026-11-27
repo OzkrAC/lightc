@@ -379,7 +379,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors LIO-coro-stack-align lio-3 LOG-ts-uninit" ninja regress 2>&1 | tee build/regress.log
+          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors LIO-coro-stack-align lio-3 LOG-ts-uninit NET-uring-sigpipe" ninja regress 2>&1 | tee build/regress.log
           awk '/^--- build\/regress\/[A-Za-z0-9-]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
                /^[ \t]*SKIP:/ { skips[prog]++ }
                END { for (p in skips) print p, skips[p] }' build/regress.log | sort > build/regress-skips.actual

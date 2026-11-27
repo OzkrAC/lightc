@@ -11,6 +11,7 @@
  */
 
 #define SYS_dup3              24   /* 3 args */
+#define SYS_fcntl             25   /* 3 args */
 #define SYS_ioctl             29   /* 3 args */
 #define SYS_mknodat           33   /* 4 args */
 #define SYS_mkdirat           34   /* 3 args */
@@ -60,6 +61,7 @@
 #define SYS_sendto            206  /* 6 args */
 #define SYS_recvfrom          207  /* 6 args */
 #define SYS_setsockopt        208  /* 5 args */
+#define SYS_getsockopt        209  /* 5 args */
 #define SYS_shutdown          210  /* 2 args */
 #define SYS_brk               214  /* 1 arg */
 #define SYS_munmap            215  /* 2 args */

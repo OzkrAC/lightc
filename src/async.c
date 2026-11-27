@@ -2,7 +2,7 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/heap.h>
-#include "kernel.h"          /* io_uring_sqe, IORING_*, MAP_POPULATE */
+#include "kernel.h"          /* io_uring_sqe, IORING_*, MAP_POPULATE, MSG_NOSIGNAL */
 
 /* ========================================================================
  * Ring structure
@@ -329,6 +329,20 @@ static lc_result submit(lc_async_ring *ring) {
         submitted += (uint32_t)ret;
     }
     return (lc_result){ .value = submitted, .error = 0 };
+}
+
+lc_result lc_async_submit_send(lc_async_ring *ring, int32_t fd,
+                               const void *buf, uint32_t count,
+                               int32_t flags, uint64_t tag) {
+    return lc_async_submit_raw(ring, IORING_OP_SEND, fd, (uint64_t)(uintptr_t)buf, count, 0,
+                               (uint32_t)flags | MSG_NOSIGNAL, tag);
+}
+
+lc_result lc_async_submit_receive(lc_async_ring *ring, int32_t fd,
+                                  void *buf, uint32_t count,
+                                  int32_t flags, uint64_t tag) {
+    return lc_async_submit_raw(ring, IORING_OP_RECV, fd, (uint64_t)(uintptr_t)buf, count, 0,
+                               (uint32_t)flags, tag);
 }
 
 uint32_t lc_async_flush(lc_async_ring *ring) {

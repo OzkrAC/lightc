@@ -288,6 +288,7 @@ lc_signal_reset	rt_sigaction	x86_64 aarch64
 lc_signal_unblock	rt_sigprocmask	x86_64 aarch64
 lc_socket_accept	accept4	x86_64 aarch64
 lc_socket_accept6	accept4	x86_64 aarch64
+lc_socket_accept_flags	accept4	x86_64 aarch64
 lc_socket_bind	bind	x86_64 aarch64
 lc_socket_bind6	bind	x86_64 aarch64
 lc_socket_close	close	x86_64 aarch64
@@ -297,6 +298,7 @@ lc_socket_connect_to	close	x86_64 aarch64
 lc_socket_connect_to	connect	x86_64 aarch64
 lc_socket_connect_to	socket	x86_64 aarch64
 lc_socket_create	socket	x86_64 aarch64
+lc_socket_get_option	getsockopt	x86_64 aarch64
 lc_socket_listen	listen	x86_64 aarch64
 lc_socket_listen6	listen	x86_64 aarch64
 lc_socket_listen_on	bind	x86_64 aarch64
@@ -304,10 +306,14 @@ lc_socket_listen_on	close	x86_64 aarch64
 lc_socket_listen_on	listen	x86_64 aarch64
 lc_socket_listen_on	setsockopt	x86_64 aarch64
 lc_socket_listen_on	socket	x86_64 aarch64
+lc_socket_open	socket	x86_64 aarch64
 lc_socket_receive	recvfrom	x86_64 aarch64
 lc_socket_receive_from	recvfrom	x86_64 aarch64
+lc_socket_receive_from_sockaddr	recvfrom	x86_64 aarch64
 lc_socket_send	sendto	x86_64 aarch64
 lc_socket_send_to	sendto	x86_64 aarch64
+lc_socket_send_to_sockaddr	sendto	x86_64 aarch64
+lc_socket_set_option	setsockopt	x86_64 aarch64
 lc_socket_set_reuse_address	setsockopt	x86_64 aarch64
 lc_socket_shutdown	shutdown	x86_64 aarch64
 lc_socket_tcp6	socket	x86_64 aarch64

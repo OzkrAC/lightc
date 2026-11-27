@@ -93,7 +93,8 @@
     X(IORING_OFF_SQ_RING) X(IORING_OFF_CQ_RING) X(IORING_OFF_SQES)          \
     X(IORING_OP_TIMEOUT) X(IORING_OP_ACCEPT) X(IORING_OP_READ)              \
     X(IORING_OP_WRITE) X(IORING_ENTER_GETEVENTS) X(IORING_FEAT_SINGLE_MMAP) \
-    X(IORING_FEAT_NODROP) X(IORING_SQ_CQ_OVERFLOW)                          \
+    X(IORING_FEAT_NODROP) X(IORING_SQ_CQ_OVERFLOW) X(IORING_OP_SEND)        \
+    X(IORING_OP_RECV)                                                       \
     X(MAP_POPULATE) X(CLONE_VM) X(CLONE_FS) X(CLONE_FILES) X(CLONE_SIGHAND) \
     X(CLONE_THREAD) X(CLONE_SYSVSEM) X(CLONE_PARENT_SETTID)                 \
     X(CLONE_CHILD_CLEARTID) X(CLONE_SETTLS) X(SA_RESTORER) X(ELFMAG0)       \
@@ -117,7 +118,7 @@
  * file's type as the kernel's S_DT(mode), bits 12 to 15 of its mode
  * (include/linux/fs_types.h), so each LC_DT_* is an S_IF* shifted right
  * by 12. The kernel's include/linux/net.h, which is not UAPI, defines
- * SOCK_CLOEXEC as O_CLOEXEC.
+ * SOCK_CLOEXEC as O_CLOEXEC and SOCK_NONBLOCK as O_NONBLOCK.
  */
 #define UAPI_RENAMED(X)                                                     \
     /* <lightc/syscall.h> */                                                \
@@ -132,7 +133,8 @@
     X(LC_IPPROTO_TCP, IPPROTO_TCP) X(LC_IPPROTO_UDP, IPPROTO_UDP)           \
     X(LC_SOL_SOCKET, SOL_SOCKET) X(LC_SO_REUSEADDR, SO_REUSEADDR)           \
     X(LC_SO_REUSEPORT, SO_REUSEPORT) X(LC_INADDR_ANY, INADDR_ANY)           \
-    X(LC_INADDR_LOOPBACK, INADDR_LOOPBACK)                                  \
+    X(LC_INADDR_LOOPBACK, INADDR_LOOPBACK) X(LC_SO_ERROR, SO_ERROR)         \
+    X(LC_SOCK_NONBLOCK, O_NONBLOCK)                                         \
     /* <lightc/io.h> */                                                     \
     X(LC_DT_DIR, S_IFDIR >> 12) X(LC_DT_REG, S_IFREG >> 12)                 \
     X(LC_DT_LNK, S_IFLNK >> 12)                                             \
@@ -190,6 +192,7 @@
     X(MNT_DETACH) X(F_OK) X(R_OK) X(W_OK) X(X_OK)                           \
     /* <lightc/socket.h> */                                                 \
     X(LC_AF_INET) X(LC_AF_INET6) X(LC_SOCK_STREAM) X(LC_SOCK_DGRAM)         \
+    X(LC_AF_UNIX) X(LC_AF_NETLINK) X(LC_SOCK_RAW)                           \
     X(LC_SHUT_READ) X(LC_SHUT_WRITE) X(LC_SHUT_BOTH)                        \
     /* <lightc/io.h> */                                                     \
     X(LC_DT_UNKNOWN)                                                        \
@@ -208,9 +211,12 @@
 /*
  * lightc's own sizes, limits, initializers and helpers: no kernel values.
  * LC_PAGE_SIZE is the page size lightc assumes when it is built;
- * lc_runtime_page_size gives the kernel's, from AT_PAGESZ.
+ * lc_runtime_page_size gives the kernel's, from AT_PAGESZ. LC_SOCK_INHERIT
+ * is a flag lightc takes off before the kernel sees the type or flags.
  */
 #define LIGHTC_OWN(X)                                                       \
+    /* <lightc/socket.h> */                                                 \
+    X(LC_SOCK_INHERIT)                                                      \
     /* <lightc/version.h> */                                                \
     X(LC_VERSION_MAJOR) X(LC_VERSION_MINOR) X(LC_VERSION_PATCH)             \
     X(LC_ABI_NAME_) X(LC_ABI_NAME) X(LC_ABI_STRING_) X(LC_ABI_STRING)       \
@@ -326,6 +332,8 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef IORING_OP_ACCEPT
 #undef IORING_OP_READ
 #undef IORING_OP_WRITE
+#undef IORING_OP_SEND
+#undef IORING_OP_RECV
 #undef IORING_ENTER_GETEVENTS
 #undef IORING_FEAT_SINGLE_MMAP
 #undef IORING_FEAT_NODROP
@@ -456,10 +464,10 @@ UAPI_FUNCTIONS(CHECK_FUNCTION)
     X(ioctl) X(writev) X(openat) X(getpid) X(madvise) X(clone) X(exit)      \
     X(gettid) X(futex) X(exit_group) X(getdents64) X(socket) X(connect)     \
     X(sendto) X(recvfrom) X(shutdown) X(bind) X(listen) X(getsockname)      \
-    X(setsockopt) X(accept4) X(clock_gettime) X(nanosleep) X(setitimer)     \
-    X(execve) X(wait4) X(pipe2) X(dup3) X(setsid) X(prlimit64)              \
-    X(rt_sigaction) X(rt_sigprocmask) X(kill) X(signalfd4) X(mount)         \
-    X(umount2) X(pivot_root) X(chdir) X(fstat) X(statx) X(mknodat)          \
+    X(setsockopt) X(getsockopt) X(accept4) X(clock_gettime) X(nanosleep)    \
+    X(setitimer) X(execve) X(wait4) X(pipe2) X(dup3) X(fcntl) X(setsid)     \
+    X(prlimit64) X(rt_sigaction) X(rt_sigprocmask) X(kill) X(signalfd4)     \
+    X(mount) X(umount2) X(pivot_root) X(chdir) X(fstat) X(statx) X(mknodat) \
     X(mkdirat) X(symlinkat) X(unlinkat) X(readlinkat) X(fchownat)           \
     X(fchmodat) X(fchmodat2) X(faccessat2) X(unshare) X(setns)              \
     X(sethostname) X(prctl) X(seccomp) X(getuid) X(setuid) X(setgid)        \

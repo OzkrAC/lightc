@@ -87,6 +87,8 @@ typedef struct {
 #define IORING_OP_ACCEPT   13
 #define IORING_OP_READ     22
 #define IORING_OP_WRITE    23
+#define IORING_OP_SEND     26
+#define IORING_OP_RECV     27
 
 #define IORING_ENTER_GETEVENTS  (1U << 0)
 

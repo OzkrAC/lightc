@@ -16,7 +16,9 @@
 #     minor version's, naming the tag it lacks; tests/regress/ARENA-abi-lcstats.c,
 #     which flips NDEBUG, must build and pass; a -DLC_STATS other than the
 #     library's must stop at config.h's #error; and a -fPIC plugin compiled
-#     with the installed headers must load and run.
+#     with the installed headers must load and run;
+#   - a call to a deprecated function, lc_socket_create, must warn, with the
+#     message that names its replacement, and still build.
 #
 # Usage, from a configured tree (the built programs are run, so CC must
 # target this machine; it defaults to gcc):
@@ -238,5 +240,25 @@ status=0
 "$work/host" "$work/plugin.so" || status=$?
 [ "$status" -eq 0 ] || fail "the plugin did not load and run: status $status"
 echo "ok: a -fPIC plugin built with the installed headers loads"
+
+# --- A deprecated function warns, and still builds ---
+
+cat > "$work/deprecated.c" << 'EOF'
+#include <lightc/socket.h>
+int main(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
+    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    if (r.error == 0) lc_socket_close((int32_t)r.value);
+    return 0;
+}
+EOF
+$CC $cflags "$work/deprecated.c" $libs -o "$work/deprecated" 2> "$work/deprecated.log" ||
+    { cat "$work/deprecated.log"; fail "a call to lc_socket_create did not build"; }
+grep -q "lc_socket_create.*deprecated.*lc_socket_open" "$work/deprecated.log" || {
+    cat "$work/deprecated.log"
+    fail "a call to lc_socket_create gave no deprecation warning naming lc_socket_open"
+}
+"$work/deprecated" || fail "the program that calls lc_socket_create did not run"
+echo "ok: a call to lc_socket_create warns that it is deprecated, and builds"
 
 echo "PASS: pkg-config consumer"

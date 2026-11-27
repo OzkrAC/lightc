@@ -9,7 +9,7 @@
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
-#include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, lio_kernel_timespec */
+#include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, SOCK_CLOEXEC, lio_kernel_timespec */
 #include "internal.h"        /* LC_SLOT_LIO_LOOP, guarded_stack_map */
 
 /* ========================================================================
@@ -99,6 +99,13 @@ static void set_current_loop(lio_loop *loop) {
 /* ========================================================================
  * Internal helpers
  * ======================================================================== */
+
+/* Queue an accept on the loop's server socket. Its op flags are accept4's:
+ * the accepted socket is close-on-exec, as every socket lightc makes. */
+static lc_result submit_accept(lio_loop *loop) {
+    return lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT, loop->server_fd,
+                               0, 0, 0, SOCK_CLOEXEC, LIO_TAG_ACCEPT);
+}
 
 static int32_t alloc_slot(lio_loop *loop, int32_t fd) {
     for (int32_t i = 0; i < LIO_MAX_SLOTS; i++) {
@@ -299,9 +306,7 @@ void lio_loop_run(lio_loop *loop) {
                 }
                 /* Re-submit accept for next connection */
                 if (loop->running) {
-                    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                                              loop->server_fd, 0, 0, 0, 0,
-                                              LIO_TAG_ACCEPT);
+                    (void)submit_accept(loop);
                 }
             } else {
                 /* I/O completion — resume the waiting coroutine */
@@ -329,7 +334,7 @@ void lio_loop_run(lio_loop *loop) {
 
 lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
     /* Create server socket */
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return r;
     int32_t fd = (int32_t)r.value;
 
@@ -356,8 +361,7 @@ lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
     loop->accept_handler = handler;
 
     /* Submit initial accept via io_uring */
-    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT, fd,
-                              0, 0, 0, 0, LIO_TAG_ACCEPT);
+    (void)submit_accept(loop);
 
     return lc_ok(0);
 }
@@ -375,21 +379,24 @@ lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
  */
 static bool lio_try_submit_read(lio_loop *loop, int32_t fd, void *buf,
                                 uint32_t count, uint32_t slot, int32_t *err) {
-    lc_result r = lc_async_submit_read(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+    lc_result r = lc_async_submit_receive(loop->ring, fd, buf, count, 0, (uint64_t)slot);
     if (lc_is_err(r)) {
         lc_async_flush(loop->ring);
-        r = lc_async_submit_read(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+        r = lc_async_submit_receive(loop->ring, fd, buf, count, 0, (uint64_t)slot);
         if (lc_is_err(r)) { *err = -(int32_t)r.error; return false; }
     }
     return true;
 }
 
+/* A send, not a write: a write to a socket whose peer has reset the
+ * connection raises SIGPIPE, which ends the process, as one client could
+ * make it. The send has MSG_NOSIGNAL, and completes with -EPIPE instead. */
 static bool lio_try_submit_write(lio_loop *loop, int32_t fd, const void *buf,
                                  uint32_t count, uint32_t slot, int32_t *err) {
-    lc_result r = lc_async_submit_write(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+    lc_result r = lc_async_submit_send(loop->ring, fd, buf, count, 0, (uint64_t)slot);
     if (lc_is_err(r)) {
         lc_async_flush(loop->ring);
-        r = lc_async_submit_write(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+        r = lc_async_submit_send(loop->ring, fd, buf, count, 0, (uint64_t)slot);
         if (lc_is_err(r)) { *err = -(int32_t)r.error; return false; }
     }
     return true;
@@ -524,8 +531,7 @@ static int32_t lio_worker_thread(void *arg) {
     loop->accept_handler = wargs->handler;
 
     /* Submit initial accept on the shared server fd */
-    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                              loop->server_fd, 0, 0, 0, 0, LIO_TAG_ACCEPT);
+    (void)submit_accept(loop);
 
     /* Run until stop flag is set */
     loop->running = true;
@@ -581,9 +587,7 @@ static int32_t lio_worker_thread(void *arg) {
                     }
                 }
                 if (!atomic_load(wargs->stop_flag)) {
-                    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                                              loop->server_fd, 0, 0, 0, 0,
-                                              LIO_TAG_ACCEPT);
+                    (void)submit_accept(loop);
                 }
             } else {
                 uint32_t slot = (uint32_t)results[i].tag;

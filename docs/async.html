@@ -64,6 +64,16 @@ Stage a read or write. `offset` is the file offset, or `(uint64_t)-1` for "curre
 **Returns** — `LC_OK`, or `LC_ERR_AGAIN` when the submission queue is full.
 :::
 
+:::member{#lc_async_submit_send}
+```c
+[[nodiscard]] lc_result lc_async_submit_send   (lc_async_ring *ring, int32_t fd, const void *buf,
+                                                uint32_t count, int32_t flags, uint64_t tag);
+[[nodiscard]] lc_result lc_async_submit_receive(lc_async_ring *ring, int32_t fd, void *buf,
+                                                uint32_t count, int32_t flags, uint64_t tag);
+```
+Stage a send or a receive on a socket, with the flags of `send` or `recv`. A send always adds `MSG_NOSIGNAL`: a write to a socket whose peer has reset the connection raises SIGPIPE, which ends the process, where the send completes with `-EPIPE`. Use these, not `submit_write` and `submit_read`, for sockets.
+:::
+
 :::member{#lc_async_submit_raw}
 ```c
 [[nodiscard]] lc_result lc_async_submit_raw(lc_async_ring *ring, uint8_t opcode, int32_t fd,
@@ -163,7 +173,7 @@ int32_t lio_loop_error(const lio_loop *loop);
 int32_t lio_read (lio_stream *stream, void *buf, uint32_t count);
 int32_t lio_write(lio_stream *stream, const void *buf, uint32_t count);
 ```
-Read or write within a handler, suspending the coroutine until the operation completes. `lio_read` returns the byte count (`0` = peer closed, `<0` = error). `lio_write` writes fully, or returns what it managed. If a submission cannot be staged (a full queue), these return an error instead of suspending forever, so a connection fails cleanly rather than hanging.
+Read or write within a handler, suspending the coroutine until the operation completes. They receive and send, and the send has `MSG_NOSIGNAL`, so a client that resets the connection makes `lio_write` return `-EPIPE` or `-ECONNRESET` rather than end the server with SIGPIPE. `lio_read` returns the byte count (`0` = peer closed, `<0` = error). `lio_write` writes fully, or returns what it managed. If a submission cannot be staged (a full queue), these return an error instead of suspending forever, so a connection fails cleanly rather than hanging.
 :::
 
 :::member{#lio_sleep}

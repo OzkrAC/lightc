@@ -78,4 +78,7 @@ THR-stack-size          gating
 lio-3                   gating
 LOG-ts-uninit           gating
 LOG-utf8-truncation     gating
+NET-send-sigpipe        gating
+NET-no-cloexec          gating
+NET-uring-sigpipe       gating
 TIME-sleep-eintr        pending

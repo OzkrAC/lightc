@@ -27,8 +27,20 @@ lc_socket_address lc_socket_address_any(uint16_t port) {
 
 /* --- Socket operations --- */
 
+/* The kernel's flags for `flags`, the type flags of lc_socket_open or the
+ * flags of lc_socket_accept_flags: SOCK_CLOEXEC unless LC_SOCK_INHERIT is
+ * there, which goes no further. */
+static int64_t kernel_socket_flags(int32_t flags) {
+    if (flags & LC_SOCK_INHERIT) return flags & ~LC_SOCK_INHERIT;
+    return flags | SOCK_CLOEXEC;
+}
+
+lc_result lc_socket_open(int32_t family, int32_t type, int32_t protocol) {
+    return lc_result_from_sysret(lc_syscall3(SYS_socket, family, kernel_socket_flags(type), protocol));
+}
+
 lc_result lc_socket_create(int32_t type) {
-    return lc_result_from_sysret(lc_syscall3(SYS_socket, LC_AF_INET, type | SOCK_CLOEXEC, 0));
+    return lc_socket_open(LC_AF_INET, type, 0);
 }
 
 void lc_socket_close(int32_t socket_fd) {
@@ -37,8 +49,7 @@ void lc_socket_close(int32_t socket_fd) {
 
 lc_result lc_socket_set_reuse_address(int32_t socket_fd) {
     int32_t val = 1;
-    return lc_result_from_sysret(lc_syscall5(SYS_setsockopt, socket_fd, LC_SOL_SOCKET,
-                                LC_SO_REUSEADDR, (int64_t)&val, sizeof(val)));
+    return lc_socket_set_option(socket_fd, LC_SOL_SOCKET, LC_SO_REUSEADDR, &val, sizeof(val));
 }
 
 lc_result lc_socket_bind(int32_t socket_fd, const lc_socket_address *addr) {
@@ -49,10 +60,14 @@ lc_result lc_socket_listen(int32_t socket_fd, int32_t backlog) {
     return lc_result_from_sysret(lc_syscall2(SYS_listen, socket_fd, backlog));
 }
 
+lc_result lc_socket_accept_flags(int32_t socket_fd, void *addr, uint32_t *addr_size, int32_t flags) {
+    return lc_result_from_sysret(lc_syscall4(SYS_accept4, socket_fd, (int64_t)addr,
+                                             (int64_t)addr_size, kernel_socket_flags(flags)));
+}
+
 lc_result lc_socket_accept(int32_t socket_fd, lc_socket_address *client_addr) {
     uint32_t addrlen = sizeof(lc_socket_address);
-    return lc_result_from_sysret(lc_syscall4(SYS_accept4, socket_fd,
-                                (int64_t)client_addr, (int64_t)&addrlen, SOCK_CLOEXEC));
+    return lc_socket_accept_flags(socket_fd, client_addr, client_addr ? &addrlen : NULL, 0);
 }
 
 lc_result lc_socket_connect(int32_t socket_fd, const lc_socket_address *addr) {
@@ -71,15 +86,37 @@ lc_result lc_socket_receive(int32_t socket_fd, void *buf, size_t count) {
 
 lc_result lc_socket_send_to(int32_t socket_fd, const void *buf, size_t count,
                           const lc_socket_address *dest) {
-    return lc_result_from_sysret(lc_syscall6(SYS_sendto, socket_fd, (int64_t)buf, (int64_t)count,
-                       0, (int64_t)dest, sizeof(lc_socket_address)));
+    return lc_socket_send_to_sockaddr(socket_fd, buf, count, 0, dest, sizeof(lc_socket_address));
 }
 
 lc_result lc_socket_receive_from(int32_t socket_fd, void *buf, size_t count,
                                lc_socket_address *sender) {
     uint32_t addrlen = sizeof(lc_socket_address);
+    return lc_socket_receive_from_sockaddr(socket_fd, buf, count, 0, sender, sender ? &addrlen : NULL);
+}
+
+lc_result lc_socket_send_to_sockaddr(int32_t socket_fd, const void *buf, size_t count,
+                                     int32_t flags, const void *dest, uint32_t dest_size) {
+    return lc_result_from_sysret(lc_syscall6(SYS_sendto, socket_fd, (int64_t)buf, (int64_t)count,
+                                             flags | MSG_NOSIGNAL, (int64_t)dest, dest_size));
+}
+
+lc_result lc_socket_receive_from_sockaddr(int32_t socket_fd, void *buf, size_t count,
+                                          int32_t flags, void *sender, uint32_t *sender_size) {
     return lc_result_from_sysret(lc_syscall6(SYS_recvfrom, socket_fd, (int64_t)buf, (int64_t)count,
-                       0, (int64_t)sender, (int64_t)&addrlen));
+                                             flags, (int64_t)sender, (int64_t)sender_size));
+}
+
+lc_result lc_socket_get_option(int32_t socket_fd, int32_t level, int32_t name,
+                               void *value, uint32_t *length) {
+    return lc_result_from_sysret(lc_syscall5(SYS_getsockopt, socket_fd, level, name,
+                                             (int64_t)value, (int64_t)length));
+}
+
+lc_result lc_socket_set_option(int32_t socket_fd, int32_t level, int32_t name,
+                               const void *value, uint32_t length) {
+    return lc_result_from_sysret(lc_syscall5(SYS_setsockopt, socket_fd, level, name,
+                                             (int64_t)value, length));
 }
 
 lc_result lc_socket_shutdown(int32_t socket_fd, int32_t how) {
@@ -88,16 +125,15 @@ lc_result lc_socket_shutdown(int32_t socket_fd, int32_t how) {
 
 /* --- Convenience functions --- */
 
-lc_result lc_socket_listen_on(uint16_t port, int32_t backlog) {
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+lc_result lc_socket_listen_on(const lc_socket_address *addr, int32_t backlog) {
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return r;
     int32_t fd = (int32_t)r.value;
 
     r = lc_socket_set_reuse_address(fd);
     if (lc_is_err(r)) { lc_socket_close(fd); return r; }
 
-    lc_socket_address addr = lc_socket_address_any(port);
-    r = lc_socket_bind(fd, &addr);
+    r = lc_socket_bind(fd, addr);
     if (lc_is_err(r)) { lc_socket_close(fd); return r; }
 
     r = lc_socket_listen(fd, backlog);
@@ -107,7 +143,7 @@ lc_result lc_socket_listen_on(uint16_t port, int32_t backlog) {
 }
 
 lc_result lc_socket_connect_to(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port) {
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return r;
     int32_t fd = (int32_t)r.value;
 
@@ -125,11 +161,11 @@ lc_result lc_socket_connect_to(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint1
 _Static_assert(sizeof(lc_socket_address6) == 28, "lc_socket_address6 must be 28 bytes (sockaddr_in6)");
 
 lc_result lc_socket_tcp6(void) {
-    return lc_result_from_sysret(lc_syscall3(SYS_socket, LC_AF_INET6, LC_SOCK_STREAM, 0));
+    return lc_socket_open(LC_AF_INET6, LC_SOCK_STREAM, 0);
 }
 
 lc_result lc_socket_udp6(void) {
-    return lc_result_from_sysret(lc_syscall3(SYS_socket, LC_AF_INET6, LC_SOCK_DGRAM, 0));
+    return lc_socket_open(LC_AF_INET6, LC_SOCK_DGRAM, 0);
 }
 
 lc_socket_address6 lc_socket_address6_create(const uint8_t addr[16], uint16_t port) {
@@ -161,8 +197,7 @@ lc_result lc_socket_listen6(int32_t fd, int32_t backlog) {
 
 lc_result lc_socket_accept6(int32_t fd, lc_socket_address6 *client_addr) {
     uint32_t addrlen = sizeof(lc_socket_address6);
-    return lc_result_from_sysret(lc_syscall4(SYS_accept4, fd,
-                                (int64_t)client_addr, (int64_t)&addrlen, 0));
+    return lc_socket_accept_flags(fd, client_addr, client_addr ? &addrlen : NULL, 0);
 }
 
 lc_result lc_socket_connect6(int32_t fd, const lc_socket_address6 *addr) {

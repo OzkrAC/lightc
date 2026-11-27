@@ -66,7 +66,9 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count);
 /* Read up to count bytes. Returns bytes read, 0 on EOF, negative on error. */
 int32_t lio_read(lio_stream *stream, void *buf, uint32_t count);
 
-/* Write count bytes. Returns bytes written or negative on error. */
+/* Write count bytes. Returns bytes written or negative on error. A peer
+ * that has closed gives -EPIPE or -ECONNRESET, not a SIGPIPE: it is a send
+ * with MSG_NOSIGNAL. */
 int32_t lio_write(lio_stream *stream, const void *buf, uint32_t count);
 
 /* Close the stream. */

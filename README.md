@@ -18,7 +18,7 @@ Requires GCC and ninja.
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
-ninja test           # build and run the test suites (294 tests in 21 suites)
+ninja test           # build and run the test suites (299 tests in 21 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
@@ -68,7 +68,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `thread.h` | Threads via `clone` syscall, spinlocks |
 | `coroutine.h` | Stackful coroutines with cooperative scheduling (~5ns context switch) |
 | `async.h` | Async I/O via `io_uring` |
-| `socket.h` | TCP/UDP sockets, IPv4 and IPv6 |
+| `socket.h` | TCP/UDP sockets, IPv4 and IPv6, and sockets of any family through `lc_socket_open`; all close-on-exec, and sends never raise SIGPIPE |
 | `time.h` | Monotonic clock, wall clock, date/time conversion, formatting |
 | `log.h` | Leveled logging with plain text and JSON output |
 | `signal.h` | Signal handling (portable across x86_64/aarch64) |

@@ -24,6 +24,8 @@ T lc_async_ring_create
 T lc_async_ring_destroy
 T lc_async_submit_raw
 T lc_async_submit_read
+T lc_async_submit_receive
+T lc_async_submit_send
 T lc_async_submit_write
 T lc_async_wait
 T lc_async_wait_ex
@@ -154,6 +156,7 @@ T lc_signal_reset
 T lc_signal_unblock
 T lc_socket_accept
 T lc_socket_accept6
+T lc_socket_accept_flags
 T lc_socket_address6_any
 T lc_socket_address6_create
 T lc_socket_address6_loopback
@@ -166,13 +169,18 @@ T lc_socket_connect
 T lc_socket_connect6
 T lc_socket_connect_to
 T lc_socket_create
+T lc_socket_get_option
 T lc_socket_listen
 T lc_socket_listen6
 T lc_socket_listen_on
+T lc_socket_open
 T lc_socket_receive
 T lc_socket_receive_from
+T lc_socket_receive_from_sockaddr
 T lc_socket_send
 T lc_socket_send_to
+T lc_socket_send_to_sockaddr
+T lc_socket_set_option
 T lc_socket_set_reuse_address
 T lc_socket_shutdown
 T lc_socket_tcp6

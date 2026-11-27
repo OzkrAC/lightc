@@ -53,6 +53,20 @@ void lc_async_ring_destroy(lc_async_ring *ring);
                            const void *buf, uint32_t count,
                            uint64_t offset, uint64_t tag);
 
+/* Queue a send on a socket. Does not submit to kernel yet. flags are
+ * send's; MSG_NOSIGNAL is always added, so a peer that has closed completes
+ * with -EPIPE instead of raising a SIGPIPE that would end the process,
+ * which a write on a socket does. */
+[[nodiscard]] lc_result lc_async_submit_send(lc_async_ring *ring, int32_t fd,
+                                             const void *buf, uint32_t count,
+                                             int32_t flags, uint64_t tag);
+
+/* Queue a receive on a socket. Does not submit to kernel yet. flags are
+ * recv's. */
+[[nodiscard]] lc_result lc_async_submit_receive(lc_async_ring *ring, int32_t fd,
+                                                void *buf, uint32_t count,
+                                                int32_t flags, uint64_t tag);
+
 /* Submit all queued operations to the kernel.
  * Returns number of operations submitted. An error is kept for the next
  * _ex call: lc_async_flush_ex reports it. */

@@ -28,9 +28,13 @@ test_index      7
 # io_uring, and async-1 seccomp too, and LOG-ts-uninit needs seccomp, so
 # under qemu-user each of their tests skips. The job's
 # LIGHTC_TEST_ALLOW_SKIP names them, so tests/run.sh lets them.
+# NET-no-cloexec's lightio test needs io_uring too and skips, but its
+# others run, so that program is not in LIGHTC_TEST_ALLOW_SKIP.
 regress/async-1                  2
 regress/async-2                  2
 regress/xm-wait-swallows-errors  1
 regress/LIO-coro-stack-align     1
 regress/lio-3                    1
 regress/LOG-ts-uninit            1
+regress/NET-no-cloexec           1
+regress/NET-uring-sigpipe        1

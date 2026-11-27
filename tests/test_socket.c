@@ -58,13 +58,13 @@ static void test_byte_order(void) {
 
 static void test_socket_create_close(void) {
     /* TCP socket */
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     TEST_ASSERT_OK(r);
     TEST_ASSERT(r.value >= 0);
     lc_socket_close((int32_t)r.value);
 
     /* UDP socket */
-    lc_result r2 = lc_socket_create(LC_SOCK_DGRAM);
+    lc_result r2 = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
     TEST_ASSERT_OK(r2);
     TEST_ASSERT(r2.value >= 0);
     lc_socket_close((int32_t)r2.value);
@@ -134,7 +134,7 @@ static int32_t tcp_server_thread(void *arg) {
     uint16_t port = (uint16_t)(uintptr_t)arg;
 
     /* Create server socket */
-    lc_result sr = lc_socket_create(LC_SOCK_STREAM);
+    lc_result sr = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(sr)) return server_failed(-1, &tcp_server_ready);
     int32_t server_fd = (int32_t)sr.value;
 
@@ -158,7 +158,8 @@ static int32_t tcp_server_thread(void *arg) {
 
     /* Accept one connection */
     lc_socket_address client_addr;
-    lc_result ar = lc_socket_accept(server_fd, &client_addr);
+    uint32_t client_addr_size = sizeof client_addr;
+    lc_result ar = lc_socket_accept_flags(server_fd, &client_addr, &client_addr_size, 0);
     if (lc_is_err(ar)) { lc_socket_close(server_fd); atomic_store(&tcp_server_ok, 0); return 1; }
     int32_t client_fd = (int32_t)ar.value;
 
@@ -250,7 +251,8 @@ static void start_server_on_held_port(uint16_t held_port) {
 
 static void test_socket_server_port_in_use(void) {
     /* Hold a free port: no other socket can bind a port that one listens on */
-    lc_result hr = lc_socket_listen_on(0, 1);
+    lc_socket_address any = lc_socket_address_any(0);
+    lc_result hr = lc_socket_listen_on(&any, 1);
     TEST_REQUIRE_OK(hr);
     int32_t holder_fd = (int32_t)hr.value;
 
@@ -269,7 +271,7 @@ static int32_t udp_server_thread(void *arg) {
     (void)arg;
 
     /* Create UDP socket */
-    lc_result sr = lc_socket_create(LC_SOCK_DGRAM);
+    lc_result sr = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
     if (lc_is_err(sr)) return server_failed(-1, &udp_server_ready);
     int32_t server_fd = (int32_t)sr.value;
 
@@ -309,7 +311,7 @@ static int32_t udp_server_thread(void *arg) {
 /* The client half of the exchange, with a server bound to port. */
 static void udp_client_exchange(uint16_t port) {
     /* Create client UDP socket */
-    lc_result cr = lc_socket_create(LC_SOCK_DGRAM);
+    lc_result cr = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
     TEST_REQUIRE_OK(cr);
     int32_t client_fd = (int32_t)cr.value;
     /* Without the timeout the receive below could wait forever. */
@@ -369,6 +371,158 @@ static void test_socket_byte_order(void) {
 #endif
 }
 
+/* ===== The complete wrappers: lc_socket_open and the rest ===== */
+
+#define F_GETFD     1
+#define F_GETFL     3
+#define FD_CLOEXEC  1
+
+static bool close_on_exec(int32_t fd) {
+    return (lc_syscall3(SYS_fcntl, fd, F_GETFD, 0) & FD_CLOEXEC) != 0;
+}
+
+/* A listener on 127.0.0.1 and a port the kernel picks; sets *port. */
+static int32_t loopback_listener(uint16_t *port) {
+    lc_socket_address addr = lc_socket_address_create(127, 0, 0, 1, 0);
+    lc_result r = lc_socket_listen_on(&addr, 4);
+    if (lc_is_err(r)) return -1;
+    lc_socket_address bound;
+    uint32_t size = sizeof bound;
+    if (lc_kernel_getsockname((int32_t)r.value, &bound, &size) < 0) return -1;
+    *port = lc_network_to_host_16(bound.port);
+    return (int32_t)r.value;
+}
+
+/* lc_socket_listen_on binds the address it is given: 127.0.0.1 here. */
+static void test_socket_listen_on_an_address(void) {
+    lc_socket_address addr = lc_socket_address_create(127, 0, 0, 1, 0);
+    lc_result r = lc_socket_listen_on(&addr, 1);
+    TEST_REQUIRE_OK(r);
+    lc_socket_address bound;
+    uint32_t size = sizeof bound;
+    TEST_REQUIRE(lc_kernel_getsockname((int32_t)r.value, &bound, &size) == 0);
+    TEST_ASSERT_EQ(bound.family, (uint16_t)LC_AF_INET);
+    TEST_ASSERT_EQ(lc_network_to_host_32(bound.addr), (uint32_t)LC_INADDR_LOOPBACK);
+    TEST_ASSERT(close_on_exec((int32_t)r.value));
+    lc_socket_close((int32_t)r.value);
+}
+
+/* A netlink socket: an rtnetlink dump of the links, sent and answered
+ * through the sockaddr forms with the kernel's address, a sockaddr_nl. */
+static void test_socket_open_netlink(void) {
+    lc_result r = lc_socket_open(LC_AF_NETLINK, LC_SOCK_RAW, 0 /* NETLINK_ROUTE */);
+    TEST_REQUIRE_OK(r);
+    int32_t fd = (int32_t)r.value;
+    TEST_ASSERT(close_on_exec(fd));
+
+    struct { uint16_t family, pad; uint32_t pid, groups; } kernel = { LC_AF_NETLINK, 0, 0, 0 };
+    struct {
+        uint32_t len; uint16_t type, flags; uint32_t seq, pid;   /* struct nlmsghdr */
+        uint8_t  rtgen_family, pad[3];                           /* struct rtgenmsg */
+    } request = { 20, 18 /* RTM_GETLINK */, 0x301 /* NLM_F_REQUEST | NLM_F_DUMP */, 1, 0, 0, {0} };
+    lc_result s = lc_socket_send_to_sockaddr(fd, &request, sizeof request, 0, &kernel, sizeof kernel);
+    TEST_ASSERT_OK(s);
+    TEST_ASSERT_EQ(s.value, (int64_t)sizeof request);
+
+    static uint8_t reply[32768];
+    struct { uint16_t family, pad; uint32_t pid, groups; } sender;
+    uint32_t sender_size = sizeof sender;
+    lc_result g = lc_socket_receive_from_sockaddr(fd, reply, sizeof reply, 0, &sender, &sender_size);
+    TEST_ASSERT_OK(g);
+    TEST_ASSERT(g.value >= 16);
+    uint16_t type;
+    lc_bytes_copy(&type, reply + 4, sizeof type);
+    TEST_ASSERT_EQ(type, (uint16_t)16);   /* RTM_NEWLINK: there is always lo */
+    TEST_ASSERT_EQ(sender_size, (uint32_t)sizeof sender);
+    TEST_ASSERT_EQ(sender.family, (uint16_t)LC_AF_NETLINK);
+    TEST_ASSERT_EQ(sender.pid, (uint32_t)0);   /* the kernel */
+    lc_socket_close(fd);
+}
+
+/* accept4's flags: LC_SOCK_NONBLOCK makes the accepted socket
+ * non-blocking, and it is close-on-exec. */
+static void test_socket_accept_flags_nonblocking(void) {
+    uint16_t port = 0;
+    int32_t listener = loopback_listener(&port);
+    TEST_REQUIRE(listener >= 0);
+    lc_result c = lc_socket_connect_to(127, 0, 0, 1, port);
+    TEST_REQUIRE_OK(c);
+
+    lc_socket_address peer;
+    uint32_t peer_size = sizeof peer;
+    lc_result a = lc_socket_accept_flags(listener, &peer, &peer_size, LC_SOCK_NONBLOCK);
+    TEST_REQUIRE_OK(a);
+    int32_t fd = (int32_t)a.value;
+    TEST_ASSERT_EQ(peer_size, (uint32_t)sizeof peer);
+    TEST_ASSERT_EQ(lc_network_to_host_32(peer.addr), (uint32_t)LC_INADDR_LOOPBACK);
+    TEST_ASSERT((lc_syscall3(SYS_fcntl, fd, F_GETFL, 0) & O_NONBLOCK) != 0);
+    TEST_ASSERT(close_on_exec(fd));
+    char byte;
+    TEST_ASSERT_EQ(lc_socket_receive(fd, &byte, 1).error, LC_ERR_AGAIN);   /* nothing sent yet */
+
+    lc_socket_close(fd);
+    lc_socket_close((int32_t)c.value);
+    lc_socket_close(listener);
+}
+
+/* LC_SOCK_INHERIT: the socket is not close-on-exec, and the flag never
+ * reaches the kernel, which would refuse a type it does not know. */
+static void test_socket_inherit(void) {
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM | LC_SOCK_INHERIT, 0);
+    TEST_REQUIRE_OK(r);
+    TEST_ASSERT(!close_on_exec((int32_t)r.value));
+    lc_socket_close((int32_t)r.value);
+
+    uint16_t port = 0;
+    int32_t listener = loopback_listener(&port);
+    TEST_REQUIRE(listener >= 0);
+    lc_result c = lc_socket_connect_to(127, 0, 0, 1, port);
+    TEST_REQUIRE_OK(c);
+    lc_result a = lc_socket_accept_flags(listener, NULL, NULL, LC_SOCK_INHERIT);
+    TEST_REQUIRE_OK(a);
+    TEST_ASSERT(!close_on_exec((int32_t)a.value));
+    lc_socket_close((int32_t)a.value);
+    lc_socket_close((int32_t)c.value);
+    lc_socket_close(listener);
+}
+
+/* SO_ERROR through lc_socket_get_option: a UDP socket connected to a port
+ * nobody listens on gets ECONNREFUSED from the ICMP reply to its first
+ * datagram, and reading the option clears it. */
+static void test_socket_so_error_refused(void) {
+    /* A free port: bound, then closed. */
+    lc_result h = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
+    TEST_REQUIRE_OK(h);
+    lc_socket_address any = lc_socket_address_create(127, 0, 0, 1, 0);
+    TEST_REQUIRE_OK(lc_socket_bind((int32_t)h.value, &any));
+    lc_socket_address bound;
+    uint32_t size = sizeof bound;
+    TEST_REQUIRE(lc_kernel_getsockname((int32_t)h.value, &bound, &size) == 0);
+    lc_socket_close((int32_t)h.value);
+
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
+    TEST_REQUIRE_OK(r);
+    int32_t fd = (int32_t)r.value;
+    TEST_REQUIRE_OK(lc_socket_connect(fd, &bound));
+    TEST_REQUIRE_OK(lc_socket_send(fd, "x", 1));
+
+    int32_t error = 0;
+    for (int i = 0; i < 100 && error == 0; i++) {
+        uint32_t length = sizeof error;
+        TEST_REQUIRE_OK(lc_socket_get_option(fd, LC_SOL_SOCKET, LC_SO_ERROR, &error, &length));
+        TEST_ASSERT_EQ(length, (uint32_t)sizeof error);
+        if (error == 0) lc_time_sleep_milliseconds(10);
+    }
+    TEST_ASSERT_EQ(error, LC_ERR_CONNREFUSED);
+    uint32_t length = sizeof error;
+    TEST_ASSERT_OK(lc_socket_get_option(fd, LC_SOL_SOCKET, LC_SO_ERROR, &error, &length));
+    TEST_ASSERT_EQ(error, 0);   /* read once, cleared */
+
+    int32_t one = 1;
+    TEST_ASSERT_OK(lc_socket_set_option(fd, LC_SOL_SOCKET, LC_SO_REUSEADDR, &one, sizeof one));
+    lc_socket_close(fd);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
@@ -394,6 +548,13 @@ int main(int argc, char **argv, char **envp) {
 
     /* UDP echo exchange */
     TEST_RUN(test_socket_udp_exchange);
+
+    /* the complete wrappers */
+    TEST_RUN(test_socket_listen_on_an_address);
+    TEST_RUN(test_socket_open_netlink);
+    TEST_RUN(test_socket_accept_flags_nonblocking);
+    TEST_RUN(test_socket_inherit);
+    TEST_RUN(test_socket_so_error_refused);
 
     return test_main();
 }

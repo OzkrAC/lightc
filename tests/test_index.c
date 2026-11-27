@@ -434,7 +434,7 @@ static void case_lc_kernel_read_directory(void) {
     (void)lc_kernel_read_directory(fd, buf, sizeof buf);
 }
 static void case_lc_kernel_getsockname(void) {
-    int32_t fd = (int32_t)lc_socket_create(LC_SOCK_STREAM).value;
+    int32_t fd = (int32_t)lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0).value;
     uint8_t addr[64];
     uint32_t length = sizeof addr;
     enter();
@@ -543,7 +543,7 @@ static void case_lc_directory_close(void) { lc_directory d; (void)lc_directory_o
 
 /* lightc/socket.h */
 
-static int32_t tcp(void) { return (int32_t)lc_socket_create(LC_SOCK_STREAM).value; }
+static int32_t tcp(void) { return (int32_t)lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0).value; }
 static const uint8_t loopback6[16] = { [15] = 1 };
 
 static void case_lc_host_to_network_16(void) { enter(); (void)lc_host_to_network_16(1); }
@@ -555,7 +555,18 @@ static void case_lc_socket_address_any(void) { enter(); (void)lc_socket_address_
 static void case_lc_socket_address6_create(void) { enter(); (void)lc_socket_address6_create(loopback6, 80); }
 static void case_lc_socket_address6_loopback(void) { enter(); (void)lc_socket_address6_loopback(80); }
 static void case_lc_socket_address6_any(void) { enter(); (void)lc_socket_address6_any(80); }
+/* The deprecated forms still get a case, as every function of the header does. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 static void case_lc_socket_create(void) { enter(); (void)lc_socket_create(LC_SOCK_STREAM); }
+static void case_lc_socket_accept(void) { lc_socket_address a; enter(); (void)lc_socket_accept(-1, &a); }
+#pragma GCC diagnostic pop
+static void case_lc_socket_open(void) { enter(); (void)lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0); }
+static void case_lc_socket_accept_flags(void) { lc_socket_address a; uint32_t n = sizeof a; enter(); (void)lc_socket_accept_flags(-1, &a, &n, LC_SOCK_NONBLOCK); }
+static void case_lc_socket_get_option(void) { int32_t v; uint32_t n = sizeof v; enter(); (void)lc_socket_get_option(-1, LC_SOL_SOCKET, LC_SO_ERROR, &v, &n); }
+static void case_lc_socket_set_option(void) { int32_t v = 1; enter(); (void)lc_socket_set_option(-1, LC_SOL_SOCKET, LC_SO_REUSEADDR, &v, sizeof v); }
+static void case_lc_socket_send_to_sockaddr(void) { lc_socket_address a = lc_socket_address_any(1); enter(); (void)lc_socket_send_to_sockaddr(-1, "x", 1, 0, &a, sizeof a); }
+static void case_lc_socket_receive_from_sockaddr(void) { char b[8]; lc_socket_address a; uint32_t n = sizeof a; enter(); (void)lc_socket_receive_from_sockaddr(-1, b, sizeof b, 0, &a, &n); }
 static void case_lc_socket_close(void) { enter(); lc_socket_close(-1); }
 static void case_lc_socket_set_reuse_address(void) { int32_t fd = tcp(); enter(); (void)lc_socket_set_reuse_address(fd); }
 static void case_lc_socket_bind(void) {
@@ -565,14 +576,13 @@ static void case_lc_socket_bind(void) {
     (void)lc_socket_bind(fd, &a);
 }
 static void case_lc_socket_listen(void) { int32_t fd = tcp(); enter(); (void)lc_socket_listen(fd, 1); }
-static void case_lc_socket_accept(void) { lc_socket_address a; enter(); (void)lc_socket_accept(-1, &a); }
 static void case_lc_socket_connect(void) { lc_socket_address a = lc_socket_address_any(1); enter(); (void)lc_socket_connect(-1, &a); }
 static void case_lc_socket_send(void) { enter(); (void)lc_socket_send(-1, "x", 1); }
 static void case_lc_socket_receive(void) { char b[8]; enter(); (void)lc_socket_receive(-1, b, sizeof b); }
 static void case_lc_socket_send_to(void) { lc_socket_address a = lc_socket_address_any(1); enter(); (void)lc_socket_send_to(-1, "x", 1, &a); }
 static void case_lc_socket_receive_from(void) { char b[8]; lc_socket_address a; enter(); (void)lc_socket_receive_from(-1, b, sizeof b, &a); }
 static void case_lc_socket_shutdown(void) { enter(); (void)lc_socket_shutdown(-1, 0); }
-static void case_lc_socket_listen_on(void) { enter(); (void)lc_socket_listen_on(0, 1); }
+static void case_lc_socket_listen_on(void) { lc_socket_address a = lc_socket_address_any(0); enter(); (void)lc_socket_listen_on(&a, 1); }
 static void case_lc_socket_connect_to(void) { enter(); (void)lc_socket_connect_to(127, 0, 0, 1, 1); }
 static void case_lc_socket_tcp6(void) { enter(); (void)lc_socket_tcp6(); }
 static void case_lc_socket_udp6(void) { enter(); (void)lc_socket_udp6(); }
@@ -682,6 +692,8 @@ static const index_case cases[] = {
     CASE(lc_socket_receive), CASE(lc_socket_send_to), CASE(lc_socket_receive_from), CASE(lc_socket_shutdown),
     CASE(lc_socket_listen_on), CASE(lc_socket_connect_to), CASE(lc_socket_tcp6), CASE(lc_socket_udp6),
     CASE(lc_socket_bind6), CASE(lc_socket_listen6), CASE(lc_socket_accept6), CASE(lc_socket_connect6),
+    CASE(lc_socket_open), CASE(lc_socket_accept_flags), CASE(lc_socket_get_option),
+    CASE(lc_socket_set_option), CASE(lc_socket_send_to_sockaddr), CASE(lc_socket_receive_from_sockaddr),
 
     CASE(lc_time_now), CASE(lc_time_now_unix), CASE(lc_time_now_monotonic), CASE(lc_time_from_unix),
     CASE(lc_time_to_unix), CASE(lc_time_start_timer), CASE(lc_time_elapsed_nanoseconds),

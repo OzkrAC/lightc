@@ -389,12 +389,14 @@ static void handle_request(lc_async_ring *ring, int32_t slot, int32_t bytes_read
             NOT_FOUND_BODY, sizeof(NOT_FOUND_BODY) - 1);
     }
 
-    /* Submit async write for the response */
+    /* Submit async send for the response. A send, not a write: a write to
+     * a client that has reset the connection raises SIGPIPE, which would
+     * end the server, so one client could stop it. A send has MSG_NOSIGNAL
+     * and completes with -EPIPE instead. */
     lc_spinlock_acquire(&ring_lock);
-    (void)lc_async_submit_write(ring, conn->fd,
-                          conn->response, (uint32_t)conn->response_len,
-                          (uint64_t)-1,
-                          MAKE_TAG(slot, OP_WRITE));
+    (void)lc_async_submit_send(ring, conn->fd,
+                         conn->response, (uint32_t)conn->response_len,
+                         0, MAKE_TAG(slot, OP_WRITE));
     lc_async_flush(ring);
     lc_spinlock_release(&ring_lock);
 }
@@ -439,7 +441,8 @@ static int32_t accept_thread_func(void *arg) {
     while (atomic_load(&server_running)) {
         /* Blocking accept — waits for a new connection */
         lc_socket_address client_addr;
-        lc_result r = lc_socket_accept(server_fd, &client_addr);
+        uint32_t client_addr_size = sizeof client_addr;
+        lc_result r = lc_socket_accept_flags(server_fd, &client_addr, &client_addr_size, 0);
         if (lc_is_err(r)) {
             continue;  /* accept error — try again */
         }
@@ -456,10 +459,9 @@ static int32_t accept_thread_func(void *arg) {
 
         /* Submit async read for the HTTP request */
         lc_spinlock_acquire(&ring_lock);
-        (void)lc_async_submit_read(ring, client_fd,
-                             connections[slot].request, REQUEST_BUF_SIZE,
-                             (uint64_t)-1,
-                             MAKE_TAG(slot, OP_READ));
+        (void)lc_async_submit_receive(ring, client_fd,
+                                connections[slot].request, REQUEST_BUF_SIZE,
+                                0, MAKE_TAG(slot, OP_READ));
         lc_async_flush(ring);
         lc_spinlock_release(&ring_lock);
     }
@@ -500,7 +502,8 @@ int main(int argc, char **argv, char **envp) {
     lc_async_ring *ring = ring_r.value;
 
     /* Create and bind server socket */
-    lc_result r = lc_socket_listen_on(port, 128);
+    lc_socket_address listen_addr = lc_socket_address_any(port);
+    lc_result r = lc_socket_listen_on(&listen_addr, 128);
     if (lc_is_err(r)) {
         lc_print_line(STDERR, S("httpd: failed to bind server socket"));
         lc_async_ring_destroy(ring);
