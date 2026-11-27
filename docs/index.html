@@ -43,6 +43,8 @@ Two invariants hold throughout the API:
 - **No hidden state.** There is no global `errno` and no implicit allocator. A fallible call returns its status in an `lc_result` or `lc_result_ptr` value (see [the error model](guide.html#errors)); memory comes from an allocator you name.
 - **The kernel ABI is the only dependency.** Every external effect is a syscall. Only two source files are per-architecture: the startup stub and the syscall trampoline.
 
+Coming from 0.1.1? [Migrating to 0.2.0-rc1](migration-0.2.0-rc1.html) gives what to change in a program, what was added and what behaves differently.
+
 ## Modules {#modules}
 
 Each module is one public header. Linked modules have a reference page; the rest are documented at their headers.

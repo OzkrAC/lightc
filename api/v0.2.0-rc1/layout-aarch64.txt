@@ -1,0 +1,202 @@
+lc_arena size 48 align 8
+lc_arena.base offset 0 size 8: uint8_t *
+lc_arena.capacity offset 8 size 8: size_t
+lc_arena.used offset 16 size 8: size_t
+lc_arena.peak_used offset 24 size 8: size_t
+lc_arena.alloc_count offset 32 size 8: size_t
+lc_arena.reset_count offset 40 size 8: size_t
+lc_arena_stats size 56 align 8
+lc_arena_stats.capacity offset 0 size 8: size_t
+lc_arena_stats.used offset 8 size 8: size_t
+lc_arena_stats.peak_used offset 16 size 8: size_t
+lc_arena_stats.alloc_count offset 24 size 8: size_t
+lc_arena_stats.reset_count offset 32 size 8: size_t
+lc_arena_stats.remaining offset 40 size 8: size_t
+lc_arena_stats.utilization offset 48 size 8: double
+lc_array size 32 align 8
+lc_array.data offset 0 size 8: uint8_t *
+lc_array.element_size offset 8 size 8: size_t
+lc_array.count offset 16 size 8: size_t
+lc_array.capacity offset 24 size 8: size_t
+lc_async_result size 16 align 8
+lc_async_result.tag offset 0 size 8: uint64_t
+lc_async_result.result offset 8 size 4: int32_t
+lc_barrier size 12 align 4
+lc_barrier.count offset 0 size 4: _Atomic(uint32_t)
+lc_barrier.phase offset 4 size 4: _Atomic(uint32_t)
+lc_barrier.threshold offset 8 size 4: uint32_t
+lc_condvar size 4 align 4
+lc_condvar.seq offset 0 size 4: _Atomic(uint32_t)
+lc_coroutine size 216 align 8
+lc_coroutine.context offset 0 size 168: lc_coroutine_context
+lc_coroutine.state offset 168 size 4: lc_coroutine_state
+lc_coroutine.func offset 176 size 8: lc_coroutine_func
+lc_coroutine.arg offset 184 size 8: void *
+lc_coroutine.stack_base offset 192 size 8: void *
+lc_coroutine.stack_size offset 200 size 8: size_t
+lc_coroutine.scheduler offset 208 size 8: lc_scheduler *
+lc_coroutine_context size 168 align 8
+lc_coroutine_context.x19 offset 0 size 8: uint64_t
+lc_coroutine_context.x20 offset 8 size 8: uint64_t
+lc_coroutine_context.x21 offset 16 size 8: uint64_t
+lc_coroutine_context.x22 offset 24 size 8: uint64_t
+lc_coroutine_context.x23 offset 32 size 8: uint64_t
+lc_coroutine_context.x24 offset 40 size 8: uint64_t
+lc_coroutine_context.x25 offset 48 size 8: uint64_t
+lc_coroutine_context.x26 offset 56 size 8: uint64_t
+lc_coroutine_context.x27 offset 64 size 8: uint64_t
+lc_coroutine_context.x28 offset 72 size 8: uint64_t
+lc_coroutine_context.x29 offset 80 size 8: uint64_t
+lc_coroutine_context.x30 offset 88 size 8: uint64_t
+lc_coroutine_context.sp offset 96 size 8: uint64_t
+lc_coroutine_context.d8 offset 104 size 8: uint64_t
+lc_coroutine_context.d9 offset 112 size 8: uint64_t
+lc_coroutine_context.d10 offset 120 size 8: uint64_t
+lc_coroutine_context.d11 offset 128 size 8: uint64_t
+lc_coroutine_context.d12 offset 136 size 8: uint64_t
+lc_coroutine_context.d13 offset 144 size 8: uint64_t
+lc_coroutine_context.d14 offset 152 size 8: uint64_t
+lc_coroutine_context.d15 offset 160 size 8: uint64_t
+lc_date_time size 32 align 4
+lc_date_time.year offset 0 size 4: int32_t
+lc_date_time.month offset 4 size 4: int32_t
+lc_date_time.day offset 8 size 4: int32_t
+lc_date_time.hour offset 12 size 4: int32_t
+lc_date_time.minute offset 16 size 4: int32_t
+lc_date_time.second offset 20 size 4: int32_t
+lc_date_time.day_of_week offset 24 size 4: int32_t
+lc_date_time.day_of_year offset 28 size 4: int32_t
+lc_directory size 4128 align 8
+lc_directory.fd offset 0 size 4: int32_t
+lc_directory.error offset 4 size 4: int32_t
+lc_directory.buffer offset 8 size 4096: _Alignas(8) uint8_t[4096]
+lc_directory.filled offset 4104 size 8: size_t
+lc_directory.position offset 4112 size 8: size_t
+lc_directory.done offset 4120 size 1: bool
+lc_directory_entry size 16 align 8
+lc_directory_entry.name offset 0 size 8: const char *
+lc_directory_entry.type offset 8 size 1: uint8_t
+lc_duration size 16 align 8
+lc_duration.seconds offset 0 size 8: int64_t
+lc_duration.nanoseconds offset 8 size 8: int64_t
+lc_format size 32 align 8
+lc_format.buffer offset 0 size 8: char *
+lc_format.capacity offset 8 size 8: size_t
+lc_format.used offset 16 size 8: size_t
+lc_format.overflow offset 24 size 1: bool
+lc_hashmap size 24 align 8
+lc_hashmap.entries offset 0 size 8: lc_hashmap_entry *
+lc_hashmap.capacity offset 8 size 8: size_t
+lc_hashmap.count offset 16 size 8: size_t
+lc_hashmap_entry size 24 align 8
+lc_hashmap_entry.key offset 0 size 8: char *
+lc_hashmap_entry.value offset 8 size 8: void *
+lc_hashmap_entry.hash offset 16 size 4: uint32_t
+lc_hashmap_entry.distance offset 20 size 4: uint32_t
+lc_heap_stats size 96 align 8
+lc_heap_stats.total_allocations offset 0 size 8: uint64_t
+lc_heap_stats.total_frees offset 8 size 8: uint64_t
+lc_heap_stats.total_bytes_allocated offset 16 size 8: uint64_t
+lc_heap_stats.total_bytes_freed offset 24 size 8: uint64_t
+lc_heap_stats.active_allocations offset 32 size 8: uint64_t
+lc_heap_stats.active_bytes offset 40 size 8: uint64_t
+lc_heap_stats.peak_active_allocations offset 48 size 8: uint64_t
+lc_heap_stats.peak_active_bytes offset 56 size 8: uint64_t
+lc_heap_stats.large_allocations offset 64 size 8: uint64_t
+lc_heap_stats.large_cache_hits offset 72 size 8: uint64_t
+lc_heap_stats.large_cache_count offset 80 size 8: uint64_t
+lc_heap_stats.heap_pages_reclaimed offset 88 size 8: uint64_t
+lc_kernel_sigaction size 32 align 8
+lc_kernel_sigaction.handler offset 0 size 8: void *
+lc_kernel_sigaction.flags offset 8 size 8: uint64_t
+lc_kernel_sigaction.restorer offset 16 size 8: void *
+lc_kernel_sigaction.mask offset 24 size 8: uint64_t
+lc_list size 24 align 8
+lc_list.head offset 0 size 16: lc_list_node
+lc_list.count offset 16 size 8: size_t
+lc_list_node size 16 align 8
+lc_list_node.prev offset 0 size 8: struct lc_list_node *
+lc_list_node.next offset 8 size 8: struct lc_list_node *
+lc_log_entry size 552 align 8
+lc_log_entry.level offset 0 size 4: lc_log_level
+lc_log_entry.fmt offset 8 size 32: lc_format
+lc_log_entry.buffer offset 40 size 512: char[512]
+lc_mutex size 4 align 4
+lc_mutex.state offset 0 size 4: _Atomic(uint32_t)
+lc_once size 4 align 4
+lc_once.state offset 0 size 4: _Atomic(uint32_t)
+lc_reader size 48 align 8
+lc_reader.fd offset 0 size 4: int32_t
+lc_reader.buffer offset 8 size 8: uint8_t *
+lc_reader.capacity offset 16 size 8: size_t
+lc_reader.filled offset 24 size 8: size_t
+lc_reader.position offset 32 size 8: size_t
+lc_reader.end_of_file offset 40 size 1: bool
+lc_reader.error offset 44 size 4: int32_t
+lc_result size 16 align 8
+lc_result.value offset 0 size 8: int64_t
+lc_result.error offset 8 size 4: int32_t
+lc_result_ptr size 16 align 8
+lc_result_ptr.value offset 0 size 8: void *
+lc_result_ptr.error offset 8 size 4: int32_t
+lc_ringbuf size 48 align 8
+lc_ringbuf.data offset 0 size 8: uint8_t *
+lc_ringbuf.element_size offset 8 size 8: size_t
+lc_ringbuf.capacity offset 16 size 8: size_t
+lc_ringbuf.mask offset 24 size 8: size_t
+lc_ringbuf.head offset 32 size 8: _Atomic(size_t)
+lc_ringbuf.tail offset 40 size 8: _Atomic(size_t)
+lc_rwlock size 4 align 4
+lc_rwlock.state offset 0 size 4: _Atomic(uint32_t)
+struct lc_scheduler size 192 align 8
+struct lc_scheduler.coroutines offset 0 size 8: lc_coroutine *
+struct lc_scheduler.capacity offset 8 size 4: uint32_t
+struct lc_scheduler.count offset 12 size 4: uint32_t
+struct lc_scheduler.active_count offset 16 size 4: uint32_t
+struct lc_scheduler.current offset 20 size 4: uint32_t
+struct lc_scheduler.main_context offset 24 size 168: lc_coroutine_context
+lc_signal_info size 128 align 8
+lc_signal_info.signal offset 0 size 4: uint32_t
+lc_signal_info.error offset 4 size 4: int32_t
+lc_signal_info.code offset 8 size 4: int32_t
+lc_signal_info.pid offset 12 size 4: uint32_t
+lc_signal_info.uid offset 16 size 4: uint32_t
+lc_signal_info.fd offset 20 size 4: int32_t
+lc_signal_info.tid offset 24 size 4: uint32_t
+lc_signal_info.band offset 28 size 4: uint32_t
+lc_signal_info.overrun offset 32 size 4: uint32_t
+lc_signal_info.trapno offset 36 size 4: uint32_t
+lc_signal_info.status offset 40 size 4: int32_t
+lc_signal_info.int_val offset 44 size 4: int32_t
+lc_signal_info.ptr_val offset 48 size 8: uint64_t
+lc_signal_info.utime offset 56 size 8: uint64_t
+lc_signal_info.stime offset 64 size 8: uint64_t
+lc_signal_info.addr offset 72 size 8: uint64_t
+lc_signal_info._pad offset 80 size 48: uint8_t[48]
+lc_socket_address size 16 align 4
+lc_socket_address.family offset 0 size 2: uint16_t
+lc_socket_address.port offset 2 size 2: uint16_t
+lc_socket_address.addr offset 4 size 4: uint32_t
+lc_socket_address._pad offset 8 size 8: uint8_t[8]
+lc_socket_address6 size 28 align 4
+lc_socket_address6.family offset 0 size 2: uint16_t
+lc_socket_address6.port offset 2 size 2: uint16_t
+lc_socket_address6.flowinfo offset 4 size 4: uint32_t
+lc_socket_address6.addr offset 8 size 16: uint8_t[16]
+lc_socket_address6.scope_id offset 24 size 4: uint32_t
+lc_spinlock size 4 align 4
+lc_spinlock.state offset 0 size 4: _Atomic(uint32_t)
+lc_thread size 32 align 8
+lc_thread.tid offset 0 size 4: int32_t
+lc_thread.stack_base offset 8 size 8: void *
+lc_thread.stack_size offset 16 size 8: size_t
+lc_thread.alive offset 24 size 4: _Atomic(int32_t)
+lc_timespec size 16 align 8
+lc_timespec.seconds offset 0 size 8: int64_t
+lc_timespec.nanoseconds offset 8 size 8: int64_t
+lc_writer size 32 align 8
+lc_writer.fd offset 0 size 4: int32_t
+lc_writer.error offset 4 size 4: int32_t
+lc_writer.buffer offset 8 size 8: uint8_t *
+lc_writer.capacity offset 16 size 8: size_t
+lc_writer.used offset 24 size 8: size_t

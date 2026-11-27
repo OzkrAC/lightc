@@ -9,8 +9,8 @@
  * lightc header gives the version.
  */
 #define LC_VERSION_MAJOR 0
-#define LC_VERSION_MINOR 1
-#define LC_VERSION_PATCH 1
+#define LC_VERSION_MINOR 2
+#define LC_VERSION_PATCH 0
 
 /* The version as one integer: major * 10000 + minor * 100 + patch. */
 [[gnu::const]]
@@ -19,7 +19,7 @@ static inline int32_t lc_version(void) {
 }
 
 /*
- * The ABI tag, lc_abi_MAJOR_MINOR, such as lc_abi_0_1: liblightc.a defines
+ * The ABI tag, lc_abi_MAJOR_MINOR, such as lc_abi_0_2: liblightc.a defines
  * it, and each object compiled with these headers refers to it. A program
  * built with the headers of one minor version and linked with the library
  * of another then fails to link, with "undefined reference to `lc_abi_...'",
