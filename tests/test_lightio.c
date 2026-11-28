@@ -1,7 +1,7 @@
 /*
  * test_lightio.c — tests for the lightio async event loop.
  *
- * lightio needs io_uring (kernel 5.1+); if it is unavailable every test
+ * lightio needs io_uring (Linux 5.10+); if it is unavailable every test
  * skips, as in test_async. These exercise the accept -> coroutine ->
  * lio_read/lio_write -> completion -> slot-cleanup path end to end (previously
  * untested), which is exactly the path the H4 submission-handling and
@@ -12,14 +12,16 @@
 #include <lightio/lightio.h>
 #include <lightc/async.h>
 #include <lightc/socket.h>
+#include <lightc/signal.h>
 #include <lightc/string.h>
+#include <lightc/syscall.h>
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
 
 /* Set by main's probe; without io_uring each test skips. */
 static bool io_uring_available;
-#define NO_IO_URING "io_uring not available (kernel 5.1+ required)"
+#define NO_IO_URING "io_uring not available (Linux 5.10+ required)"
 
 /* ===== Echo handler + server thread ===== */
 
@@ -83,6 +85,7 @@ static void test_lightio_echo_roundtrip(void) {
     TEST_ASSERT(echo_once(port, msg, sizeof(msg) - 1));
 
     stop_and_join(loop, &t, port);
+    TEST_ASSERT_EQ(lio_loop_error(loop), 0);   /* stopped, not failed */
     lio_loop_destroy(loop);
 }
 
@@ -166,6 +169,122 @@ static void test_lightio_concurrent_clients(void) {
     lio_loop_destroy(loop);
 }
 
+/* ===== Test: a handler's stack is aligned as after a call =====
+ *
+ * lio_test_entry_sp reads the stack pointer as its first instruction, so as
+ * the handler's call left it, as test_coroutine's probe does: the ABI has
+ * rsp & 15 == 8 there on x86_64, after the pushed return address, and
+ * sp & 15 == 0 on aarch64. A coroutine entered misaligned by 8 runs its
+ * whole call tree so, and an aligned SSE spill (movaps) faults. */
+
+#if defined(__x86_64__)
+__asm__(".text\n"
+        ".globl lio_test_entry_sp\n"
+        ".type lio_test_entry_sp, @function\n"
+        "lio_test_entry_sp:\n"
+        "    mov %rsp, %rax\n"
+        "    ret\n"
+        ".size lio_test_entry_sp, . - lio_test_entry_sp\n");
+#define ENTRY_SP_MOD 8u
+#elif defined(__aarch64__)
+__asm__(".text\n"
+        ".globl lio_test_entry_sp\n"
+        ".type lio_test_entry_sp, %function\n"
+        "lio_test_entry_sp:\n"
+        "    mov x0, sp\n"
+        "    ret\n"
+        ".size lio_test_entry_sp, . - lio_test_entry_sp\n");
+#define ENTRY_SP_MOD 0u
+#endif
+extern uintptr_t lio_test_entry_sp(void);
+
+static _Atomic(int32_t) probe_ran;
+static uintptr_t probe_sp;
+
+static void align_handler(lio_stream *stream) {
+    (void)stream;
+    probe_sp = lio_test_entry_sp();
+    atomic_store(&probe_ran, 1);
+}
+
+/* Connects to `port`, and waits up to 5 s for *done. */
+static void connect_and_wait(uint16_t port, _Atomic(int32_t) *done) {
+    lc_result r = lc_socket_connect_to(127, 0, 0, 1, port);
+    for (int i = 0; i < 500 && !atomic_load(done); i++) lc_time_sleep_milliseconds(10);
+    if (!lc_is_err(r)) lc_socket_close((int32_t)r.value);
+}
+
+static void test_lightio_handler_stack_alignment(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
+    const uint16_t port = 19913;
+    lio_loop *loop = lio_loop_create();
+    TEST_REQUIRE_NOT_NULL(loop);
+    TEST_ASSERT_OK(lio_tcp_serve(loop, port, align_handler));
+    lc_thread server;
+    TEST_ASSERT_OK(lc_thread_create(&server, server_thread, loop));
+    lc_time_sleep_milliseconds(50);
+
+    connect_and_wait(port, &probe_ran);
+    stop_and_join(loop, &server, port);
+    lio_loop_destroy(loop);
+
+    TEST_ASSERT_EQ(atomic_load(&probe_ran), 1);
+    TEST_ASSERT_EQ((unsigned)(probe_sp & 15), ENTRY_SP_MOD);
+}
+
+/* ===== Test: a handler's stack overflow faults =====
+ *
+ * Each handler's stack has a guard page below it, so a handler that
+ * recurses past its 64 KiB dies of SIGSEGV where the overflow starts,
+ * instead of running on into the mapping below. A child runs the loop,
+ * under a watchdog of 5 s, and must die of SIGSEGV. */
+
+[[gnu::noinline]] static int32_t recurse(int32_t depth) {
+    volatile char frame[512];
+    frame[0] = (char)depth;
+    if (depth == 0) return frame[0];
+    int32_t below = recurse(depth - 1);
+    __asm__ volatile("" : : "r"(frame) : "memory");   /* keeps each frame */
+    return below + frame[0];
+}
+
+static volatile int32_t recursed;
+
+static void overflow_handler(lio_stream *stream) {
+    (void)stream;
+    recursed = recurse(4096);   /* 2 MiB of frames, on a 64 KiB stack */
+}
+
+static int32_t connect_once(void *arg) {
+    uint16_t port = (uint16_t)(uintptr_t)arg;
+    lc_time_sleep_milliseconds(50);
+    lc_result r = lc_socket_connect_to(127, 0, 0, 1, port);
+    if (!lc_is_err(r)) lc_time_sleep_milliseconds(5000);
+    return 0;
+}
+
+static void test_lightio_handler_stack_overflow_faults(void) {
+    if (!io_uring_available) TEST_SKIP(NO_IO_URING);
+
+    const uint16_t port = 19914;
+    lc_sysret pid = lc_kernel_fork();
+    if (pid == 0) {
+        int64_t watchdog[4] = { 0, 0, 5, 0 };   /* struct itimerval: 5 s, once */
+        (void)lc_syscall3(SYS_setitimer, 0 /* ITIMER_REAL */, (int64_t)watchdog, 0);
+        lio_loop *loop = lio_loop_create();
+        if (!loop || lc_is_err(lio_tcp_serve(loop, port, overflow_handler))) lc_kernel_exit(2);
+        lc_thread client;
+        if (lc_is_err(lc_thread_create(&client, connect_once, (void *)(uintptr_t)port))) lc_kernel_exit(3);
+        lio_loop_run(loop);
+        lc_kernel_exit(4);   /* the overflow did not fault */
+    }
+    TEST_REQUIRE(pid > 0);
+    int32_t status = 0;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status & 0x7f, LC_SIGSEGV);
+}
+
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
@@ -179,6 +298,8 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_lightio_echo_roundtrip);
     TEST_RUN(test_lightio_sequential_reuse);
     TEST_RUN(test_lightio_concurrent_clients);
+    TEST_RUN(test_lightio_handler_stack_alignment);
+    TEST_RUN(test_lightio_handler_stack_overflow_faults);
 
     return test_main();
 }

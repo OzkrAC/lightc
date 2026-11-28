@@ -7,6 +7,8 @@
 #   ./configure debug        — debug symbols, no optimization
 #   ./configure tiny         — minimal binary size, stripped
 #   ./configure ubsan        — undefined behavior traps, debug symbols
+#   ./configure faultinject  — system call fault injection and chaos points,
+#                              for tests (see <lightc/fault.h>)
 #   ./configure clean        — remove build artifacts
 #
 # Then, in the tree root:
@@ -16,6 +18,8 @@
 #   ninja smoke              — run the examples that check their own results
 #   ninja bench              — run the benchmarks
 #   ninja api-check          — check that api/ is the snapshot of the public API
+#   ninja math-sweep         — build build/math-sweep, which checks the math
+#                              functions against the host's libm
 #
 # Environment (an empty value counts as unset):
 #   CC       — the compiler (default gcc). It sets the target: the arch is
@@ -26,6 +30,7 @@
 #              as in CC="ccache aarch64-linux-gnu-gcc"), ar, strip and objcopy
 #              for gcc. A prefixed tool that is not installed falls back to
 #              the plain name; set these when that is the wrong tool.
+#   READELF  — the same, for the readelf that checks the math objects.
 #   CFLAGS   — added after configure's own C flags, so they can override them.
 #   LDFLAGS  — added after configure's own link flags.
 #   SYSROOT  — passed to every compile and link as --sysroot=$SYSROOT.
@@ -74,6 +79,9 @@ find_tool() {
 AR=${AR:-$(find_tool ar)}
 STRIP=${STRIP:-$(find_tool strip)}
 OBJCOPY=${OBJCOPY:-$(find_tool objcopy)}
+# readelf for tools/math-objects.sh, which reads the math objects; any
+# readelf reads the objects of both arches.
+READELF=${READELF:-$(find_tool readelf)}
 
 # --- Detect C23 flag (GCC 14+ uses -std=c23, older uses -std=c2x) ---
 
@@ -85,7 +93,15 @@ fi
 
 # --- Build mode ---
 
+# release and tiny strip .lightc_abi with the rest: the section only holds the
+# references to the ABI tag of <lightc/version.h>, which have done their work
+# once the program has linked.
+
 MODE="${1:-release}"
+
+# Flags of the mode's own for the assembler, which takes no C flags. Only
+# faultinject sets them.
+MODE_ASFLAGS=""
 
 case "$MODE" in
     debug)
@@ -99,14 +115,14 @@ case "$MODE" in
         MODE_CFLAGS="$CSTD -O2 -DNDEBUG -Wall -Wextra -Wpedantic"
         MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc.ld"
-        STRIP_CMD="$STRIP \$out"
+        STRIP_CMD="$STRIP -R .lightc_abi \$out"
         DESC="release (optimized, stripped)"
         ;;
     tiny)
         MODE_CFLAGS="$CSTD -Os -DNDEBUG -Wall -Wextra -Wpedantic -fno-asynchronous-unwind-tables"
         MODE_LDFLAGS="-static -no-pie"
         LDSCRIPT="lightc-tiny.ld"
-        STRIP_CMD="$STRIP \$out && $OBJCOPY --strip-section-headers \$out"
+        STRIP_CMD="$STRIP -R .lightc_abi \$out && $OBJCOPY --strip-section-headers \$out"
         DESC="tiny (minimal binary size)"
         ;;
     # Undefined behavior checks. -fsanitize-trap=all makes each failed check
@@ -125,6 +141,23 @@ case "$MODE" in
         STRIP_CMD=""
         DESC="ubsan (undefined behavior traps, debug symbols)"
         ;;
+    # Fault injection, for tests. LC_FAULTINJECT, in both the C and the
+    # assembler flags, renames the assembly entry points that make system
+    # calls, and src/fault.c defines lc_syscall0 to lc_syscall6,
+    # lc_kernel_clone and the thread start as C functions that check the
+    # rules lc_fault_arm armed before they call those. It also compiles the
+    # chaos points that lc_chaos_seed turns on. Every other mode compiles
+    # none of it: src/fault.c is then empty. As in ubsan: -O1 -g, not
+    # stripped, and without NDEBUG, so lightc's safety checks stay on.
+    # ninja test also runs tests/test_fault.c, which only this mode builds.
+    faultinject)
+        MODE_CFLAGS="$CSTD -O1 -g -Wall -Wextra -Wpedantic -DLC_FAULTINJECT"
+        MODE_ASFLAGS="-DLC_FAULTINJECT"
+        MODE_LDFLAGS="-static -no-pie"
+        LDSCRIPT="lightc.ld"
+        STRIP_CMD=""
+        DESC="faultinject (system call fault injection and chaos points, debug symbols)"
+        ;;
     clean)
         echo "Cleaning ${BUILDDIR}/"
         rm -rf "$BUILDDIR"
@@ -132,7 +165,7 @@ case "$MODE" in
         ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Usage: $0 [debug|release|tiny|ubsan|clean]"
+        echo "Usage: $0 [debug|release|tiny|ubsan|faultinject|clean]"
         exit 1
         ;;
 esac
@@ -167,11 +200,71 @@ esac
 
 COMMON_FLAGS="-ffreestanding -nostdlib -nostartfiles -nodefaultlibs -fno-stack-protector${ARCH_FLAGS:+ ${ARCH_FLAGS}} -Iinclude"
 
+# The math functions' flags, which every source takes. -fno-math-errno, as
+# lightc has no errno and lightc.pc gives it to programs too: with it a
+# builtin such as __builtin_sqrtf is one instruction, and without it GCC
+# adds a call to sqrtf for a negative argument, which in src/math_exact.c's
+# sqrtf would call itself. -ffp-contract=off, so that GCC fuses no a * b + c
+# into an fma on aarch64 that it leaves apart on x86_64, and the math
+# functions give the same bits on both; it is also GCC's default in the ISO
+# C modes. They are in every compile, not only the math sources', as
+# tools/api-snapshot.sh reads the library's objects from cc edges that set
+# no variable; neither changes the code of any other source.
+COMMON_FLAGS="$COMMON_FLAGS -fno-math-errno -ffp-contract=off"
+
+# --- The version, and the config.h that ninja install writes ---
+
+# include/lightc/version.h is the one place the version is written; lightc.pc
+# takes it from there.
+VERSION=$(awk '$1 == "#define" && $2 ~ /^LC_VERSION_(MAJOR|MINOR|PATCH)$/ { if (!($2 in v)) n++; v[$2] = $3 }
+               END { if (n == 3) print v["LC_VERSION_MAJOR"] "." v["LC_VERSION_MINOR"] "." v["LC_VERSION_PATCH"] }' \
+          include/lightc/version.h)
+if [ -z "$VERSION" ]; then
+    echo "include/lightc/version.h does not define LC_VERSION_MAJOR, _MINOR and _PATCH"
+    exit 1
+fi
+
+# The LC_STATS the library is built with: its default, from NDEBUG in the
+# mode's flags, or a -DLC_STATS in CFLAGS. An install's <lightc/config.h>
+# fixes it, so the inline code of the headers that a program compiles
+# agrees with the library.
+LIBRARY_LC_STATS=$(printf '#include <lightc/memory.h>\nlightc_stats=LC_STATS\n' |
+    $CC ${MODE_CFLAGS} ${COMMON_FLAGS}${CFLAGS:+ ${CFLAGS}}${SYSROOT:+ --sysroot=${SYSROOT}} -E -P -x c - 2>/dev/null |
+    sed -n 's/^lightc_stats=//p')
+case "$LIBRARY_LC_STATS" in
+    0|1) ;;
+    *) echo "cannot tell the LC_STATS the library is built with (got '$LIBRARY_LC_STATS')"; exit 1 ;;
+esac
+# The lines of that config.h. ninja install writes them with one printf,
+# so they hold no ' and no $.
+CONFIG_H_PRINTF="printf '%s\\n'"
+while IFS= read -r line; do
+    CONFIG_H_PRINTF="$CONFIG_H_PRINTF '$line'"
+done << EOF
+/*
+ * lightc: the settings this install was built with. ninja install wrote
+ * this file, and <lightc/types.h> includes it.
+ */
+#ifndef LIGHTC_CONFIG_H
+#define LIGHTC_CONFIG_H
+
+/* Whether the library keeps heap and arena statistics. The inline code of
+ * the headers updates them too, so a program must agree with the library. */
+#if defined(LC_STATS) && (LC_STATS + 0) != ${LIBRARY_LC_STATS}
+#error "lightc: this install was built with LC_STATS=${LIBRARY_LC_STATS}: build without -DLC_STATS, or with a lightc built with the LC_STATS you want"
+#endif
+#ifndef LC_STATS
+#define LC_STATS ${LIBRARY_LC_STATS}
+#endif
+
+#endif /* LIGHTC_CONFIG_H */
+EOF
+
 # --- Test plugins: the shared objects the loader's tests load ---
 
 # Their build edges are under "Test plugins" in build.ninja below.
 TEST_PLUGINS=""
-for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
+for plugin in plt relr based abs tls_ie tls_gd imp weak page64k page4k align ifunc ifunc_symbol versioned embedded hash_cycle relaent1 unknown_reloc wild_reloc none_reloc; do
     TEST_PLUGINS="$TEST_PLUGINS${TEST_PLUGINS:+ }\$builddir/plugins/$plugin.so"
 done
 
@@ -275,10 +368,24 @@ LINE
             echo "$where: there is no tests/regress/$id.c"
             exit 1
         fi
+        # tests/regress/<id>.ldflags, when there is one, holds link flags
+        # of that program's own, such as -Wl,--wrap=NAME to stand in for a
+        # library function. Only letters, digits, spaces and _=,.- may be in
+        # it, which ninja and the shell take as they are.
+        link_flags=""
+        if [ -f "tests/regress/$id.ldflags" ]; then
+            link_flags=$(cat "tests/regress/$id.ldflags")
+            case $link_flags in
+                *[!A-Za-z0-9_=,.\ -]*)
+                    echo "tests/regress/$id.ldflags: only letters, digits, spaces and _=,.- may be in it"
+                    exit 1 ;;
+            esac
+        fi
         regress_ids="$regress_ids$id "
         REGRESS_BUILDS="${REGRESS_BUILDS}build \$builddir/regress/$id.o: cc_test tests/regress/$id.c
 build \$builddir/regress/$id: link \$builddir/regress/$id.o \$builddir/liblightc.a | \$ldscript || $TEST_PLUGINS
-
+${link_flags:+  ldflags = \$ldflags $link_flags
+}
 "
     done < "$REGRESS_MANIFEST"
 fi
@@ -290,6 +397,22 @@ if [ -n "$REGRESS_GATING" ]; then
   description = Running regress programs"
 else
     REGRESS_EDGE="build regress: phony"
+fi
+
+# --- The suite of the faultinject mode ---
+
+# tests/test_fault.c tests what only the faultinject mode compiles, the
+# fault rules and the chaos points of <lightc/fault.h>, so only that mode has
+# its build edges and puts it in the tests target and in ninja test. In
+# another mode it could not link, and a suite whose every test skipped
+# would fail ninja test.
+FAULT_SUITES=""
+FAULT_SUITE_EDGES=""
+if [ "$MODE" = faultinject ]; then
+    FAULT_SUITES=" \$builddir/test_fault"
+    FAULT_SUITE_EDGES="build \$builddir/test_fault.o: cc_test tests/test_fault.c
+build \$builddir/test_fault: link \$builddir/test_fault.o \$builddir/liblightc.a | \$ldscript
+"
 fi
 
 # --- Generate build.ninja ---
@@ -310,8 +433,12 @@ builddir = ${BUILDDIR}
 ldscript = ${LDSCRIPT}
 
 cflags = ${MODE_CFLAGS} ${COMMON_FLAGS}${CFLAGS:+ ${CFLAGS}}
-asflags = -Iinclude -Wa,--noexecstack
+asflags = -Iinclude -Wa,--noexecstack${MODE_ASFLAGS:+ ${MODE_ASFLAGS}}
 ldflags = ${MODE_LDFLAGS}${LDFLAGS:+ ${LDFLAGS}}
+
+# The binutils of the math objects' checks and of the sweep tool.
+objcopy = ${OBJCOPY}
+readelf = ${READELF}
 
 # --- Rules ---
 
@@ -366,10 +493,30 @@ build \$builddir/library.o: cc src/library.c
 build \$builddir/containers.o: cc src/containers.c
 build \$builddir/signal.o: cc src/signal.c
 build \$builddir/lifecycle.o: cc src/lifecycle.c
+build \$builddir/version.o: cc src/version.c
+build \$builddir/probe.o: cc src/probe.c
+build \$builddir/fault.o: cc src/fault.c
+build \$builddir/math_exact.o: cc src/math_exact.c
 
 # --- Library ---
 
-build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o
+build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o \$builddir/probe.o \$builddir/fault.o \$builddir/math_exact.o
+
+# --- Math objects ---
+
+# The objects of the math sources, src/math_*.c, define the standard names
+# GCC calls for a builtin it cannot inline, such as floorf, and must not
+# call them: a builtin that GCC did not inline there would be a call to the
+# function it is in. tools/math-objects.sh fails the build when an object
+# has one, and ninja builds this stamp with the library. A new math source
+# adds a cc edge for its object, which takes the math flags with every
+# other source, and adds the object to the liblightc.a edge, to this edge
+# and to the sweep's names.map edge below.
+rule math_calls
+  command = READELF=\$readelf sh tools/math-objects.sh calls \$out \$in
+  description = CHECK \$in
+
+build \$builddir/math.calls: math_calls \$builddir/math_exact.o | tools/math-objects.sh
 
 # --- Examples ---
 
@@ -491,6 +638,17 @@ build \$builddir/plugins/page64k.so: cc_shared tests/plugins/page.c
   so_flags = -Wl,-z,relro,-z,max-page-size=0x10000,-z,common-page-size=0x10000
 build \$builddir/plugins/page4k.so: cc_shared tests/plugins/page.c
   so_flags = -Wl,-z,relro,-z,max-page-size=0x1000,-z,common-page-size=0x1000
+build \$builddir/plugins/align.so: cc_shared tests/plugins/align.c
+build \$builddir/plugins/ifunc.so: cc_shared tests/plugins/ifunc.c
+build \$builddir/plugins/ifunc_symbol.so: cc_shared tests/plugins/ifunc_symbol.c
+build \$builddir/plugins/versioned.so: cc_shared tests/plugins/versioned.c | tests/plugins/versioned.map
+  so_flags = -Wl,--version-script=tests/plugins/versioned.map
+# embedded.so is linked with liblightc.a, compiled as the library is. Its
+# objects are compiled as the toolchain makes them by default, PIE where
+# that is the default: -Bsymbolic binds their references inside the
+# plugin, so they link into a shared object.
+build \$builddir/plugins/embedded.so: cc_shared tests/plugins/embedded.c \$builddir/liblightc.a
+  so_flags = \$cflags -Wl,-Bsymbolic
 build \$builddir/plugins/sysv_hash.so: cc_shared examples/test_plugin.c
   so_flags = -Wl,--hash-style=sysv
 build \$builddir/plugins/hash_cycle.so: corrupt_plugin \$builddir/plugins/sysv_hash.so | tests/plugins/corrupt.sh
@@ -561,10 +719,11 @@ build \$builddir/test_signal: link \$builddir/test_signal.o \$builddir/liblightc
 build \$builddir/test_lifecycle.o: cc_test tests/test_lifecycle.c
 build \$builddir/test_lifecycle: link \$builddir/test_lifecycle.o \$builddir/liblightc.a | \$ldscript
 
-# test_library loads test_plugin.so and plugins/page64k.so from its own
-# directory, so building the suite builds those plugins too.
+# test_library loads test_plugin.so, plugins/page64k.so and
+# plugins/versioned.so from its own directory, so building the suite builds
+# those plugins too.
 build \$builddir/test_library.o: cc_test tests/test_library.c
-build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so \$builddir/plugins/page64k.so
+build \$builddir/test_library: link \$builddir/test_library.o \$builddir/liblightc.a | \$ldscript || \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so
 
 build \$builddir/test_thread_sync.o: cc_test tests/test_thread_sync.c
 build \$builddir/test_thread_sync: link \$builddir/test_thread_sync.o \$builddir/liblightc.a | \$ldscript
@@ -574,8 +733,42 @@ build \$builddir/test_lightio: link \$builddir/test_lightio.o \$builddir/libligh
 
 build \$builddir/test_syscall.o: cc_test tests/test_syscall.c
 build \$builddir/test_syscall: link \$builddir/test_syscall.o \$builddir/liblightc.a | \$ldscript
-
-build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall
+build \$builddir/test_index.o: cc_test tests/test_index.c
+build \$builddir/test_index: link \$builddir/test_index.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_probe.o: cc_test tests/test_probe.c
+build \$builddir/test_probe: link \$builddir/test_probe.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_sandbox.o: cc_test tests/test_sandbox.c
+build \$builddir/test_sandbox: link \$builddir/test_sandbox.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math.o: cc_test tests/test_math.c
+build \$builddir/test_math: link \$builddir/test_math.o \$builddir/liblightc.a | \$ldscript
+# test_math_fast is test_math compiled again with -O3 -ffast-math, under
+# which the classification macros of <lightc/math.h> must still give the
+# class of each value.
+build \$builddir/test_math_fast.o: cc_test tests/test_math.c
+  cflags = \$cflags -O3 -ffast-math
+build \$builddir/test_math_fast: link \$builddir/test_math_fast.o \$builddir/liblightc.a | \$ldscript
+# test_math_exact checks both forms of the exact functions, the lc_ one
+# and the standard name, on the hard cases of tests/data/math_exact_cases.h.
+build \$builddir/test_math_exact.o: cc_test tests/test_math_exact.c
+build \$builddir/test_math_exact: link \$builddir/test_math_exact.o \$builddir/liblightc.a | \$ldscript
+# test_math_builtins calls each math builtin that GCC may turn into a call,
+# so it links only if liblightc.a defines each name it calls. It is built
+# at -O0 and -O2, each with -fno-math-errno, which every compile takes and
+# lightc.pc gives, and with -fmath-errno, under which GCC calls more names.
+build \$builddir/test_math_builtins_o0.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O0
+build \$builddir/test_math_builtins_o0: link \$builddir/test_math_builtins_o0.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o2.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O2
+build \$builddir/test_math_builtins_o2: link \$builddir/test_math_builtins_o2.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o0_errno.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O0 -fmath-errno
+build \$builddir/test_math_builtins_o0_errno: link \$builddir/test_math_builtins_o0_errno.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o2_errno.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O2 -fmath-errno
+build \$builddir/test_math_builtins_o2_errno: link \$builddir/test_math_builtins_o2_errno.o \$builddir/liblightc.a | \$ldscript
+${FAULT_SUITE_EDGES}
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_o0 \$builddir/test_math_builtins_o2 \$builddir/test_math_builtins_o0_errno \$builddir/test_math_builtins_o2_errno${FAULT_SUITES}
 
 # tests/run.sh runs every suite, even after one fails, each with a time
 # limit, and ends with a summary. The console pool streams each suite's
@@ -586,7 +779,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall | \$builddir/test_plugin.so \$builddir/plugins/page64k.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_o0 \$builddir/test_math_builtins_o2 \$builddir/test_math_builtins_o0_errno \$builddir/test_math_builtins_o2_errno${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 
@@ -652,8 +845,9 @@ rule install_cmd
     mkdir -p \$\${DESTDIR}\$prefix/lib/lightc && \$
     cp lightc.ld lightc-tiny.ld \$\${DESTDIR}\$prefix/lib/lightc/ && \$
     cp -r include/lightc include/lightdata include/lightio \$\${DESTDIR}\$prefix/include/ && \$
+    ${CONFIG_H_PRINTF} > \$\${DESTDIR}\$prefix/include/lightc/config.h && \$
     mkdir -p \$\${DESTDIR}\$prefix/lib/pkgconfig && \$
-    sed -e "s|@PREFIX@|\$prefix|g" -e "s| *@ARCH_CFLAGS@|${ARCH_FLAGS:+ ${ARCH_FLAGS}}|" lightc.pc.in > \$\${DESTDIR}\$prefix/lib/pkgconfig/lightc.pc
+    sed -e "s|@PREFIX@|\$prefix|g" -e "s|@VERSION@|${VERSION}|" -e "s| *@ARCH_CFLAGS@|${ARCH_FLAGS:+ ${ARCH_FLAGS}}|" lightc.pc.in > \$\${DESTDIR}\$prefix/lib/pkgconfig/lightc.pc
   description = Installing to \$prefix
 
 build install: install_cmd \$builddir/liblightc.a
@@ -691,9 +885,47 @@ rule run_benchmarks
 
 build bench: run_benchmarks \$builddir/bench_heap2 \$builddir/bench_arena \$builddir/bench_string \$builddir/bench_containers \$builddir/bench_thread \$builddir/bench_format
 
+# --- The math sweep tool ---
+
+# ninja math-sweep builds build/math-sweep, which compares the math
+# functions with the host's libm, over all 2^32 floats and on random
+# samples: tools/math-sweep.c says how to run it. It links libc and libm,
+# so it is a hosted program, built with CC, which must then target this
+# machine, and never by ninja, ninja test or the library. It takes the
+# library's math objects, compiled as the library is, and the lc_ forms,
+# which tools/math-sweep.c compiles freestanding with the library's flags,
+# and links copies of them whose standard names are renamed lightc_NAME,
+# so that libm's keep theirs. A new math source adds its object to the
+# names.map edge, an edge that renames it, and that copy to the link.
+rule math_names
+  command = READELF=\$readelf sh tools/math-objects.sh names \$out \$in
+  description = NAMES \$out
+
+rule math_rename
+  command = READELF=\$readelf OBJCOPY=\$objcopy sh tools/math-objects.sh rename \$builddir/sweep/names.map \$in \$out
+  description = RENAME \$out
+
+rule sweep_cc
+  command = \$cc ${CSTD} -O2 -g -Wall -Wextra -pthread -fno-builtin -ffp-contract=off -fno-stack-protector -MMD -MF \$out.d -c \$in -o \$out
+  depfile = \$out.d
+  description = CC \$out (hosted)
+
+rule sweep_link
+  command = \$cc -no-pie -pthread \$in -lm -o \$out
+  description = LINK \$out (hosted)
+
+build \$builddir/sweep/names.map: math_names \$builddir/math_exact.o | tools/math-objects.sh
+build \$builddir/sweep/math_exact.o: math_rename \$builddir/math_exact.o | \$builddir/sweep/names.map tools/math-objects.sh
+build \$builddir/sweep/lc.o: cc tools/math-sweep.c
+  cflags = \$cflags -DMATH_SWEEP_LC
+build \$builddir/sweep/lc.renamed.o: math_rename \$builddir/sweep/lc.o | \$builddir/sweep/names.map tools/math-objects.sh
+build \$builddir/sweep/main.o: sweep_cc tools/math-sweep.c
+build \$builddir/math-sweep: sweep_link \$builddir/sweep/main.o \$builddir/sweep/lc.renamed.o \$builddir/sweep/math_exact.o
+build math-sweep: phony \$builddir/math-sweep
+
 # --- Targets ---
 
-build all: phony \$builddir/liblightc.a \$builddir/hello \$builddir/syscalls \$builddir/strings \$builddir/print.example \$builddir/memory.example \$builddir/heap.example \$builddir/thread.example \$builddir/bench_heap \$builddir/io.example \$builddir/async.example \$builddir/socket.example \$builddir/httpd \$builddir/coroutine.example \$builddir/format.example \$builddir/log.example \$builddir/time.example \$builddir/lightio_echo \$builddir/lightio_http \$builddir/lightio_test \$builddir/test_plugin.so \$builddir/library.example \$builddir/containers.example \$builddir/heapviz
+build all: phony \$builddir/liblightc.a \$builddir/hello \$builddir/syscalls \$builddir/strings \$builddir/print.example \$builddir/memory.example \$builddir/heap.example \$builddir/thread.example \$builddir/bench_heap \$builddir/io.example \$builddir/async.example \$builddir/socket.example \$builddir/httpd \$builddir/coroutine.example \$builddir/format.example \$builddir/log.example \$builddir/time.example \$builddir/lightio_echo \$builddir/lightio_http \$builddir/lightio_test \$builddir/test_plugin.so \$builddir/library.example \$builddir/containers.example \$builddir/heapviz \$builddir/math.calls
 default all
 
 build clean: clean_cmd

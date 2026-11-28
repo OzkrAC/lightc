@@ -79,7 +79,7 @@ static int32_t tcp_server_thread(void *arg) {
     *ok = 0;
 
     /* Create, bind to port 0 (any free port), listen */
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return server_failed(-1, &server_ready);
     int32_t server_fd = (int32_t)r.value;
 
@@ -103,7 +103,8 @@ static int32_t tcp_server_thread(void *arg) {
 
     /* Accept one connection */
     lc_socket_address client_addr;
-    r = lc_socket_accept(server_fd, &client_addr);
+    uint32_t client_addr_size = sizeof client_addr;
+    r = lc_socket_accept_flags(server_fd, &client_addr, &client_addr_size, 0);
     if (lc_is_err(r)) {
         lc_socket_close(server_fd);
         return 1;
@@ -154,7 +155,7 @@ static int32_t tcp_client_thread(void *arg) {
     if (!wait_for_server(&server_ready)) return 1;
 
     /* Connect to server */
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return 1;
     int32_t fd = (int32_t)r.value;
 
@@ -212,7 +213,7 @@ static int32_t udp_server_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    lc_result r = lc_socket_create(LC_SOCK_DGRAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
     if (lc_is_err(r)) return server_failed(-1, &udp_server_ready);
     int32_t fd = (int32_t)r.value;
 
@@ -270,7 +271,7 @@ static int32_t udp_client_thread(void *arg) {
     /* Wait for server to be ready, or to fail */
     if (!wait_for_server(&udp_server_ready)) return 1;
 
-    lc_result r = lc_socket_create(LC_SOCK_DGRAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_DGRAM, 0);
     if (lc_is_err(r)) return 1;
     int32_t fd = (int32_t)r.value;
 
@@ -323,8 +324,9 @@ static int32_t conv_server_thread(void *arg) {
     int32_t *ok = (int32_t *)arg;
     *ok = 0;
 
-    /* Use convenience function: create + bind to port 0 + listen */
-    lc_result r = lc_socket_listen_on(0, 1);
+    /* Use convenience function: create + bind to port 0 of loopback + listen */
+    lc_socket_address listen_addr = lc_socket_address_create(127, 0, 0, 1, 0);
+    lc_result r = lc_socket_listen_on(&listen_addr, 1);
     if (lc_is_err(r)) return server_failed(-1, &conv_server_ready);
     int32_t server_fd = (int32_t)r.value;
 
@@ -337,7 +339,7 @@ static int32_t conv_server_thread(void *arg) {
     atomic_store_explicit(&conv_server_ready, 1, memory_order_release);
 
     /* Accept one connection */
-    r = lc_socket_accept(server_fd, NULL);
+    r = lc_socket_accept_flags(server_fd, NULL, NULL, 0);
     if (lc_is_err(r)) {
         lc_socket_close(server_fd);
         return 1;
@@ -478,7 +480,7 @@ int main(int argc, char **argv, char **envp) {
     /* --- Shutdown test --- */
     lc_print_string(STDOUT, S("socket_shutdown"));
     {
-        lc_result r = lc_socket_create(LC_SOCK_STREAM);
+        lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
         ok = !lc_is_err(r);
         if (ok) {
             int32_t fd = (int32_t)r.value;

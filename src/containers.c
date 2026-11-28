@@ -83,10 +83,22 @@ lc_result lc_array_reserve(lc_array *arr, size_t min_capacity) {
     return lc_ok(0);
 }
 
+/* Byte offset of `p` inside the array's live elements, or SIZE_MAX if `p` does
+ * not point into them. Lets push/insert survive an `element` that aliases the
+ * array (e.g. lc_array_push(&a, lc_array_get(&a, 0))). */
+static size_t array_alias_offset(const lc_array *arr, const void *p) {
+    if (arr->data == NULL) return SIZE_MAX;
+    uintptr_t base = (uintptr_t)arr->data, q = (uintptr_t)p;
+    if (q < base || q - base >= arr->count * arr->element_size) return SIZE_MAX;
+    return (size_t)(q - base);
+}
+
 lc_result_ptr lc_array_push(lc_array *arr, const void *element) {
     if (arr->count == arr->capacity) {
+        size_t off = array_alias_offset(arr, element);
         lc_result r = lc_array_reserve(arr, arr->count + 1);
         if (lc_is_err(r)) return lc_err_ptr(LC_ERR_NOMEM);
+        if (off != SIZE_MAX) element = arr->data + off;
     }
     uint8_t *dst = arr->data + arr->count * arr->element_size;
     lc_bytes_copy(dst, element, arr->element_size);
@@ -121,6 +133,7 @@ void lc_array_clear(lc_array *arr) {
 
 lc_result_ptr lc_array_insert(lc_array *arr, size_t index, const void *element) {
     if (index > arr->count) return lc_err_ptr(LC_ERR_INVAL);
+    size_t off = array_alias_offset(arr, element);
     if (arr->count == arr->capacity) {
         lc_result r = lc_array_reserve(arr, arr->count + 1);
         if (lc_is_err(r)) return lc_err_ptr(LC_ERR_NOMEM);
@@ -129,6 +142,12 @@ lc_result_ptr lc_array_insert(lc_array *arr, size_t index, const void *element) 
     size_t tail_bytes = (arr->count - index) * arr->element_size;
     if (tail_bytes > 0) {
         lc_bytes_move(slot + arr->element_size, slot, tail_bytes);
+    }
+    if (off != SIZE_MAX) {
+        /* Re-derive after a possible realloc; an aliased element in the
+         * shifted tail moved one slot to the right. */
+        if (off >= index * arr->element_size) off += arr->element_size;
+        element = arr->data + off;
     }
     lc_bytes_copy(slot, element, arr->element_size);
     arr->count++;
@@ -385,8 +404,16 @@ void lc_hashmap_iterate(const lc_hashmap *map,
  * ======================================================================== */
 
 lc_ringbuf lc_ringbuf_create(size_t element_size, size_t min_capacity) {
-    size_t capacity = next_power_of_2(min_capacity);
-    lc_result_ptr alloc = lc_heap_allocate(capacity * element_size);
+    /* next_power_of_2 wraps to 0 above SIZE_MAX/2+1, and capacity *
+     * element_size can wrap to 0 (-> a 1-byte allocation behind a ring that
+     * claims a huge capacity): reject both like lc_array_reserve does. */
+    size_t capacity = 0, bytes = 0;
+    bool bad = min_capacity > (SIZE_MAX / 2) + 1;
+    if (!bad) {
+        capacity = next_power_of_2(min_capacity);
+        bad = __builtin_mul_overflow(capacity, element_size, &bytes);
+    }
+    lc_result_ptr alloc = bad ? lc_err_ptr(LC_ERR_NOMEM) : lc_heap_allocate(bytes);
 
     if (lc_ptr_is_err(alloc)) {
         return (lc_ringbuf){
@@ -460,9 +487,13 @@ void *lc_ringbuf_peek(const lc_ringbuf *ring) {
 }
 
 size_t lc_ringbuf_count(const lc_ringbuf *ring) {
-    size_t tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
+    /* head first: tail is read later, so tail >= head and the difference
+     * cannot wrap; a third-thread observer can still see both indices move
+     * between the loads, so clamp to capacity. */
     size_t head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    return tail - head;
+    size_t tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
+    size_t n = tail - head;
+    return n > ring->capacity ? ring->capacity : n;
 }
 
 bool lc_ringbuf_is_empty(const lc_ringbuf *ring) {

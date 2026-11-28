@@ -2,7 +2,7 @@
 #include <lightc/syscall.h>
 #include <lightc/string.h>
 #include <lightc/heap.h>
-#include "kernel.h"          /* struct linux_dirent64, struct statx */
+#include "kernel.h"          /* struct linux_dirent64, struct statx, AT_EMPTY_PATH */
 
 /* ========================================================================
  * Buffered Writer
@@ -386,10 +386,10 @@ lc_result lc_file_write_all(const char *path, const void *data, size_t size) {
 lc_result lc_file_get_size(const char *path) {
     /* statx does not open the file: a FIFO does not block it, it needs no
      * read permission, and a device sees no open. */
-    struct statx stx;
-    lc_sysret ret = lc_syscall5(SYS_statx, AT_FDCWD, (int64_t)path, 0, STATX_SIZE, (int64_t)&stx);
-    if (ret < 0) return lc_err((int32_t)(-ret));
-    return lc_ok((int64_t)stx.stx_size);
+    lc_file_info info;
+    lc_result r = lc_file_stat(path, &info);
+    if (lc_is_err(r)) return r;
+    return lc_ok((int64_t)info.size);
 }
 
 /* ========================================================================
@@ -398,25 +398,34 @@ lc_result lc_file_get_size(const char *path) {
 
 /*
  * getdents64 returns entries in the format of struct linux_dirent64
- * (kernel.h). Only its offsets are used. getdents64 starts each record at
- * a multiple of 8 from the start of the buffer, but lc_directory's buffer
- * follows an int32_t, at offset 4, so every record is 4 bytes off this
- * struct's alignment and must not be read through a pointer to it
- * (IO-dirent-align).
+ * (kernel.h). Only its offsets are used: lc_directory_next copies each
+ * field out of the record, as it did when the buffer sat at offset 4 and
+ * every record was 4 bytes off the struct's alignment (IO-dirent-align).
+ * The buffer is aligned to 8 now, as getdents64 aligns its records.
  */
+_Static_assert(offsetof(lc_directory, buffer) % 8 == 0, "lc_directory's buffer must be aligned to 8");
 
 lc_result lc_directory_open(lc_directory *dir, const char *path) {
+    /* Empty and done before the open, so that one that fails leaves no fd
+     * of someone else's to close: the caller's dir may hold anything. */
+    dir->fd       = -1;
+    dir->error    = 0;
+    dir->filled   = 0;
+    dir->position = 0;
+    dir->done     = true;
+
     /* O_DIRECTORY makes the kernel reject a non-directory at open (-ENOTDIR),
      * instead of "opening" a regular file and later conflating getdents's
      * -ENOTDIR with end-of-directory. O_CLOEXEC keeps the fd out of exec'd
      * children. */
     lc_sysret fd_ret = lc_kernel_open_file(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
-    if (fd_ret < 0) return lc_err((int32_t)(-fd_ret));
+    if (fd_ret < 0) {
+        dir->error = (int32_t)(-fd_ret);
+        return lc_err(dir->error);
+    }
 
-    dir->fd       = (int32_t)fd_ret;
-    dir->filled   = 0;
-    dir->position = 0;
-    dir->done     = false;
+    dir->fd   = (int32_t)fd_ret;
+    dir->done = false;
     return lc_ok((int64_t)dir->fd);
 }
 
@@ -431,7 +440,8 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
              * and a record claiming to extend past the filled bytes would read
              * out of bounds. Either means the stream is unusable — stop. */
             if (reclen == 0 || dir->position + reclen > dir->filled) {
-                dir->done = true;
+                dir->done  = true;
+                dir->error = LC_ERR_IO;
                 return false;
             }
             entry->name = (const char *)record + offsetof(struct linux_dirent64, d_name);
@@ -445,7 +455,10 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry) {
 
         lc_sysret ret = lc_kernel_read_directory(dir->fd, dir->buffer, sizeof(dir->buffer));
         if (ret <= 0) {
+            /* 0 is the end; a negative return is an error that ends the
+             * listing early, which the caller can tell by dir->error. */
             dir->done = true;
+            if (ret < 0) dir->error = (int32_t)(-ret);
             return false;
         }
 
@@ -459,5 +472,74 @@ void lc_directory_close(lc_directory *dir) {
         lc_kernel_close_file(dir->fd);
         dir->fd = -1;
     }
-    dir->done = true;
+    /* Empty the buffer too: entries left in it would otherwise come back
+     * from a lc_directory_next after the close. */
+    dir->filled   = 0;
+    dir->position = 0;
+    dir->done     = true;
+}
+
+/* ========================================================================
+ * File Status
+ * ======================================================================== */
+
+/* A time of struct statx as an lc_file_time. */
+static lc_file_time file_time(struct statx_timestamp t) {
+    return (lc_file_time){ .seconds = t.tv_sec, .nanoseconds = t.tv_nsec };
+}
+
+/*
+ * statx(dirfd, path, flags) into *info, asking for every field that
+ * lc_file_info holds. The kernel checks the flags, and fails with EINVAL on
+ * one it does not take. On an error statx writes nothing, and *info is
+ * zeroed instead.
+ */
+static lc_result file_stat(int32_t dirfd, const char *path, int32_t flags, lc_file_info *info) {
+    struct statx stx;
+    lc_sysret ret = lc_syscall5(SYS_statx, dirfd, (int64_t)path, flags,
+                                LC_STATX_BASIC_STATS | LC_STATX_MNT_ID, (int64_t)&stx);
+    if (ret < 0) {
+        *info = (lc_file_info){ 0 };
+        return lc_err((int32_t)(-ret));
+    }
+    /* The type is the mode's top four bits, S_IFMT, which shifted down by
+     * 12 are the d_type values that LC_DT_* name. */
+    info->mask            = stx.stx_mask;
+    info->type            = (stx.stx_mask & LC_STATX_TYPE) ? (uint8_t)(stx.stx_mode >> 12) : LC_DT_UNKNOWN;
+    info->mode            = (uint16_t)(stx.stx_mode & 07777);
+    info->links           = stx.stx_nlink;
+    info->uid             = stx.stx_uid;
+    info->gid             = stx.stx_gid;
+    info->block_size      = stx.stx_blksize;
+    info->inode           = stx.stx_ino;
+    info->size            = stx.stx_size;
+    info->blocks          = stx.stx_blocks;
+    info->attributes      = stx.stx_attributes;
+    info->attributes_mask = stx.stx_attributes_mask;
+    info->accessed        = file_time(stx.stx_atime);
+    info->modified        = file_time(stx.stx_mtime);
+    info->changed         = file_time(stx.stx_ctime);
+    info->rdev_major      = stx.stx_rdev_major;
+    info->rdev_minor      = stx.stx_rdev_minor;
+    info->dev_major       = stx.stx_dev_major;
+    info->dev_minor       = stx.stx_dev_minor;
+    info->mount_id        = stx.stx_mnt_id;
+    /* 0 whatever the caller's struct held, as io.h promises: a later
+     * release that fills it says so with a new bit in mask. */
+    lc_bytes_fill(info->reserved, 0, sizeof info->reserved);
+    return lc_ok(0);
+}
+
+lc_result lc_file_stat(const char *path, lc_file_info *info) {
+    return file_stat(AT_FDCWD, path, 0, info);
+}
+
+lc_result lc_file_stat_at(int32_t dirfd, const char *path, int32_t flags, lc_file_info *info) {
+    return file_stat(dirfd, path, flags, info);
+}
+
+lc_result lc_file_stat_fd(int32_t fd, lc_file_info *info) {
+    /* The empty path names the file fd is open on. Linux 6.11 takes NULL
+     * for it too, but "" works on every kernel. */
+    return file_stat(fd, "", AT_EMPTY_PATH, info);
 }

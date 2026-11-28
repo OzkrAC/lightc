@@ -46,6 +46,7 @@
     ['threads.html', 'Threads'],
     ['coroutines.html', 'Coroutines'],
     ['async.html', 'Async & lightio'],
+    ['contracts.html', 'Contracts'],
   ];
   tern.leaf('site-nav', { tag: 'nav', attrs: { 'aria-label': 'Documentation' } });
   tern.define('site-nav', function (el) {

@@ -216,6 +216,30 @@ static void test_format_overflow_small_buffer(void) {
     TEST_ASSERT_STR_EQ(buf, 3, "hel", 3);
 }
 
+/* lc_format_length: what the buffer holds. It equals finish's length while
+ * the text fits, stops at the buffer's room after an overflow, where finish
+ * gives the whole text's length, and is 0 for a buffer of no room. */
+static void test_format_length(void) {
+    char buf[16];
+    lc_format fmt = lc_format_start(buf, sizeof(buf));
+    lc_format_add_text(&fmt, "short");
+    TEST_ASSERT_EQ(lc_format_finish(&fmt), (size_t)5);
+    TEST_ASSERT_EQ(lc_format_length(&fmt), (size_t)5);
+
+    char small[8];
+    fmt = lc_format_start(small, sizeof(small));
+    lc_format_add_text(&fmt, "2026-03-15 21:30:00");
+    TEST_ASSERT_EQ(lc_format_finish(&fmt), (size_t)19);
+    TEST_ASSERT_EQ(lc_format_length(&fmt), (size_t)7);
+    TEST_ASSERT_STR_EQ(small, lc_format_length(&fmt), "2026-03", 7);
+    TEST_ASSERT_EQ(small[7], '\0');
+
+    fmt = lc_format_start(small, 0);
+    lc_format_add_text(&fmt, "x");
+    TEST_ASSERT_EQ(lc_format_finish(&fmt), (size_t)1);
+    TEST_ASSERT_EQ(lc_format_length(&fmt), (size_t)0);
+}
+
 static void test_format_overflow_exact_fit(void) {
     char buf[6]; /* capacity=6, usable=5 */
     lc_format fmt = lc_format_start(buf, sizeof(buf));
@@ -414,6 +438,7 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_format_double_precision);
     TEST_RUN(test_format_double_neg_zero);
     TEST_RUN(test_format_zero_capacity);
+    TEST_RUN(test_format_length);
     TEST_RUN(test_format_large_double);
 
     return test_main();

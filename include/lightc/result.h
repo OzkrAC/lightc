@@ -185,25 +185,30 @@ enum {
     LC_ERR_RELOC_FAILED   = 4101,
     LC_ERR_FULL           = 4102,  /* capacity exceeded (atexit table, etc.) */
     LC_ERR_MALFORMED_ELF  = 4103,  /* structurally invalid / out-of-bounds ELF */
+    LC_ERR_UNSUPPORTED    = 4104,  /* valid, but needs what the loader lacks: TLS, IFUNC, symbol versions */
 };
 
 /* --- Constructors --- */
 
+/* A success with `value`. */
 [[gnu::const]]
 static inline lc_result lc_ok(int64_t value) {
     return (lc_result){ .value = value, .error = LC_OK };
 }
 
+/* A failure with `error`, an LC_ERR_* code. */
 [[gnu::const]]
 static inline lc_result lc_err(int32_t error) {
     return (lc_result){ .value = 0, .error = error };
 }
 
+/* A success with the pointer `ptr`. */
 [[gnu::const]]
 static inline lc_result_ptr lc_ok_ptr(void *ptr) {
     return (lc_result_ptr){ .value = ptr, .error = LC_OK };
 }
 
+/* A failure with `error`, an LC_ERR_* code, and a NULL pointer. */
 [[gnu::const]]
 static inline lc_result_ptr lc_err_ptr(int32_t error) {
     return (lc_result_ptr){ .value = NULL, .error = error };
@@ -225,15 +230,19 @@ static inline lc_result_ptr lc_result_ptr_from_sysret(int64_t ret) {
 
 /* --- Queries --- */
 
+/* Did `r` succeed? */
 [[gnu::const]]
 static inline bool lc_is_ok(lc_result r) { return r.error == 0; }
 
+/* Did `r` fail? */
 [[gnu::const]]
 static inline bool lc_is_err(lc_result r) { return r.error != 0; }
 
+/* Did `r` succeed? */
 [[gnu::const]]
 static inline bool lc_ptr_is_ok(lc_result_ptr r) { return r.error == 0; }
 
+/* Did `r` fail? */
 [[gnu::const]]
 static inline bool lc_ptr_is_err(lc_result_ptr r) { return r.error != 0; }
 
@@ -390,6 +399,7 @@ static inline const char *lc_error_name(int32_t error) {
     case LC_ERR_RELOC_FAILED:   return "RELOC_FAILED";
     case LC_ERR_FULL:           return "FULL";
     case LC_ERR_MALFORMED_ELF:  return "MALFORMED_ELF";
+    case LC_ERR_UNSUPPORTED:    return "UNSUPPORTED";
     default:                    return "UNKNOWN";
     }
 }

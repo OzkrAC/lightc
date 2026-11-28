@@ -83,7 +83,7 @@ The kernel loads the static ELF and enters `_start` (hand-written assembly, `arc
 4. reads `argc`, `argv`, `envp` and calls `main(argc, argv, envp)`;
 5. passes `main`'s return value to the `exit_group` syscall.
 
-There is no C runtime, so nothing runs the program's own constructors or destructors and there is no static TLS (a library loaded with `lc_library_open` does get its `DT_INIT` and `.init_array` run, and `lc_library_close` runs its `.fini_array` and `DT_FINI`, but one with thread-local storage fails to load). A program that uses `thread_local`, or defines a function with `__attribute__((constructor))` or `__attribute__((destructor))`, fails to link with a `lightc:` message from the linker script (`lightc.ld` or `lightc-tiny.ld`; the pkg-config flags pass `lightc.ld`). Keep per-thread data in the [`lc_tls_*` keys](threads.html#tls) and call setup code from `main`. `main`'s signature is `int main(int argc, char **argv, char **envp)` because there is no global `environ`.
+There is no C runtime, so nothing runs the program's own constructors or destructors and there is no static TLS (a library loaded with `lc_library_open` does get its `DT_INIT` and `.init_array` run, and `lc_library_close` runs its `.fini_array` and `DT_FINI`, but one with thread-local storage fails to load, with `LC_ERR_UNSUPPORTED`, as does one linked with its own `liblightc.a`). A program that uses `thread_local`, or defines a function with `__attribute__((constructor))` or `__attribute__((destructor))`, fails to link with a `lightc:` message from the linker script (`lightc.ld` or `lightc-tiny.ld`; the pkg-config flags pass `lightc.ld`). Keep per-thread data in the [`lc_tls_*` keys](threads.html#tls) and call setup code from `main`. `main`'s signature is `int main(int argc, char **argv, char **envp)` because there is no global `environ`.
 
 ### Exit {#exit}
 
@@ -150,7 +150,7 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 
 ## Types and strings {#types}
 
-`types.h` takes the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t` and `NULL` from `<stdint.h>` and `<stddef.h>`, which with `-ffreestanding` are the compiler's own headers, not libc's. `bool`, `true` and `false` are C23 keywords, and `result.h`, which `types.h` includes, also includes `<stdbool.h>`. `lc_sysret` is an `int64_t`.
+`types.h` takes the fixed-width integer types (`uint8_t`, `int32_t`, `uint64_t`, …), `size_t` and `NULL` from `<stdint.h>` and `<stddef.h>`, which with `-ffreestanding` are the compiler's own headers, not libc's. It includes `version.h`, which gives the version (`LC_VERSION_*` and `lc_version()`) and the ABI tag: each object compiled with these headers refers to `lc_abi_MAJOR_MINOR`, so a program fails to link against a `liblightc.a` of another minor version. `bool`, `true` and `false` are C23 keywords, and `result.h`, which `types.h` includes, also includes `<stdbool.h>`. `lc_sysret` is an `int64_t`.
 
 `string.h` provides string and byte operations that lower to the compiler's `__builtin_*` routines; lengths are explicit, so no API assumes NUL termination.
 
@@ -163,4 +163,45 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 | `lc_bytes_compare(a, b, n)` | compare `n` bytes |
 
 {.source}
-Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.
+Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `version.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.
+
+## Math {#math}
+
+`<math.h>` is libc's, so lightc has `math.h`, which declares only `lc_` names. `<float.h>` is the compiler's, and still gives `FLT_MAX`, `FLT_EPSILON` and the rest. lightc has no libm, and nothing in `math.h` needs one.
+
+`lc_isnan(x)`, `lc_isinf(x)`, `lc_isfinite(x)` and `lc_signbit(x)` classify a float or a double as `<math.h>`'s macros of those names do, and give a `bool`. Each is a type-generic macro that calls the function for the type of `x`, such as `lc_float_isnan` or `lc_double_isnan`, so `x` is evaluated once and not converted; any other type does not compile. They test the bits of `x`, which `lc_float_to_bits` and `lc_double_to_bits` give, so GCC's flags do not change their answers: under `-ffast-math`, GCC folds `__builtin_isnan(x)` to false, and `__builtin_signbit(x)` to `x < 0`, which is false for `-0`, while these still give the class of `x`. That is checked with GCC, not with clang. What they classify is the value the compiled code made, though, and `-ffast-math` lets the compiler rewrite arithmetic, so an expression that gives a NaN, an infinity or `-0` under IEEE 754 can give another value there.
+
+| Constant | Value |
+|---|---|
+| `LC_INFINITY`, `LC_NAN` | positive infinity and a quiet NaN, as floats, which convert to doubles exactly |
+| `LC_PI`, `LC_PI_F` | π, as a double and as a float |
+| `LC_E`, `LC_E_F` | e |
+| `LC_LN2`, `LC_LN2_F` | ln 2 |
+
+Each constant is correctly rounded to its type: the float forms are literals of their own, not the doubles rounded again.
+
+### Exact functions {#math-exact}
+
+`lc_sqrtf`, `lc_floorf` and the other functions of the table are `<math.h>`'s functions of those names without `lc_`. Each is exact: it gives the correctly rounded result, bit for bit, with C23 Annex F's special values, and the same bits on x86_64 and aarch64. No `errno` is set and no FP flag is read, and the rounding mode is always to nearest, ties to even, as lightc never changes it. A NaN in gives a quiet NaN out, of no particular sign or payload, but `lc_fabsf` and `lc_copysignf` change only the sign bit, of a NaN too.
+
+| Function | Result |
+|---|---|
+| `lc_sqrtf(x)`, `lc_sqrt(x)` | the square root |
+| `lc_floorf(x)`, `lc_ceilf(x)`, `lc_truncf(x)`, and `lc_floor`, `lc_ceil`, `lc_trunc` | `x` rounded down, up, or toward zero, to an integer |
+| `lc_roundf(x)`, `lc_round(x)` | the nearest integer, ties away from zero |
+| `lc_rintf(x)`, `lc_nearbyintf(x)`, `lc_rint(x)`, `lc_nearbyint(x)` | the nearest integer, ties to even |
+| `lc_lrintf(x)` | the nearest `long`, ties to even, saturated |
+| `lc_fmaf(x, y, z)`, `lc_fma(x, y, z)` | `x * y + z`, rounded once |
+| `lc_fminf(x, y)`, `lc_fmaxf(x, y)`, `lc_fmin`, `lc_fmax` | the smaller or the larger; a NaN and a number give the number |
+| `lc_fabsf(x)`, `lc_copysignf(x, y)` | `x` with its sign bit clear, or with the sign bit of `y` |
+| `lc_frexpf(x, &e)` | a fraction of magnitude in [0.5, 1), and in `e` the power of 2 that makes `x` |
+| `lc_ldexpf(x, n)`, `lc_scalbnf(x, n)` | `x` times 2 to the power `n`, rounded once |
+
+Where C leaves the result open, lightc gives the same on both arches: `lc_rintf` and `lc_nearbyintf` are one function; `lc_fminf` of `-0` and `+0`, in either order, is `-0`, and `lc_fmaxf` of them `+0`, and a signalling NaN gives a quiet NaN, as aarch64's `fminnm` and `fmaxnm` do; `lc_lrintf` gives 0 for a NaN, `LONG_MAX` from 2^63 up and `LONG_MIN` below -2^63; `lc_frexpf` stores 0 for ±0, an infinity and a NaN.
+
+Each is `static inline` over the GCC builtin of its name, such as `__builtin_floorf`, so it is one instruction where the target has one, also in a function with a `target("...")` attribute: `sqrtss`, `roundss` with SSE4.1 and `vfmadd` with FMA on x86_64; `fsqrt`, the `frint` instructions, `fmadd`, `fminnm` and `fmaxnm` on aarch64. Elsewhere GCC calls the function of the standard name, such as `floorf`, which `liblightc.a` defines, as it defines `memcpy`, and which no lightc header declares: a program calls the `lc_` names. Baseline x86_64 has no rounding instruction, so there the rounding functions work on the bits, and `fma` multiplies in integers. `lightc.pc`'s Cflags give `-fno-math-errno`, without which GCC adds a call to `sqrtf` for a negative argument of `lc_sqrtf`. Under `-ffast-math`, GCC may rewrite these functions as it rewrites the program's own arithmetic, and when it folds a call on constants it takes a signalling NaN for a quiet one.
+
+Every source of lightc is built with `-fno-math-errno`, and with `-ffp-contract=off`, so that GCC fuses no multiply and add on aarch64 that it keeps apart on x86_64. `tools/math-sweep.c` compares each function with the host's libm: a float function of one argument over all 2^32 floats, and the others on every float with lists of second arguments, or on random samples. `ninja math-sweep` builds it as `build/math-sweep`; it links libc and libm, so neither `ninja` nor `ninja test` builds it. `tests/test_math_exact.c` checks both forms of each function, the `lc_` one and the standard name, on the hard cases in `tests/data/math_exact_cases.h`, which the tool writes.
+
+{.source}
+Header `include/lightc/math.h`, whose functions are each `static inline`; the standard names in `src/math_exact.c`. `tests/test_math.c` is built twice, as `test_math` and, with `-O3 -ffast-math`, as `test_math_fast`; `tests/test_math_builtins.c` four times, at `-O0` and `-O2`, with and without `-fno-math-errno`.

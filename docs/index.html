@@ -43,6 +43,8 @@ Two invariants hold throughout the API:
 - **No hidden state.** There is no global `errno` and no implicit allocator. A fallible call returns its status in an `lc_result` or `lc_result_ptr` value (see [the error model](guide.html#errors)); memory comes from an allocator you name.
 - **The kernel ABI is the only dependency.** Every external effect is a syscall. Only two source files are per-architecture: the startup stub and the syscall trampoline.
 
+Coming from 0.1.1? [Migrating to 0.2.0-rc1](migration-0.2.0-rc1.html) gives what to change in a program, what was added and what behaves differently.
+
 ## Modules {#modules}
 
 Each module is one public header. Linked modules have a reference page; the rest are documented at their headers.
@@ -77,6 +79,8 @@ Each module is one public header. Linked modules have a reference page; the rest
 | Allocation | Allocating calls are `[[nodiscard]]` and return `lc_result_ptr`. |
 | Thread safety | Noted per function. The heap and synchronization primitives are thread-safe; most data-structure handles are not, unless stated. |
 
+[Contracts](contracts.html) gives the rest of what a program can count on and what it must do itself: how to link, what a signal handler may call, how EINTR and SIGPIPE are handled, close-on-exec, fork and exit, plugins, rings and the kernel lightc needs. Each default there names the test that enforces it.
+
 ## Building {#building}
 
 A shell `configure` script selects a build mode and writes `build.ninja`; `ninja` builds. The toolchain requirement is GCC and ninja only.
@@ -87,6 +91,7 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 | `./configure release` | `-O2 -DNDEBUG`, stripped (default) |
 | `./configure tiny` | `-Os`, smallest binary |
 | `./configure ubsan` | `-O1 -g -fsanitize=undefined -fsanitize-trap=all`, safety checks on |
+| `./configure faultinject` | `-O1 -g -DLC_FAULTINJECT`, safety checks on: system calls that fail on request, and chaos points, for tests |
 
 | Target | Builds |
 |---|---|
@@ -96,7 +101,7 @@ A shell `configure` script selects a build mode and writes `build.ninja`; `ninja
 | `ninja regress` | run the regress programs of fixed defects, listed in `tests/regress/manifest` |
 | `ninja smoke` | run the examples that check their own results, and `lightio_test` |
 | `ninja bench` | run the benchmarks |
-| `ninja api-check` | check that `api/` is the snapshot of the public API: symbols, declarations and struct layouts |
+| `ninja api-check` | check that `api/` is the snapshot of the public API: symbols, declarations, struct layouts, and the index of every function with the system calls it makes (`api/index.md`, `api/syscalls.tsv`) |
 
 The output links statically with lightc's own linker script (`lightc.ld`, or `lightc-tiny.ld` in tiny mode), no-PIE, with no interpreter and no dynamic dependencies.
 
@@ -110,6 +115,8 @@ ninja all tests
 ```
 
 In ubsan mode each undefined behavior check is a trap instruction, so no sanitizer runtime is linked: a program that hits one stops with SIGILL on x86_64 or SIGTRAP on aarch64. The binaries are not stripped, so `addr2line` maps the `ip` or `pc` that the kernel logs for it to the check's source line. ubsan links with `lightc.ld`, and the installed `lightc.pc` is the same in every mode.
+
+In faultinject mode, `lc_syscall0` to `lc_syscall6`, `lc_kernel_clone` and the clone that starts a thread are C functions that check a table of fault rules before they make their system call. A rule armed with `lc_fault_arm` fails the Nth call of one system call, and as many after it as it says, with the errno it names, without making it: a test can make mmap fail with ENOMEM, or clone with EAGAIN, and see what the library does then. The mode also compiles chaos points into `lc_spinlock_acquire` and the heap's lock-free remote free, which yield or spin at random once `lc_chaos_seed` seeds them, to make threads interleave in more ways; lightc's thread suites take the seed from `LC_CHAOS` in the environment. `<lightc/fault.h>` declares this API only when `LC_FAULTINJECT` is defined, as the mode defines it, and no other mode compiles any of it, so a release library has none of its symbols.
 
 ## Example {#example}
 

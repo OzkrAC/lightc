@@ -1,11 +1,10 @@
-lc_arena size 24 align 8 # only with NDEBUG
-lc_arena size 48 align 8 # only without NDEBUG
+lc_arena size 48 align 8
 lc_arena.base offset 0 size 8: uint8_t *
 lc_arena.capacity offset 8 size 8: size_t
 lc_arena.used offset 16 size 8: size_t
-lc_arena.peak_used offset 24 size 8: size_t # only without NDEBUG
-lc_arena.alloc_count offset 32 size 8: size_t # only without NDEBUG
-lc_arena.reset_count offset 40 size 8: size_t # only without NDEBUG
+lc_arena.peak_used offset 24 size 8: size_t
+lc_arena.alloc_count offset 32 size 8: size_t
+lc_arena.reset_count offset 40 size 8: size_t
 lc_arena_stats size 56 align 8
 lc_arena_stats.capacity offset 0 size 8: size_t
 lc_arena_stats.used offset 8 size 8: size_t
@@ -69,7 +68,8 @@ lc_date_time.day_of_week offset 24 size 4: int32_t
 lc_date_time.day_of_year offset 28 size 4: int32_t
 lc_directory size 4128 align 8
 lc_directory.fd offset 0 size 4: int32_t
-lc_directory.buffer offset 4 size 4096: uint8_t[4096]
+lc_directory.error offset 4 size 4: int32_t
+lc_directory.buffer offset 8 size 4096: _Alignas(8) uint8_t[4096]
 lc_directory.filled offset 4104 size 8: size_t
 lc_directory.position offset 4112 size 8: size_t
 lc_directory.done offset 4120 size 1: bool
@@ -79,6 +79,31 @@ lc_directory_entry.type offset 8 size 1: uint8_t
 lc_duration size 16 align 8
 lc_duration.seconds offset 0 size 8: int64_t
 lc_duration.nanoseconds offset 8 size 8: int64_t
+lc_file_info size 168 align 8
+lc_file_info.mask offset 0 size 4: uint32_t
+lc_file_info.type offset 4 size 1: uint8_t
+lc_file_info.mode offset 6 size 2: uint16_t
+lc_file_info.links offset 8 size 4: uint32_t
+lc_file_info.uid offset 12 size 4: uint32_t
+lc_file_info.gid offset 16 size 4: uint32_t
+lc_file_info.block_size offset 20 size 4: uint32_t
+lc_file_info.inode offset 24 size 8: uint64_t
+lc_file_info.size offset 32 size 8: uint64_t
+lc_file_info.blocks offset 40 size 8: uint64_t
+lc_file_info.attributes offset 48 size 8: uint64_t
+lc_file_info.attributes_mask offset 56 size 8: uint64_t
+lc_file_info.accessed offset 64 size 16: lc_file_time
+lc_file_info.modified offset 80 size 16: lc_file_time
+lc_file_info.changed offset 96 size 16: lc_file_time
+lc_file_info.rdev_major offset 112 size 4: uint32_t
+lc_file_info.rdev_minor offset 116 size 4: uint32_t
+lc_file_info.dev_major offset 120 size 4: uint32_t
+lc_file_info.dev_minor offset 124 size 4: uint32_t
+lc_file_info.mount_id offset 128 size 8: uint64_t
+lc_file_info.reserved offset 136 size 32: uint64_t[4]
+lc_file_time size 16 align 8
+lc_file_time.seconds offset 0 size 8: int64_t
+lc_file_time.nanoseconds offset 8 size 8: int64_t
 lc_format size 32 align 8
 lc_format.buffer offset 0 size 8: char *
 lc_format.capacity offset 8 size 8: size_t
@@ -172,7 +197,14 @@ lc_signal_info.ptr_val offset 48 size 8: uint64_t
 lc_signal_info.utime offset 56 size 8: uint64_t
 lc_signal_info.stime offset 64 size 8: uint64_t
 lc_signal_info.addr offset 72 size 8: uint64_t
-lc_signal_info._pad offset 80 size 48: uint8_t[48]
+lc_signal_info.addr_lsb offset 80 size 2: uint16_t
+lc_signal_info._pad2 offset 82 size 2: uint16_t
+lc_signal_info.syscall offset 84 size 4: int32_t
+lc_signal_info.call_addr offset 88 size 8: uint64_t
+lc_signal_info.arch offset 96 size 4: uint32_t
+lc_signal_info._pad offset 100 size 28: uint8_t[28]
+lc_signal_set size 8 align 8
+lc_signal_set.bits offset 0 size 8: uint64_t
 lc_socket_address size 16 align 4
 lc_socket_address.family offset 0 size 2: uint16_t
 lc_socket_address.port offset 2 size 2: uint16_t

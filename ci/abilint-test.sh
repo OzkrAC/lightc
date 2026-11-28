@@ -15,6 +15,10 @@
 #            after it would fail. Calls in comments and literals, correct
 #            calls over lines and in a macro over lines, and a longer name
 #            that ends in lc_syscall3 must not fail.
+#   raw      A new src/planted.c that calls lc_fault_raw_syscall1, one of the
+#            trampolines of the faultinject build, and names
+#            lc_fault_raw_kernel_clone: each fails, outside src/fault.c, and
+#            the same names in a comment and a string do not.
 #   unlisted A macro added to <lightc/socket.h>, and a new src/planted.h
 #            with an include guard, a constant, a function-like macro and
 #            a constant defined after an #ifndef of its name: each macro
@@ -128,6 +132,23 @@ FAIL: src/planted.c:15: lc_syscall1(SYS_write, ...): write takes 3 arguments in 
 FAIL: src/planted.c:22: lc_syscall2(SYS_close, ...): close takes 1 argument in syscalls.def, not 2
 EOF
 expect arity
+
+# --- raw ---
+
+fresh
+cat > "$work/tree/src/planted.c" << 'EOF'
+/* lc_fault_raw_syscall1(SYS_close, 0) in a comment is no call */
+static const char *text = "lc_fault_raw_syscall0";
+static void planted(void) {
+    lc_fault_raw_syscall1(SYS_close, 0);
+    void *clone = (void *)lc_fault_raw_kernel_clone;
+}
+EOF
+cat > "$work/expected" << 'EOF'
+FAIL: src/planted.c:4: lc_fault_raw_syscall1 is named outside src/fault.c: it makes a system call that no fault rule checks, so only the shims there may call it
+FAIL: src/planted.c:5: lc_fault_raw_kernel_clone is named outside src/fault.c: it makes a system call that no fault rule checks, so only the shims there may call it
+EOF
+expect raw
 
 # --- unlisted ---
 

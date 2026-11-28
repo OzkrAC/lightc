@@ -15,8 +15,8 @@ static void handle_echo(lio_stream *stream) {
     lc_format_add_text(&fmt, "[echo] client connected (fd ");
     lc_format_add_signed(&fmt, lio_stream_fd(stream));
     lc_format_add_text(&fmt, ")");
-    size_t len = lc_format_finish(&fmt);
-    lc_print_line(STDOUT, msg, len);
+    lc_format_finish(&fmt);
+    lc_print_line(STDOUT, msg, lc_format_length(&fmt));
 
     /* Echo loop: read data, echo it back */
     while (true) {
@@ -31,8 +31,8 @@ static void handle_echo(lio_stream *stream) {
     lc_format_add_text(&fmt, "[echo] client disconnected (fd ");
     lc_format_add_signed(&fmt, lio_stream_fd(stream));
     lc_format_add_text(&fmt, ")");
-    len = lc_format_finish(&fmt);
-    lc_print_line(STDOUT, msg, len);
+    lc_format_finish(&fmt);
+    lc_print_line(STDOUT, msg, lc_format_length(&fmt));
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -56,7 +56,8 @@ int main(int argc, char **argv, char **envp) {
     lc_format fmt = lc_format_start(msg, sizeof(msg));
     lc_format_add_text(&fmt, "lightio echo server on port ");
     lc_format_add_unsigned(&fmt, port);
-    lc_print_line(STDOUT, msg, lc_format_finish(&fmt));
+    lc_format_finish(&fmt);
+    lc_print_line(STDOUT, msg, lc_format_length(&fmt));
 
     lio_loop_run(loop);
 

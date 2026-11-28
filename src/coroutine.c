@@ -4,6 +4,7 @@
 #include <lightc/heap.h>
 #include <lightc/thread.h>
 #include <lightc/memory.h>
+#include "internal.h"          /* LC_SLOT_SCHEDULER, guarded_stack_map */
 
 /*
  * Verify that the assembly context-switch offsets match the C struct layout.
@@ -23,24 +24,19 @@ extern void lc_coroutine_switch(lc_coroutine_context *save,
                                 lc_coroutine_context *restore);
 
 /*
- * Per-thread pointer to the currently active scheduler.
- * Uses thread-local storage so each thread can run its own scheduler.
+ * Per-thread pointer to the currently active scheduler, so each thread can
+ * run its own. It is in the library's slot of the per-thread block, not in
+ * a TLS key: with every key taken, the key the scheduler failed to get was
+ * 0, the program's own.
  */
-static lc_tls_key scheduler_tls_key;
-static lc_once scheduler_tls_init = LC_ONCE_INIT;
-
-static void init_scheduler_tls(void) {
-    lc_tls_key_create(&scheduler_tls_key);
-}
-
 static lc_scheduler *get_current_scheduler(void) {
-    lc_call_once(&scheduler_tls_init, init_scheduler_tls);
-    return (lc_scheduler *)lc_tls_get(scheduler_tls_key);
+    void **slots = lc_heap_tls_slots();
+    return slots ? (lc_scheduler *)slots[LC_SLOT_SCHEDULER] : NULL;
 }
 
 static void set_current_scheduler(lc_scheduler *sched) {
-    lc_call_once(&scheduler_tls_init, init_scheduler_tls);
-    lc_tls_set(scheduler_tls_key, sched);
+    void **slots = lc_heap_tls_slots();
+    if (slots) slots[LC_SLOT_SCHEDULER] = sched;
 }
 
 /*
@@ -98,25 +94,11 @@ lc_coroutine *lc_coroutine_create(lc_scheduler *sched, lc_coroutine_func func, v
     lc_coroutine *co = &sched->coroutines[sched->count];
     sched->count++;
 
-    /* Allocate a stack via mmap, with a guard page at the bottom. Use the
-     * kernel's real page size: mprotect rounds a sub-page length up to a full
-     * page, so a hardcoded 4096 on a 16K/64K-page kernel would steal most of
-     * the coroutine's stack for the guard. */
-    size_t guard_size = lc_runtime_page_size();
-    size_t total_size = LC_COROUTINE_STACK_SIZE + guard_size;
-    void *stack = lc_kernel_map_memory(NULL, total_size,
-                                       PROT_READ | PROT_WRITE,
-                                       MAP_PRIVATE | MAP_ANONYMOUS,
-                                       -1, 0);
-    if (stack == MAP_FAILED) {
-        sched->count--;
-        return NULL;
-    }
-
-    /* Guard page at the bottom (lowest address) — stack overflow hits this. If
-     * it can't be established, unmap and fail rather than run unguarded. */
-    if (lc_kernel_protect_memory(stack, guard_size, PROT_NONE) < 0) {
-        lc_kernel_unmap_memory(stack, total_size);
+    /* A stack with a guard page below it, and a context that enters the
+     * trampoline on it, aligned as after a call. */
+    size_t total_size;
+    void *stack = guarded_stack_map(LC_COROUTINE_STACK_SIZE, &total_size);
+    if (stack == NULL) {
         sched->count--;
         return NULL;
     }
@@ -127,57 +109,7 @@ lc_coroutine *lc_coroutine_create(lc_scheduler *sched, lc_coroutine_func func, v
     co->stack_size = total_size;
     co->scheduler  = sched;
     co->state      = LC_COROUTINE_READY;
-
-    /* Zero the context — only the fields we set matter */
-    lc_bytes_fill(&co->context, 0, sizeof(co->context));
-
-    /*
-     * Set up the initial context so that lc_coroutine_switch "returns"
-     * into coroutine_trampoline.
-     */
-#if defined(__x86_64__)
-    /*
-     * Stack grows down. The top of the mmap'd region is the initial stack top
-     * and is 16-byte aligned (page-aligned from mmap).
-     *
-     * We place the trampoline address as a "return address" on the stack.
-     * When lc_coroutine_switch executes `ret`, it pops this address (rsp += 8)
-     * and jumps to the trampoline.
-     *
-     * The trampoline is a normal function, so it is entered under the System V
-     * ABI invariant: rsp + 8 must be 16-byte aligned at entry (i.e. rsp ≡ 8
-     * mod 16), because the compiler's prologue assumes it. `ret` adds 8, so
-     * context.rsp itself must be 16-byte aligned (≡ 0 mod 16). We therefore
-     * reserve 16 bytes (keeping the aligned stack_top aligned) and store the
-     * return address in the lower slot. Reserving only 8 would leave the
-     * trampoline entered at rsp ≡ 0 mod 16 — misaligned by 8 — which faults
-     * on any aligned SSE spill (movaps) in the coroutine call tree.
-     */
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)stack + total_size);
-
-    /* Reserve 16 bytes; put the trampoline "return address" in the low slot so
-     * context.rsp stays 16-byte aligned. */
-    stack_top -= 2;
-    *stack_top = (uint64_t)coroutine_trampoline;
-
-    co->context.rsp = (uint64_t)stack_top;
-    co->context.rbp = 0;
-
-#elif defined(__aarch64__)
-    /*
-     * Stack grows down. Align to 16 bytes (AArch64 requires it).
-     *
-     * The context switch restores lr (x30) and then executes `ret`,
-     * which jumps to lr. We set lr = trampoline.
-     * sp = top of stack, 16-byte aligned.
-     */
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)stack + total_size);
-    stack_top = (uint64_t *)((uintptr_t)stack_top & ~15ULL);
-
-    co->context.sp  = (uint64_t)stack_top;
-    co->context.x30 = (uint64_t)coroutine_trampoline;  /* lr = return address */
-    co->context.x29 = 0;                                /* fp = 0 (frame chain end) */
-#endif
+    coroutine_context_init(&co->context, stack, total_size, coroutine_trampoline);
 
     return co;
 }

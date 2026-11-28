@@ -3,7 +3,8 @@
 #
 # Writes the snapshot of lightc's public API that api/ holds: four files of
 # one item per line, each line meaningful alone, so that a diff of two
-# snapshots lists what changed between them.
+# snapshots lists what changed between them, and an index of the public
+# functions with the system calls each makes.
 #
 #   symbols.txt         each global symbol liblightc.a defines, with its nm
 #                       type: "T lc_heap_allocate"
@@ -15,6 +16,13 @@
 #                       of its fields, on that arch:
 #                       "lc_writer size 32 align 8"
 #                       "lc_writer.fd offset 0 size 4: int32_t"
+#   index.md            a table of each public function: its header,
+#                       signature and purpose, how it reports an error, its
+#                       layer, the system calls it makes and whether it is
+#                       safe after a raw clone
+#   syscalls.tsv        each public function and system call it makes, with
+#                       the arches where it does:
+#                       "lc_socket_accept<TAB>accept4<TAB>x86_64 aarch64"
 #
 # The public headers are every *.h under include/ but the syscall_nr.h
 # files, as in ci/headers.sh. The library's objects are those that the
@@ -37,7 +45,8 @@
 # "{ ... }", since the layout files give them per arch, and each enumerator
 # has a line of its own, with its value:
 #   "lightc/log.h: typedef enum { LC_LOG_INFO = 1, ... } lc_log_level;"
-# _Static_assert declarations and macros are not in it.
+# _Static_assert declarations, top-level asm statements and macros are not
+# in it.
 #
 # layout-ARCH.txt: a translation unit that defines a char array of
 # sizeof, _Alignof or offsetof plus one bytes for each struct and field is
@@ -60,6 +69,30 @@
 # The lines are sorted with LC_ALL=C: decls.txt by header, then by the name
 # declared, symbols.txt by name, and the layout files by struct, each
 # struct's line first, then its fields by offset.
+#
+# index.md and syscalls.tsv: the purpose is the first sentence of the
+# comment right above the declaration in the header, and a public function
+# without one stops the tool, with its header and line. How it reports an
+# error follows from its return type: lc_sysret is a negative errno, and
+# lc_result and lc_result_ptr carry a positive one in .error. The layer is
+# "kernel" for lc_kernel_* and lc_syscallN, which wrap system calls
+# directly, and "module" for the rest. The system calls and the clone safety
+# come from the sources, not from the comments, so they cannot go stale:
+# each source of the library is preprocessed for each variant, and the
+# calls of every public function are followed through every function of
+# the library it calls or names, as one passed as a callback is. A call to
+# lc_syscallN makes the system call its first argument numbers, by
+# syscalls.def. The assembly functions are in a table, and an assembly
+# function that the table lacks stops the tool. A function that calls
+# through a function pointer, whose target it cannot follow, is marked "and
+# what its callbacks make". It is clone-safe when nothing it reaches reads
+# the thread pointer, or writes a file-scope or static variable of the
+# library, takes its address, or uses it through a pointer: what a child
+# of a raw clone, with no thread of its own in lightc, can call without
+# touching the state of the parent. index.md shows the first reason found
+# when it is not. A system call is listed for an arch when the function
+# makes it with or without NDEBUG there. tests/test_index.c checks both
+# claims by running the functions of the headers it covers.
 #
 # The compiler gives the layout's numbers, which the psABI fixes, and the
 # symbol types. The text of decls.txt and of the field types is that of
@@ -107,7 +140,7 @@ CDPATH= cd -- "$(dirname -- "$0")/.."
 LC_ALL=C
 export LC_ALL
 
-FILES="symbols.txt decls.txt layout-x86_64.txt layout-aarch64.txt"
+FILES="symbols.txt decls.txt layout-x86_64.txt layout-aarch64.txt index.md syscalls.tsv"
 
 usage() {
     echo "usage: sh tools/api-snapshot.sh [-o DIR | -c DIR | -a DIR [BASELINE]]" >&2
@@ -402,6 +435,9 @@ function finish(start, end, ob, cb,    first, n) {
     if (end == start) return
     first = skip_attributes(start, end)
     if (tok[first] == "_Static_assert" || tok[first] == "static_assert") return
+    # A top-level asm statement, such as the ABI tag reference of
+    # <lightc/version.h>, declares nothing.
+    if (tok[first] == "__asm__" || tok[first] == "asm") return
     if (ob) {
         aggregate_declaration(start, end, ob, cb)
         return
@@ -941,6 +977,700 @@ END {
 }
 '
 
+# Follows the calls of each public function through the preprocessed
+# sources: what CALLS prints, its comment says.
+CALLS='
+# Reads, in this order: syscalls.def; the global symbols that the assembly of
+# the library defines, one per line; the decl lines of PARSE, whose functions
+# are the public ones; the preprocessed headers.c; then each preprocessed
+# source of the library. Follows the calls of each public function through the
+# sources and prints, a tab between fields:
+#   NAME  SYSCALLS  CALLBACK  CLONE
+# SYSCALLS are the names of the system calls it can make, sorted and
+# separated by spaces, or "-". A call to lc_syscallN makes the one its
+# first argument, a literal after preprocessing, numbers in syscalls.def.
+# CALLBACK is 1 when it calls through a function pointer, whose target it
+# cannot follow; a function of the library named without a call, as one
+# passed as a callback, counts as called. CLONE is "yes", "yes, if its
+# callbacks are", or "no: " and the first reason found: it reads the
+# thread pointer, or writes a variable of the library (a file-scope or
+# static one), takes its address, or uses it through a pointer. Needs
+# -v arch=x86_64 or aarch64.
+function fail(msg) {
+    print "api-snapshot: " msg | "cat 1>&2"
+    failed = 1
+    exit 1
+}
+
+function is_ident(t) {
+    return t ~ /^[A-Za-z_][A-Za-z_0-9]*$/
+}
+
+# --- Tokens ---
+
+function tokenize(s,    n) {
+    while (s != "") {
+        if (match(s, /^[ \t\r\f]+/)) {
+            s = substr(s, RLENGTH + 1)
+            continue
+        }
+        if (match(s, /^[A-Za-z_][A-Za-z_0-9]*/) ||
+                match(s, /^\.?[0-9]([0-9A-Za-z_.]|[eEpP][-+])*/) ||
+                match(s, /^"([^"\\]|\\.)*"/) ||
+                match(s, /^\047([^\047\\]|\\.)*\047/))
+            n = RLENGTH
+        else if (substr(s, 1, 3) in punct)
+            n = 3
+        else if (substr(s, 1, 2) in punct)
+            n = 2
+        else
+            n = 1
+        ntok++
+        tok[ntok] = substr(s, 1, n)
+        s = substr(s, n + 1)
+    }
+}
+
+# The index of the token that closes the ( [ or { at k.
+function closing(k,    j, depth, o, c) {
+    o = tok[k]
+    c = o == "(" ? ")" : o == "[" ? "]" : "}"
+    depth = 0
+    for (j = k; j <= ntok; j++) {
+        if (tok[j] == o) depth++
+        else if (tok[j] == c && --depth == 0) return j
+    }
+    fail(tu ": a " o " that is not closed")
+}
+
+# As declarator_name in PARSE: the index of the name that from..to
+# declares, or 0.
+function declarator_name(from, to,    k, depth, last, m) {
+    depth = 0
+    last = 0
+    for (k = from; k <= to; k++) {
+        if (tok[k] == "{") {
+            k = closing(k)
+            continue
+        }
+        if (tok[k] == "(" && depth == 0 && k > from && is_ident(tok[k - 1]) && !(tok[k - 1] in not_declarator)) {
+            if (tok[k + 1] != "*") return k - 1
+            m = k + 1
+            while (m <= to && (tok[m] == "*" || tok[m] in qualifiers)) m++
+            if (m <= to && is_ident(tok[m])) return m
+            return 0
+        }
+        if (tok[k] == "(" || tok[k] == "[") depth++
+        else if (tok[k] == ")" || tok[k] == "]") depth--
+        else if (depth == 0 && is_ident(tok[k]) && !(tok[k] in not_declarator) && !(tok[k] in specifiers)) last = k
+    }
+    return last
+}
+
+# The first = at depth 0 in from..to, or to + 1.
+function initializer(from, to,    k, depth) {
+    depth = 0
+    for (k = from; k <= to; k++) {
+        if (tok[k] == "{") k = closing(k)
+        else if (tok[k] == "(" || tok[k] == "[") depth++
+        else if (tok[k] == ")" || tok[k] == "]") depth--
+        else if (tok[k] == "=" && depth == 0) return k
+    }
+    return to + 1
+}
+
+# Records the object that from..to declares (to before its ; or =) as a
+# mutable variable of scope, when it is not const. A pointer is recorded
+# as one too: a write through it is not followed.
+function object(scope, from, to,    n, k, star, first_star, c, pc) {
+    n = declarator_name(from, to)
+    if (!n) return
+    star = 0
+    first_star = 0
+    for (k = from; k < n; k++)
+        if (tok[k] == "*") {
+            star = k
+            if (!first_star) first_star = k
+        }
+    c = 0
+    for (k = (star ? star + 1 : from); k < n; k++) if (tok[k] == "const") c = 1
+    if (c) return
+    mutable[scope, tok[n]] = 1
+    # Through a pointer to what is not const, any use can write.
+    pc = 0
+    for (k = from; k < first_star; k++) if (tok[k] == "const") pc = 1
+    if (first_star && !pc) pointer[scope, tok[n]] = 1
+}
+
+# --- Top level ---
+
+function translation_unit(    i, k, t, depth, start, n, eq, first, b, j, c) {
+    first_body = nbody + 1
+    i = 1
+    while (i <= ntok) {
+        start = i
+        depth = 0
+        for (k = i; k <= ntok; k++) {
+            t = tok[k]
+            if (t == "(" || t == "[") depth++
+            else if (t == ")" || t == "]") depth--
+            else if (t == "{" && depth == 0) {
+                if (k > start && tok[k - 1] == ")" && initializer(start, k - 1) == k) {
+                    n = declarator_name(start, k - 1)
+                    if (n && tok[n + 1] == "(") {
+                        definition(start, n, k, closing(k))
+                        break
+                    }
+                }
+                k = closing(k)
+            }
+            else if (t == ";" && depth == 0) {
+                declaration(start, k)
+                break
+            }
+        }
+        if (k > ntok) {
+            if (start <= ntok) fail(tu ": a declaration with no ; after it")
+            break
+        }
+        i = (tok[k] == "{") ? closing(k) + 1 : k + 1
+    }
+    for (b = first_body; b <= nbody; b++)
+        for (j = 1; j <= ncalls[body_node[b]]; j++) {
+            c = calls[body_node[b], j]
+            if ((tu, c) in static_def) calls[body_node[b], j] = tu "|" c
+        }
+}
+
+function declaration(start, end,    first, eq, n, k) {
+    first = start
+    while (first < end && tok[first] == "[" && tok[first + 1] == "[") first = closing(first) + 1
+    if (tok[first] == "_Static_assert" || tok[first] == "static_assert" || tok[first] == "__asm__" || tok[first] == "asm") return
+    if (tok[first] == "typedef") {
+        n = declarator_name(first + 1, end - 1)
+        if (n) typedefs[tok[n]] = 1
+        return
+    }
+    eq = initializer(start, end - 1)
+    n = declarator_name(start, eq - 1)
+    if (!n) return
+    if (tok[n + 1] == "(") {
+        declared[tu, tok[n]] = 1
+        for (k = start; k < n; k++) if (tok[k] == "static") static_decl[tu, tok[n]] = 1
+        return
+    }
+    object(tu, start, eq - 1)
+}
+
+# The function named at n, whose body is the { at b to the } at e.
+function definition(start, n, b, e,    name, node, k, is_static) {
+    name = tok[n]
+    is_static = 0
+    for (k = start; k < n; k++) if (tok[k] == "static") is_static = 1
+    node = is_static ? tu "|" name : name
+    if (node in defined) {
+        if (!is_static) fail("two definitions of " name ": " defined[node] " and " tu)
+        return
+    }
+    defined[node] = tu
+    if (is_static) static_def[tu, name] = 1
+    declared[tu, name] = 1
+    nbody++
+    body_node[nbody] = node
+    body(node, b, e)
+}
+
+# --- Bodies ---
+
+function body(node, b, e,    k, t, prev, nx, j, s, end, eq, how) {
+    for (k = b + 1; k < e; k++) {
+        t = tok[k]
+        if (t == "static") {
+            # A static local is state shared by every call.
+            for (end = k; end < e && tok[end] != ";"; end++)
+                if (tok[end] == "{") end = closing(end)
+            eq = initializer(k, end - 1)
+            object(node, k + 1, eq - 1)
+            continue
+        }
+        if (!is_ident(t)) {
+            if (t == "(" && tok[k + 1] == "*" && is_ident(tok[k + 2]) && tok[k + 3] == ")" && tok[k + 4] == "(")
+                indirect[node] = 1
+            # A call through an array element: table[i](...)
+            if (t == "(" && tok[k - 1] == "]") indirect[node] = 1
+            continue
+        }
+        prev = tok[k - 1]
+        nx = tok[k + 1]
+        if (prev == "." || prev == "->") {
+            if (nx == "(") indirect[node] = 1
+            continue
+        }
+        if (t == "__asm__" || t == "asm") {
+            j = k + 1
+            while (tok[j] in qualifiers || tok[j] == "volatile" || tok[j] == "__volatile__" || tok[j] == "goto" || tok[j] == "inline") j++
+            if (tok[j] == "(") {
+                end = closing(j)
+                for (s = j; s < end; s++)
+                    if (tok[s] ~ /^"/ && (index(tok[s], "%fs") || index(tok[s], "tpidr_el0")))
+                        thread_pointer[node] = 1
+                k = end
+            }
+            continue
+        }
+        if (t == "__builtin_thread_pointer") thread_pointer[node] = 1
+        if (nx == "(" && !(t in not_call) && !(t in typedefs) && t !~ /^__(builtin|atomic|sync)_/) {
+            if (t ~ /^lc_syscall[0-6]$/) {
+                if (tok[k + 2] !~ /^[0-9]+$/ || (tok[k + 3] != "," && tok[k + 3] != ")"))
+                    fail(tu ": " node " calls " t " with a number that is not a literal")
+                if (!(tok[k + 2] in sysname))
+                    fail(tu ": " node " makes syscall " tok[k + 2] ", which syscalls.def does not name for " arch)
+                # An element is tested before it is read: gawk 5.4 reads a
+                # missing one as "0" in some expressions.
+                if (node in sys_list) sys_list[node] = sys_list[node] " " sysname[tok[k + 2]]
+                else sys_list[node] = sysname[tok[k + 2]]
+            } else if ((tu, t) in declared) {
+                # Resolved once the whole unit is read: a static function
+                # can be defined after its first call.
+                calls[node, ++ncalls[node]] = t
+            } else {
+                indirect[node] = 1
+            }
+        }
+        else if (nx != "(" && (tu, t) in declared && !((node, t) in mutable)) {
+            # A function named without a call, as a callback: whatever is
+            # given it may call it, so it counts as called.
+            calls[node, ++ncalls[node]] = t
+        }
+        if (((node, t) in mutable || (tu, t) in mutable) && !(node in writes)) {
+            how = written(k, ((node, t) in pointer || (tu, t) in pointer))
+            if (how != "") writes[node] = how " " t
+        }
+    }
+}
+
+# How the variable at k is used when that can change it, or "" for a read:
+# assigned or incremented, its address taken, or, for a pointer to what is
+# not const, used at all.
+function written(k, is_pointer,    p, pp, j, n) {
+    p = tok[k - 1]
+    pp = tok[k - 2]
+    if (p == "++" || p == "--") return "writes"
+    # A unary &: after an operator, a ( or a keyword, not after an operand.
+    if (p == "&" && !((is_ident(pp) && !(pp in not_operand)) || pp ~ /^[0-9]/ || pp == ")" || pp == "]"))
+        return "takes the address of"
+    j = k + 1
+    while (tok[j] == "[" || tok[j] == "." || tok[j] == "->") {
+        if (tok[j] == "[") j = closing(j) + 1
+        else j += 2
+    }
+    n = tok[j]
+    if ((n in assignment) || n == "++" || n == "--") return "writes"
+    if (is_pointer) return "uses, through a pointer,"
+    return ""
+}
+
+# --- The input ---
+
+BEGIN {
+    failed = 0
+    split("... <<= >>= -> ++ -- << >> <= >= == != && || :: ## += -= *= /= %= &= ^= |=", list, " ")
+    for (i in list) punct[list[i]] = 1
+    split("= += -= *= /= %= &= ^= |= <<= >>=", list, " ")
+    for (i in list) assignment[list[i]] = 1
+    split("const volatile restrict _Atomic", list, " ")
+    for (i in list) qualifiers[list[i]] = 1
+    split("__attribute__ _Atomic _Alignas alignas typeof __typeof__ typeof_unqual sizeof _Alignof alignof _Static_assert static_assert", list, " ")
+    for (i in list) not_declarator[list[i]] = 1
+    split("static extern inline typedef register auto const volatile restrict _Thread_local thread_local _Noreturn __inline __inline__ __extension__ void char short int long float double signed unsigned _Bool bool struct union enum", list, " ")
+    for (i in list) specifiers[list[i]] = 1
+    split("return case sizeof _Alignof alignof else do", list, " ")
+    for (i in list) not_operand[list[i]] = 1
+    split("if while for switch return sizeof _Alignof alignof _Generic __attribute__ __asm__ asm __typeof__ typeof typeof_unqual _Static_assert static_assert __extension__ volatile do else case default goto _Alignas alignas offsetof void char short int long float double signed unsigned _Bool bool _Atomic const struct union enum", list, " ")
+    for (i in list) not_call[list[i]] = 1
+    # The functions written in assembly: what each makes, and whether it
+    # calls one it is given. lc_syscallN make the call their caller names.
+    asm_sys["lc_kernel_clone"] = "clone exit_group"; asm_cb["lc_kernel_clone"] = 1
+    asm_sys["lc_thread_start"] = "clone exit";       asm_cb["lc_thread_start"] = 1
+    asm_sys["lc_coroutine_switch"] = ""
+    asm_sys["_start"] = "exit_group";                asm_cb["_start"] = 1
+    for (i = 0; i <= 6; i++) asm_sys["lc_syscall" i] = ""
+    for (af in asm_sys) defined[af] = "assembly"
+    file_no = 0
+    ntok = 0
+}
+
+FNR == 1 {
+    if (file_no >= 4 && ntok) { translation_unit(); ntok = 0 }
+    file_no++
+    tu = FILENAME
+    sub(/^.*\//, "", tu)
+    if (file_no == 4) headers_tu = tu
+}
+
+file_no == 1 {
+    if ($1 == "syscall") {
+        col = arch == "x86_64" ? 3 : 4
+        if ($col != "-") sysname[$col] = $2
+    }
+    next
+}
+
+file_no == 2 {
+    if (NF && !($1 in asm_sys)) fail("the assembly defines " $1 ", which the table of what assembly functions call lacks")
+    next
+}
+
+file_no == 3 {
+    split($0, f, "\t")
+    if (f[1] == "decl" && f[4] ~ /\(/ && f[4] !~ /^typedef /) {
+        if (!(f[3] in public)) order[++npublic] = f[3]
+        public[f[3]] = f[2]
+    }
+    next
+}
+
+/^[ \t]*#/ { next }
+
+{ tokenize($0) }
+
+END {
+    if (failed) exit 1
+    if (ntok) translation_unit()
+    for (i = 1; i <= npublic; i++) report(order[i])
+}
+
+# --- The closure ---
+
+function node_of(name) {
+    if (name in defined) return name
+    if ((headers_tu, name) in static_def) return headers_tu "|" name
+    fail(public[name] " declares " name ", which nothing defines")
+}
+
+function report(name,    start, head, tail, u, v, j, s, n, out, cb, why, at, w, path, k) {
+    start = node_of(name)
+    split("", seen); split("", parent); split("", have); split("", q); split("", names)
+    q[1] = start
+    seen[start] = 1
+    head = 1
+    tail = 1
+    cb = 0
+    why = ""
+    while (head <= tail) {
+        u = q[head++]
+        if (!(u in defined)) fail(u " is called but nothing defines it")
+        if (defined[u] == "assembly") {
+            n = split(asm_sys[u], list, " ")
+            for (j = 1; j <= n; j++) have[list[j]] = 1
+            if (asm_cb[u]) cb = 1
+        }
+        if (u in indirect) cb = 1
+        if (why == "" && u in thread_pointer) { why = "reads the thread pointer"; at = u }
+        if (why == "" && u in writes) { why = writes[u]; at = u }
+        for (j = 1; (u in ncalls) && j <= ncalls[u]; j++) {
+            v = calls[u, j]
+            if (v in seen) continue
+            seen[v] = 1
+            parent[v] = u
+            q[++tail] = v
+        }
+    }
+    # The syscalls of every node reached.
+    for (j = 1; j <= tail; j++) {
+        # Test before reading: gawk 5.4 sets a missing element that split
+        # reads to "0".
+        n = (q[j] in sys_list) ? split(sys_list[q[j]], list, " ") : 0
+        for (s = 1; s <= n; s++) have[list[s]] = 1
+    }
+    out = ""
+    n = 0
+    for (s in have) names[++n] = s
+    for (j = 2; j <= n; j++) {
+        w = names[j]
+        for (k = j - 1; k >= 1 && names[k] > w; k--) names[k + 1] = names[k]
+        names[k + 1] = w
+    }
+    for (j = 1; j <= n; j++) out = out (j > 1 ? " " : "") names[j]
+    if (out == "") out = "-"
+    if (why != "") {
+        # Name the first public function between the start and where it happens.
+        path = ""
+        for (v = at; v != start && v in parent; v = parent[v]) {
+            w = v; sub(/^.*\|/, "", w)
+            if (w in public) path = w
+        }
+        w = at; sub(/^.*\|/, "", w)
+        why = "no: " why (path != "" && path != name ? ", through " path : (at != start ? ", in " w : ""))
+    } else why = cb ? "yes, if its callbacks are" : "yes"
+    print name "\t" out "\t" cb "\t" why
+}
+'
+
+# The purpose of each public function, from the comments of the headers.
+PURPOSE='
+# Reads the decl lines of PARSE, then the public headers, and prints
+# "NAME\tPURPOSE" for each public function: the first sentence of the
+# comment right above its declaration, so each function needs its own. A
+# banner comment, one with a rule of = or -, belongs to no function. For a
+# function without one it prints "NAME\t", and HEADER:LINE: NAME to the
+# file missing.
+
+function first_sentence(s,    out, i, c, rest) {
+    gsub(/[ \t]+/, " ", s)
+    sub(/^ /, "", s)
+    sub(/ $/, "", s)
+    out = ""
+    while (s != "") {
+        i = index(s, ". ")
+        if (!i) return out s
+        out = out substr(s, 1, i)
+        rest = substr(s, i + 2)
+        # Not the end of a sentence: e.g. and i.e.
+        if (out ~ /(^|[ (])(e\.g|i\.e)\.$/) {
+            out = out " "
+            s = rest
+            continue
+        }
+        return out
+    }
+    return out
+}
+
+FILENAME == ARGV[1] {
+    split($0, f, "\t")
+    if (f[1] == "decl" && f[4] ~ /\(/ && f[4] !~ /^typedef /) {
+        if (!(("include/" f[2], f[3]) in want)) {
+            want["include/" f[2], f[3]] = 1
+            order[++n] = f[3]
+            header_of[f[3]] = "include/" f[2]
+        }
+    }
+    next
+}
+
+FNR == 1 {
+    in_comment = 0
+    comment = ""
+    comment_end = -1
+    group_purpose = ""
+    group_end = -1
+}
+
+{
+    line = $0
+    if (in_comment) {
+        text = line
+        done = index(text, "*/")
+        if (done) text = substr(text, 1, done - 1)
+        sub(/^[ \t]*\*?/, "", text)
+        comment = comment " " text
+        if (done) {
+            in_comment = 0
+            comment_end = FNR
+            banner = comment ~ /(====|----)/
+        }
+        next
+    }
+    # A comment that starts the line.
+    if (line ~ /^[ \t]*\/\*/) {
+        text = line
+        sub(/^[ \t]*\/\*/, "", text)
+        done = index(text, "*/")
+        if (done) {
+            comment = substr(text, 1, done - 1)
+            comment_end = FNR
+            banner = comment ~ /(====|----)/
+        } else {
+            comment = text
+            in_comment = 1
+        }
+        next
+    }
+    if (line ~ /^[ \t]*$/) {
+        group_end = -1
+        next
+    }
+    # An attribute alone on its line keeps the comment above it.
+    if (line ~ /^[ \t]*\[\[[^]]*\]\][ \t]*$/) {
+        if (comment_end == FNR - 1) comment_end = FNR
+        if (group_end == FNR - 1) group_end = FNR
+        next
+    }
+    if (line !~ /^[ \t]*#/ && match(line, /[A-Za-z_][A-Za-z_0-9]*[ \t]*\(/)) {
+        # The first identifier before a ( names what the line declares.
+        name = substr(line, RSTART, RLENGTH)
+        sub(/[ \t]*\($/, "", name)
+        while ((name == "__attribute__" || name == "static" || name == "inline") && match(substr(line, RSTART + RLENGTH), /[A-Za-z_][A-Za-z_0-9]*[ \t]*\(/)) {
+            line = substr(line, RSTART + RLENGTH)
+            name = substr(line, RSTART, RLENGTH)
+            sub(/[ \t]*\($/, "", name)
+        }
+        if ((FILENAME, name) in want && !(name in purpose)) {
+            if (comment_end == FNR - 1 && !banner) {
+                purpose[name] = first_sentence(comment)
+                group_purpose = purpose[name]
+            } else {
+                print FILENAME ":" FNR ": " name > missing
+                purpose[name] = ""
+            }
+            group_end = FNR
+        } else if (group_end == FNR - 1) {
+            # A declaration that goes on over more lines.
+            if (line ~ /[;{][ \t]*$/ || line ~ /\)[ \t]*;/) group_end = FNR
+            else group_end = FNR
+        }
+        comment_end = -1
+        next
+    }
+    # Another line of a declaration in a group, or code.
+    if (group_end == FNR - 1) group_end = FNR
+    comment_end = -1
+}
+
+END {
+    for (i = 1; i <= n; i++) print order[i] "\t" purpose[order[i]]
+}
+'
+
+# Merges what PURPOSE, PARSE and CALLS give into the lines of index.md and
+# syscalls.tsv.
+INDEX='
+# Reads the lines of PURPOSE, the decl lines of PARSE of every variant,
+# then the lines of CALLS of each variant, named in "variants" as
+# ARCH/with or ARCH/without (NDEBUG) in the order of those files. Prints,
+# each after its sort key and a tab:
+#   R KEY ROW         a row of the table of index.md
+#   T KEY LINE        a line of syscalls.tsv
+# A function makes a syscall on an arch when it does with or without
+# NDEBUG, it calls a callback when it does in any variant, and it is not
+# clone-safe when it is not in one.
+
+function fail(msg) {
+    print "api-snapshot: " msg | "cat 1>&2"
+    failed = 1
+    exit 1
+}
+
+# Text for a table cell: a | would end it.
+function cell(s) {
+    gsub(/\|/, "\\|", s)
+    return s
+}
+
+# "a b c" sorted.
+function sorted(s,    n, w, j, k, x, out) {
+    n = split(s, w, " ")
+    for (j = 2; j <= n; j++) {
+        x = w[j]
+        for (k = j - 1; k >= 1 && w[k] > x; k--) w[k + 1] = w[k]
+        w[k + 1] = x
+    }
+    out = ""
+    for (j = 1; j <= n; j++) out = out (j > 1 ? " " : "") w[j]
+    return out
+}
+
+# How the function reports an error, from its return type.
+function errors(name, sig,    pre, n, w, j, type) {
+    pre = substr(sig, 1, index(sig, name "(") - 1)
+    gsub(/\[\[[^]]*\]\]/, " ", pre)
+    n = split(pre, w, " ")
+    type = ""
+    for (j = 1; j <= n; j++)
+        if (w[j] != "static" && w[j] != "inline" && w[j] != "extern" && w[j] != "_Noreturn")
+            type = type (type == "" ? "" : " ") w[j]
+    if (type == "lc_sysret") return "`-errno`"
+    if (type == "lc_result" || type == "lc_result_ptr") return "`.error`"
+    return "—"
+}
+
+function syscall_text(name,    a, b) {
+    a = (name, "x86_64") in sys ? sorted(sys[name, "x86_64"]) : ""
+    b = (name, "aarch64") in sys ? sorted(sys[name, "aarch64"]) : ""
+    if (a == b) return (a == "" ? "none" : a)
+    return "x86_64: " (a == "" ? "none" : a) "; aarch64: " (b == "" ? "none" : b)
+}
+
+BEGIN {
+    FS = "\t"
+    failed = 0
+    nv = split(variants, v, " ")
+    file_no = 0
+}
+
+FNR == 1 { file_no++ }
+
+file_no == 1 {
+    purpose[$1] = $2
+    next
+}
+
+file_no == 2 {
+    if ($1 == "decl" && $4 ~ /\(/ && $4 !~ /^typedef / && !($3 in header)) {
+        header[$3] = $2
+        signature[$3] = $4
+        order[++n] = $3
+    }
+    next
+}
+
+{
+    split(v[file_no - 2], p, "/")
+    a = p[1]
+    name = $1
+    if ($2 != "-") {
+        m = split($2, w, " ")
+        for (j = 1; j <= m; j++)
+            if (!((name, a, w[j]) in made)) {
+                made[name, a, w[j]] = 1
+                # Tested before it is read: gawk 5.4 reads a missing element
+                # as "0" in a concatenation that also compares it.
+                if ((name, a) in sys) sys[name, a] = sys[name, a] " " w[j]
+                else sys[name, a] = w[j]
+            }
+    }
+    if ($3) callback[name] = 1
+    # The worst verdict of any variant: no, then yes if callbacks are, then yes.
+    r = $4 ~ /^no:/ ? 3 : $4 ~ /^yes,/ ? 2 : 1
+    if (!(name in rank) || r > rank[name]) {
+        rank[name] = r
+        clone[name] = $4
+    }
+}
+
+END {
+    if (failed) exit 1
+    for (i = 1; i <= n; i++) {
+        name = order[i]
+        if (!(name in clone)) fail(name ": no variant has an analysis of it")
+        if (purpose[name] == "") fail(name ": no purpose")
+        s = syscall_text(name)
+        if (name in callback) s = s ", and what its callbacks make"
+        layer = name ~ /^lc_(kernel_|syscall[0-6]$)/ ? "kernel" : "module"
+        print "R\t" header[name] " " name "\t| `" name "` | `" header[name] "` | `" cell(signature[name]) "` | " \
+            cell(purpose[name]) " | " errors(name, signature[name]) " | " layer " | " cell(s) " | " cell(clone[name]) " |"
+        for (k = 1; k <= 2; k++) {
+            a = k == 1 ? "x86_64" : "aarch64"
+            if (!((name, a) in sys)) continue
+            m = split(sys[name, a], w, " ")
+            for (j = 1; j <= m; j++) {
+                if ((name, w[j]) in arches) arches[name, w[j]] = arches[name, w[j]] " " a
+                else arches[name, w[j]] = a
+                if (!((name, w[j]) in listed)) {
+                    listed[name, w[j]] = 1
+                    pending[++np] = name SUBSEP w[j]
+                }
+            }
+        }
+    }
+    for (i = 1; i <= np; i++) {
+        split(pending[i], f, SUBSEP)
+        print "T\t" f[1] " " f[2] "\t" f[1] "\t" f[2] "\t" arches[f[1], f[2]]
+    }
+}
+'
+
 # --- Generate ---
 
 headers=$(find include -name '*.h' ! -path 'include/lightc/arch/*/syscall_nr.h' | LC_ALL=C sort)
@@ -1007,6 +1737,19 @@ for arch in x86_64 aarch64; do
             echo "api-snapshot: $nm lists no symbols in the $v objects" >&2
             exit 1
         fi
+
+        # index.md and syscalls.tsv: each source preprocessed as configure
+        # compiles it, and the global symbols of the assembly.
+        mkdir "$work/$v.tu"
+        : > "$work/asm.$v"
+        while read -r rule source object; do
+            case "$rule" in
+                cc) $cc $flags -O0 -E "$source" -o "$work/$v.tu/${object%.o}.i" ;;
+                as) "$nm" -g --defined-only "$work/$v.o/$object" | awk 'NF == 3 { print $3 }' >> "$work/asm.$v" ;;
+            esac
+        done < "$work/library.$arch"
+        awk -v arch="$arch" "$CALLS" syscalls.def "$work/asm.$v" "$work/$v.parsed" \
+            "$work/$v.i" "$work/$v.tu"/*.i > "$work/calls.$v"
     done
 done
 
@@ -1030,6 +1773,44 @@ for arch in x86_64 aarch64; do
     merge "$work/out/layout-$arch.txt" "$arch/with $arch/without" \
         "$work/layout.$arch-with" "$work/layout.$arch-without"
 done
+# index.md and syscalls.tsv
+cat "$work/x86_64-with.parsed" "$work/x86_64-without.parsed" \
+    "$work/aarch64-with.parsed" "$work/aarch64-without.parsed" > "$work/all.parsed"
+: > "$work/missing"
+# $headers is split into the header paths.
+awk -v missing="$work/missing" "$PURPOSE" "$work/all.parsed" $headers > "$work/purpose"
+if [ -s "$work/missing" ]; then
+    echo "api-snapshot: a public function needs a comment right above its declaration, whose first sentence says what it does:" >&2
+    cat "$work/missing" >&2
+    exit 1
+fi
+awk -v variants="$variants" "$INDEX" "$work/purpose" "$work/all.parsed" \
+    "$work/calls.x86_64-with" "$work/calls.x86_64-without" \
+    "$work/calls.aarch64-with" "$work/calls.aarch64-without" > "$work/index.lines"
+{
+    cat <<'EOF'
+# lightc API index
+
+Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes this file from the public headers and the library's sources, and `ninja api-check` fails when it differs from the tree, so do not edit it by hand: change the header or the source, and regenerate it. `syscalls.tsv` beside it gives the same system calls, one line per function and call, for a program to read.
+
+- **Purpose:** the first sentence of the comment above the declaration; the header says the rest.
+- **Errors:** `-errno` for an `lc_sysret`, which is a negative errno on failure; `.error` for an `lc_result` or `lc_result_ptr`, which holds a positive errno, or a library code from 4096 up, in `.error`; `—` for neither.
+- **Layer:** `kernel` for an `lc_kernel_*` function or `lc_syscallN`, which wraps system calls directly; `module` for the rest, which are built on them.
+- **Syscalls:** every system call the function can make in any build mode, found by following its calls through the library's sources, on both arches unless the column says otherwise. "And what its callbacks make" marks a function that calls through a function pointer, whose calls are not counted. `lc_syscallN` makes whichever call its first argument names.
+- **Clone-safe:** "yes" when the function touches no state of the library, so the child of a raw clone, sharing or copying the parent's memory with no lightc thread of its own, can call it: it reads no thread pointer, and writes no variable of the library, takes no address of one and uses none through a pointer. Otherwise the first reason found, and the public function it goes through.
+
+`tests/test_index.c` checks the system calls and the clone safety of every function of `lightc/syscall.h`, `io.h`, `socket.h`, `time.h`, `signal.h`, `print.h` and `log.h` by running it: in a child under a seccomp filter that allows only the calls listed here, and, for a clone-safe one, with the program's data read-only and no readable thread pointer.
+
+| Function | Header | Signature | Purpose | Errors | Layer | Syscalls | Clone-safe |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+EOF
+    awk -F "$tab" '$1 == "R"' "$work/index.lines" | sort | cut -f 3-
+} > "$work/out/index.md"
+{
+    printf 'function\tsyscall\tarches\n'
+    awk -F "$tab" '$1 == "T"' "$work/index.lines" | sort | cut -f 3-
+} > "$work/out/syscalls.tsv"
+
 for f in $FILES; do
     if [ ! -s "$work/out/$f" ]; then
         echo "api-snapshot: $f came out empty" >&2
@@ -1060,7 +1841,7 @@ case "$mode" in
                 differ=1
             fi
         done
-        for f in api/*.txt; do
+        for f in api/*.txt api/*.md api/*.tsv; do
             [ -f "$f" ] || continue
             case " $FILES " in
                 *" ${f#api/} "*) ;;

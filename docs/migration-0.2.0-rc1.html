@@ -1,0 +1,210 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Migrating to 0.2.0-rc1 · lightc</title><script src="https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/tern.js"></script>
+
+:::meta
+description: Moving a program from lightc 0.1.1 to 0.2.0-rc1 — what to change, what was added, which struct layouts moved, and the behaviour changes that no API snapshot shows. Every line that changed in api/ between the two releases has an entry.
+:::
+
+:::use
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/themes/github.css
+https://cdn.jsdelivr.net/gh/OzkrAC/tern@0.4/addons/code.js
+lightc-docs.js
+docs.css
+:::
+
+::site-nav
+
+# Migrating to 0.2.0-rc1 {#top}
+
+{.brief}
+From lightc 0.1.1 to 0.2.0-rc1, the first release candidate of 0.2.0. The API sections cover every line that differs between the snapshots `api/v0.1.1/` and `api/v0.2.0-rc1/`, and the macros, which the snapshots leave out. The sections after them give what changed with no change to the API. `CHANGELOG.md` gives every fix.
+
+::toc
+
+## In short {#short}
+
+1. **Build the program and the library from one version.** Code compiled with the 0.2.0 headers fails to link with a 0.1.1 `liblightc.a`, such as a `build/liblightc.a` left from before: delete it and build again. See [the ABI tag](#abi-tag).
+2. **Run `./configure` again.** A `build.ninja` from 0.1.1 has none of the new targets. See [Building and testing](#build).
+3. **Give `lc_socket_listen_on` an address**, not a port. See [below](#listen-on).
+4. **Check what `lc_writer_flush` and `lc_writer_destroy` return.** See [below](#writer).
+5. **Replace `lc_socket_create` and `lc_socket_accept`**, which now warn. See [below](#deprecated).
+6. **Recompile what uses `lc_arena` and was built with `NDEBUG`.** See [Struct layouts](#layouts).
+7. **Run on Linux 5.10 or later.** See [Kernel](#kernel).
+8. **Keep no lightc lock in memory that two processes share.** See [Behaviour changes](#behaviour).
+
+## Changes that need a code change {#breaking}
+
+### lc_writer returns what it did {#writer}
+
+| 0.1.1 | 0.2.0-rc1 |
+|---|---|
+| `void lc_writer_flush(lc_writer *writer);` | `[[nodiscard]] lc_result lc_writer_flush(lc_writer *writer);` |
+| `void lc_writer_destroy(lc_writer *writer);` | `[[nodiscard]] lc_result lc_writer_destroy(lc_writer *writer);` |
+| `void lc_writer_put_byte(lc_writer *writer, uint8_t byte);` | `lc_result lc_writer_put_byte(lc_writer *writer, uint8_t byte);` |
+| `void lc_writer_put_char(lc_writer *writer, char c);` | `lc_result lc_writer_put_char(lc_writer *writer, char c);` |
+| `void lc_writer_put_hex(lc_writer *writer, uint64_t value);` | `lc_result lc_writer_put_hex(lc_writer *writer, uint64_t value);` |
+| `void lc_writer_put_line(lc_writer *writer, const char *str, size_t length);` | `lc_result lc_writer_put_line(lc_writer *writer, const char *str, size_t length);` |
+| `void lc_writer_put_newline(lc_writer *writer);` | `lc_result lc_writer_put_newline(lc_writer *writer);` |
+| `void lc_writer_put_signed(lc_writer *writer, int64_t value);` | `lc_result lc_writer_put_signed(lc_writer *writer, int64_t value);` |
+| `void lc_writer_put_string(lc_writer *writer, const char *str, size_t length);` | `lc_result lc_writer_put_string(lc_writer *writer, const char *str, size_t length);` |
+| `void lc_writer_put_unsigned(lc_writer *writer, uint64_t value);` | `lc_result lc_writer_put_unsigned(lc_writer *writer, uint64_t value);` |
+
+The writer used to empty its buffer whatever the write returned, so a full disk, a closed pipe or a non-blocking fd lost output unseen. Each call now returns an `lc_result` whose `value` is the number of bytes it accepted. Its `error` is `LC_ERR_AGAIN` when a non-blocking fd would block, with the bytes the fd did not take kept for the next flush, or the write's errno, which is sticky: it stays in the writer's new `error` field, and every later call returns it and writes nothing. On a blocking fd, check the last flush or the destroy:
+
+```c
+lc_writer out = lc_writer_create(fd, 4096);
+lc_writer_put_string(&out, text, length);
+lc_result r = lc_writer_destroy(&out);   /* the final flush */
+if (lc_is_err(r)) {
+    /* r.error is the errno of the write that failed, such as LC_ERR_NOSPC */
+}
+```
+
+- Ignoring the result of `lc_writer_flush` or `lc_writer_destroy` gets a `-Wunused-result` warning.
+- A pointer to a function that returns `void` no longer takes these functions: GCC 14 and clang 16 reject it, and GCC 13 warns.
+- An object compiled against 0.1.1 still links and works: the `lc_result` comes back in registers, and the object ignores them.
+- `<lightc/io.h>` gives the whole contract, and [Contracts](contracts.html#writer) the test that holds lightc to it.
+
+### lc_socket_listen_on takes an address {#listen-on}
+
+| 0.1.1 | 0.2.0-rc1 |
+|---|---|
+| `[[nodiscard]] lc_result lc_socket_listen_on(uint16_t port, int32_t backlog);` | `[[nodiscard]] lc_result lc_socket_listen_on(const lc_socket_address *addr, int32_t backlog);` |
+
+A call that passes a port no longer compiles. For what it did, listening on every interface, pass `lc_socket_address_any(port)`; a server can now listen on loopback alone:
+
+```c
+lc_socket_address any = lc_socket_address_any(8080);
+lc_result server = lc_socket_listen_on(&any, 128);       /* as lc_socket_listen_on(8080, 128) did */
+
+lc_socket_address local = lc_socket_address_create(127, 0, 0, 1, 8080);
+lc_result private_server = lc_socket_listen_on(&local, 128);
+```
+
+### Deprecated: lc_socket_create and lc_socket_accept {#deprecated}
+
+| 0.1.1 | 0.2.0-rc1 |
+|---|---|
+| `[[nodiscard]] lc_result lc_socket_create(int32_t type);` | `[[deprecated("use lc_socket_open(LC_AF_INET, type, 0)"), nodiscard]] lc_result lc_socket_create(int32_t type);` |
+| `[[nodiscard]] lc_result lc_socket_accept(int32_t socket_fd, lc_socket_address *client_addr);` | `[[deprecated("use lc_socket_accept_flags(socket_fd, addr, &addr_size, 0)"), nodiscard]] lc_result lc_socket_accept(int32_t socket_fd, lc_socket_address *client_addr);` |
+
+Both still work, and each call warns with its replacement: `lc_socket_open` takes any family and protocol, and `lc_socket_accept_flags` passes accept4's flags.
+
+### lc_version moved to lightc/version.h {#version}
+
+| 0.1.1 | 0.2.0-rc1 |
+|---|---|
+| `lightc/types.h: [[gnu::const]] static inline int32_t lc_version(void);` | `lightc/version.h: [[gnu::const]] static inline int32_t lc_version(void);` |
+
+`<lightc/types.h>` includes the new `<lightc/version.h>`, so code that has `lc_version` and `LC_VERSION_*` from it needs no change. The version is 0.2.0: `LC_VERSION_MINOR` is 2, `LC_VERSION_PATCH` 0, and `lc_version()` returns 200.
+
+## Struct layouts {#layouts}
+
+The same lines changed in `layout-x86_64.txt` and `layout-aarch64.txt`:
+
+| 0.1.1 | 0.2.0-rc1 | What to do |
+|---|---|---|
+| `lc_arena size 24 align 8 # only with NDEBUG`, `lc_arena size 48 align 8 # only without NDEBUG` | `lc_arena size 48 align 8` | Recompile code that uses `lc_arena` and was compiled with `NDEBUG` against 0.1.1 headers, as most release builds are: the library now writes 48 bytes where that code has 24. |
+| `lc_arena.peak_used offset 24 size 8: size_t # only without NDEBUG`, and the same for `alloc_count` at 32 and `reset_count` at 40 | the same three lines, in every build | The counters are there whatever `NDEBUG` is, and `LC_STATS` only decides whether they are kept up to date. |
+| `lc_directory.buffer offset 4 size 4096: uint8_t[4096]` | `lc_directory.error offset 4 size 4: int32_t`, `lc_directory.buffer offset 8 size 4096: _Alignas(8) uint8_t[4096]` | Nothing, unless code reads `buffer` itself: `lc_directory` keeps its size, 4128 bytes, and only the library's functions use its fields. The new `error` says why `lc_directory_next` returned false: 0 at the end, or an errno. |
+| — | `lc_reader.error offset 44 size 4: int32_t` | Nothing: it fills padding, so no field moves. It holds the last read error, 0 at the end of the stream. |
+| — | `lc_writer.error offset 4 size 4: int32_t` | Nothing: it fills padding too. It holds the write error that stopped the writer. |
+
+## The ABI tag {#abi-tag}
+
+`symbols.txt` has one new line that is not a function: `A lc_abi_0_2`. `liblightc.a` defines the ABI tag `lc_abi_MAJOR_MINOR` as an absolute symbol, which takes no space, and every object compiled with the headers refers to it, from `.lightc_abi`, a section that is not loaded. Headers and a library of different minor versions then fail to link, with "undefined reference to `lc_abi_0_2'", instead of running with structs laid out two ways. A shared object compiled with `-fPIC` has no reference.
+
+- Code compiled with 0.1.1 headers has no reference, so it links with the new library. Only the `lc_arena` users of [Struct layouts](#layouts) must be recompiled.
+- The release candidates of 0.2.0 share the tag with 0.2.0, but their API can still change between them: build everything with each one. Patch releases share it too, and keep the ABI.
+
+## Added {#added}
+
+### Functions {#functions}
+
+Each is a new line of `decls.txt`, and of `symbols.txt` but for the two inline `lc_kernel_*` functions:
+
+| Function | Header | What it does |
+|---|---|---|
+| `lc_async_flush_ex` | `lightc/async.h` | `lc_async_flush`, but returning an `lc_result`: `value` is what `lc_async_flush` returns, and `error` the errno of a failed `io_uring_enter`. |
+| `lc_async_wait_ex` | `lightc/async.h` | `lc_async_wait` with the same `lc_result`. A signal ends its wait with no error, where `lc_async_wait` waits again. |
+| `lc_async_submit_send` | `lightc/async.h` | Queues a send on a socket, with `MSG_NOSIGNAL`. |
+| `lc_async_submit_receive` | `lightc/async.h` | Queues a receive on a socket. |
+| `lc_format_length` | `lightc/format.h` | The length of the text the buffer holds, the length to write. `lc_format_finish` still returns the length the whole text would have, more after an overflow. |
+| `lc_socket_open` | `lightc/socket.h` | Opens a socket of any family, type and protocol, a netlink one among them. |
+| `lc_socket_accept_flags` | `lightc/socket.h` | Accepts a connection, with accept4's flags. |
+| `lc_socket_get_option`, `lc_socket_set_option` | `lightc/socket.h` | Read and set a socket option of any level, name and length. |
+| `lc_socket_send_to_sockaddr`, `lc_socket_receive_from_sockaddr` | `lightc/socket.h` | Send to and receive from an address of any family, with flags. |
+| `lc_kernel_getsockname` | `lightc/syscall.h` | A socket's local address, such as the port the kernel picked after a bind to port 0. Inline. |
+| `lc_kernel_clock_sleep` | `lightc/syscall.h` | clock_nanosleep, with all its arguments. Inline. |
+| `lc_time_now_ns` | `lightc/time.h` | Reads a clock, in nanoseconds. |
+| `lc_time_sleep_until` | `lightc/time.h` | Sleeps until a `CLOCK_MONOTONIC` deadline, which signals do not push back. |
+| `lio_loop_error` | `lightio/lightio.h` | The errno that made `lio_loop_run` or `lio_loop_run_threaded` return, or 0. |
+
+### Error codes {#errors}
+
+`decls.txt` has a line for each new enumerator of `<lightc/result.h>`:
+
+- `LC_ERR_UNSUPPORTED` (4104), which `lc_error_name` names `"UNSUPPORTED"`. `lc_library_open` returns it for what a valid library needs and the loader does not do, and for a library with its own copy of lightc; `lc_library_find_symbol` returns it for an IFUNC or TLS symbol, which it has no address for.
+- An `LC_ERR_*` code for every errno of Linux's `asm-generic/errno-base.h` and `asm-generic/errno.h` that 0.1.1 had none for, with the kernel's name and value. As in the kernel, `LC_ERR_WOULDBLOCK` is `LC_ERR_AGAIN` and `LC_ERR_DEADLOCK` is `LC_ERR_DEADLK`. A program that defined one of these names itself must remove its own: an enumerator declared twice does not compile. The 114 are `LC_ERR_SRCH` (3), `LC_ERR_NXIO` (6), `LC_ERR_2BIG` (7), `LC_ERR_NOEXEC` (8), `LC_ERR_BADF` (9), `LC_ERR_CHILD` (10), `LC_ERR_WOULDBLOCK` (11), `LC_ERR_FAULT` (14), `LC_ERR_NOTBLK` (15), `LC_ERR_BUSY` (16), `LC_ERR_XDEV` (18), `LC_ERR_NODEV` (19), `LC_ERR_NOTDIR` (20), `LC_ERR_ISDIR` (21), `LC_ERR_NFILE` (23), `LC_ERR_MFILE` (24), `LC_ERR_NOTTY` (25), `LC_ERR_TXTBSY` (26), `LC_ERR_FBIG` (27), `LC_ERR_SPIPE` (29), `LC_ERR_ROFS` (30), `LC_ERR_MLINK` (31), `LC_ERR_DOM` (33), `LC_ERR_RANGE` (34), `LC_ERR_DEADLK` (35), `LC_ERR_DEADLOCK` (35), `LC_ERR_NAMETOOLONG` (36), `LC_ERR_NOLCK` (37), `LC_ERR_NOTEMPTY` (39), `LC_ERR_LOOP` (40), `LC_ERR_NOMSG` (42), `LC_ERR_IDRM` (43), `LC_ERR_CHRNG` (44), `LC_ERR_L2NSYNC` (45), `LC_ERR_L3HLT` (46), `LC_ERR_L3RST` (47), `LC_ERR_LNRNG` (48), `LC_ERR_UNATCH` (49), `LC_ERR_NOCSI` (50), `LC_ERR_L2HLT` (51), `LC_ERR_BADE` (52), `LC_ERR_BADR` (53), `LC_ERR_XFULL` (54), `LC_ERR_NOANO` (55), `LC_ERR_BADRQC` (56), `LC_ERR_BADSLT` (57), `LC_ERR_BFONT` (59), `LC_ERR_NOSTR` (60), `LC_ERR_NODATA` (61), `LC_ERR_TIME` (62), `LC_ERR_NOSR` (63), `LC_ERR_NONET` (64), `LC_ERR_NOPKG` (65), `LC_ERR_REMOTE` (66), `LC_ERR_NOLINK` (67), `LC_ERR_ADV` (68), `LC_ERR_SRMNT` (69), `LC_ERR_COMM` (70), `LC_ERR_PROTO` (71), `LC_ERR_MULTIHOP` (72), `LC_ERR_DOTDOT` (73), `LC_ERR_BADMSG` (74), `LC_ERR_NOTUNIQ` (76), `LC_ERR_BADFD` (77), `LC_ERR_REMCHG` (78), `LC_ERR_LIBACC` (79), `LC_ERR_LIBBAD` (80), `LC_ERR_LIBSCN` (81), `LC_ERR_LIBMAX` (82), `LC_ERR_LIBEXEC` (83), `LC_ERR_ILSEQ` (84), `LC_ERR_RESTART` (85), `LC_ERR_STRPIPE` (86), `LC_ERR_USERS` (87), `LC_ERR_NOTSOCK` (88), `LC_ERR_DESTADDRREQ` (89), `LC_ERR_MSGSIZE` (90), `LC_ERR_PROTOTYPE` (91), `LC_ERR_NOPROTOOPT` (92), `LC_ERR_PROTONOSUPPORT` (93), `LC_ERR_SOCKTNOSUPPORT` (94), `LC_ERR_PFNOSUPPORT` (96), `LC_ERR_AFNOSUPPORT` (97), `LC_ERR_ADDRNOTAVAIL` (99), `LC_ERR_NETDOWN` (100), `LC_ERR_NETUNREACH` (101), `LC_ERR_NETRESET` (102), `LC_ERR_CONNABORTED` (103), `LC_ERR_NOBUFS` (105), `LC_ERR_ISCONN` (106), `LC_ERR_SHUTDOWN` (108), `LC_ERR_TOOMANYREFS` (109), `LC_ERR_HOSTDOWN` (112), `LC_ERR_HOSTUNREACH` (113), `LC_ERR_ALREADY` (114), `LC_ERR_INPROGRESS` (115), `LC_ERR_STALE` (116), `LC_ERR_UCLEAN` (117), `LC_ERR_NOTNAM` (118), `LC_ERR_NAVAIL` (119), `LC_ERR_ISNAM` (120), `LC_ERR_REMOTEIO` (121), `LC_ERR_DQUOT` (122), `LC_ERR_NOMEDIUM` (123), `LC_ERR_MEDIUMTYPE` (124), `LC_ERR_CANCELED` (125), `LC_ERR_NOKEY` (126), `LC_ERR_KEYEXPIRED` (127), `LC_ERR_KEYREVOKED` (128), `LC_ERR_KEYREJECTED` (129), `LC_ERR_OWNERDEAD` (130), `LC_ERR_NOTRECOVERABLE` (131), `LC_ERR_RFKILL` (132), `LC_ERR_HWPOISON` (133).
+
+### Macros {#macros}
+
+The snapshots leave macros out. These are new, and no macro of 0.1.1 was removed or changed, but for the version's:
+
+| Macro | Header | |
+|---|---|---|
+| `LC_AF_UNIX`, `LC_AF_NETLINK` | `lightc/socket.h` | Families for `lc_socket_open`. |
+| `LC_SOCK_RAW`, `LC_SOCK_NONBLOCK` | `lightc/socket.h` | A socket type, and a flag for the type or for `lc_socket_accept_flags`. |
+| `LC_SOCK_INHERIT` | `lightc/socket.h` | lightc's own flag, which never reaches the kernel: a socket that is not close-on-exec. |
+| `LC_SO_ERROR` | `lightc/socket.h` | The socket's pending error, for `lc_socket_get_option`. |
+| `LC_TIMER_ABSTIME` | `lightc/syscall.h` | For `lc_kernel_clock_sleep`: the request is a deadline. |
+| `FUTEX_PRIVATE_FLAG` | `lightc/syscall.h` | For the futex calls. |
+| `LC_THREAD_MIN_STACK_SIZE` | `lightc/thread.h` | 16 KiB, the least stack `lc_thread_create_with_stack` takes. |
+| `SYS_getsockname`, `SYS_setitimer`, `SYS_prlimit64`, `SYS_getsockopt`, `SYS_fcntl`, `SYS_clock_nanosleep` | `lightc/arch/*/syscall_nr.h` | Each arch's numbers. Remove any copies you defined yourself. |
+| `LC_ABI_TAG`, `LC_ABI_NAME`, `LC_ABI_STRING` and their `_` helpers | `lightc/version.h` | The ABI tag's, not for programs. |
+| `LC_VERSION_MINOR`, `LC_VERSION_PATCH` | `lightc/version.h` | Now 2 and 0; `LC_VERSION_MAJOR` is still 0. |
+
+### Headers {#headers}
+
+- `<lightc/version.h>` gives the version and the ABI tag. `<lightc/types.h>` includes it.
+- `<lightc/config.h>` is not in the source tree: `ninja install` writes it. It fixes `LC_STATS` to the value the library was built with, and stops at an `#error` a program that sets another. `<lightc/types.h>` includes it when it is there, so a tree used in place, as a git submodule, works as before.
+
+## Behaviour changes {#behaviour}
+
+What a program can see change with no change to the API. `CHANGELOG.md` gives the details and the defects behind each.
+
+- **Sockets are close-on-exec.** Every socket lightc opens or accepts, lightio's too, is closed in a program that the process execs. `LC_SOCK_INHERIT`, in the type or the flags, keeps one open, for a program meant to inherit it.
+- **Sends do not raise SIGPIPE.** Every send passes `MSG_NOSIGNAL`, so a send to a peer that has closed fails with `LC_ERR_PIPE`, and `lio_write` with `-EPIPE`, instead of ending the process. A `write(2)` to a pipe still raises it: see [Contracts](contracts.html#sigpipe).
+- **The loader refuses what it cannot load correctly.** `lc_library_open` now applies PLT and RELR relocations, honours each segment's `p_align` and follows the kernel's page size. A library it used to load half-relocated now fails: with `LC_ERR_UNSUPPORTED` for thread-local storage, IFUNC and symbol versions, with `LC_ERR_RELOC_FAILED` for a relocation it cannot apply, with `LC_ERR_MALFORMED_ELF` for a malformed file, and with the kernel's errno, such as `EACCES`, when the kernel refuses the file. `lc_library_find_symbol` gives an absolute symbol its value, where it added the load bias.
+- **A plugin must not link `liblightc.a`.** Its copy of lightc would share the host's per-thread block, and `lc_library_open` refuses one that defines `lc_heap_*`, `lc_tls_*` or `lc_abi_*` symbols, with `LC_ERR_UNSUPPORTED`. See [Contracts](contracts.html#plugins).
+- **Precision 0 rounds ties to even.** `lc_format_add_double_precision` at precision 0 rounds as printf's `%.0f` does: 0.5 prints 0, 2.5 prints 2. With pad `'0'`, `lc_format_add_signed_padded` puts the sign first, `-00042`, and the time formatters print a year before 0 with a minus sign.
+- **Locks are private to one process.** The mutex, condition variable, read-write lock, barrier and once wait on private futexes, so in `MAP_SHARED` memory a waiter in one process is never woken by another. Use a futex of your own, with the shared flag, there.
+- **`lc_reader` does not take EAGAIN for the end of the stream.** On a non-blocking fd with no data, a read returns -1 or a short count with the reader's `error` set to `LC_ERR_AGAIN`, and the stream goes on; a read error ends it with `error` set. `lc_reader_read_line` can return part of a line on such a fd, and the next call the rest.
+- **The io_uring ring loses nothing.** An entry that a failed `io_uring_enter` did not take stays queued and is offered again, `lc_async_peek` moves completions the kernel held back into the queue, and `lc_async_ring_create` fails with `LC_ERR_OPNOTSUPP` on a kernel without `IORING_FEAT_NODROP`. `lio_loop_run` returns on an io_uring error it cannot wait out, which `lio_loop_error` gives, where it spun for ever.
+- **Sleeps end on time.** `lc_time_sleep_milliseconds` and `lc_time_sleep_microseconds` sleep to a deadline, so signals delay them only by their handlers' run, and a sleep of 0 or less returns at once.
+- **Threads.** `lc_thread_create_with_stack` fails with `LC_ERR_INVAL` below `LC_THREAD_MIN_STACK_SIZE`, and rounds a stack up to whole pages. A handle whose create failed is all zeros, so joining it returns at once. A thread that reuses an exited thread's id starts with every TLS slot NULL, and the scheduler and lightio take no TLS key of the program's.
+- **lightio's coroutine stacks have a guard page**, so a handler that overflows its stack dies of SIGSEGV, as other coroutines do.
+- **The directory iterator.** Closing an `lc_directory` whose open failed closes nothing, and `lc_directory_next` after a close returns false.
+- **Files.** `lc_file_read_all` reads to the end, so `/proc` and `/sys` files read whole, and `lc_file_get_size` uses statx: a FIFO gives 0 at once instead of blocking.
+- **Logging.** There is no log lock: a line goes out in one `writev` or `write`, a child can log after fork, and threads behind a blocked write sleep instead of spinning. A JSON line's `ts` is 0 without a clock, and a message cut short never ends inside a UTF-8 sequence.
+- **`lc_error_name` names every Linux errno**, such as `"EBADF"` for 9, where it returned `"UNKNOWN"`. Check code that tests for `"UNKNOWN"`.
+- **The arena and the containers check their arguments.** `lc_arena_allocate_aligned` returns NULL for an alignment that is 0 or not a power of two, `lc_arena_create` fails for a size within a page of `SIZE_MAX`, and `lc_array_push` and `lc_array_insert` copy the right value when it points into the array itself.
+
+## Kernel {#kernel}
+
+lightc 0.2.0 needs Linux 5.10 or later. [Contracts](contracts.html#kernel) gives what needs which version.
+
+## Building and testing {#build}
+
+- **Run `./configure` again.** ninja does not regenerate `build.ninja`, and one written by 0.1.1 has no `regress`, `smoke` or `api-check` target.
+- **The environment reaches `configure`.** It now adds `CFLAGS` and `LDFLAGS` after its own flags, and reads `STRIP`, `OBJCOPY` and `SYSROOT`. Unset them when they are meant for another project.
+- **The arch is `CC`'s.** `configure` takes it from `$CC -dumpmachine`, so `CC=aarch64-linux-gnu-gcc ./configure` sets up a cross build, and an `ARCH` that does not match `CC` stops it.
+- **A suite that skips every test fails `ninja test`.** Without io_uring, as under qemu-user, set `LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio"`.
+- **`ninja regress` needs a `kernel.pid_max` of at most 32768**, and lld on aarch64. `AGENTS.md` says why.
+- **C17 needs GCC 14 or clang.** The public headers use C23's `[[attribute]]` syntax, which GCC 13 rejects before C23. This was already so in 0.1.1.
+
+## How this page was made {#method}
+
+`sh tools/api-snapshot.sh -o api/v0.2.0-rc1` wrote the snapshot of 0.2.0-rc1, and `diff -r api/v0.1.1 api/v0.2.0-rc1` gives 202 changed lines in the four files the two releases share: 15 in `symbols.txt`, 159 in `decls.txt`, and 14 in each of `layout-x86_64.txt` and `layout-aarch64.txt`. Each has an entry above: [the writer](#writer), [`lc_socket_listen_on`](#listen-on), [the deprecations](#deprecated), [`lc_version`](#version), [the layouts](#layouts), [the ABI tag](#abi-tag), [the functions](#functions) and [the error codes](#errors). `api/index.md` and `api/syscalls.tsv` are new in 0.2.0.
+
+{.source}
+`CHANGELOG.md` gives every change and fix of 0.2.0-rc1. [Contracts](contracts.html) gives what a program can count on.

@@ -8,6 +8,7 @@
 
 #include "test.h"
 #include <lightc/lifecycle.h>
+#include <lightc/signal.h>
 #include <lightc/syscall.h>
 #include <lightc/thread.h>
 #include <lightc/time.h>
@@ -59,6 +60,43 @@ static void test_exit_reentrancy_guard(void) {
     lc_kernel_unmap_memory(page, 4096);
 }
 
+/* ===== Shutdown signals =====
+ *
+ * lc_lifecycle_enable_shutdown_signals makes SIGTERM and SIGINT run the
+ * exit handlers, through lc_exit(0). A forked child enables them and sends
+ * itself SIGTERM. Its exit handler sends it SIGINT, which comes while the
+ * handlers run and must be ignored, so that the handler goes on. */
+static volatile int32_t *shutdown_counter;   /* [0] handler starts, [1] handler ends */
+
+static void shutdown_exit_handler(void) {
+    shutdown_counter[0]++;
+    (void)lc_kernel_send_signal(lc_kernel_get_process_id(), LC_SIGINT);
+    shutdown_counter[1]++;
+}
+
+static void test_shutdown_signal_runs_handlers(void) {
+    void *page = lc_kernel_map_memory(NULL, 4096, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    TEST_REQUIRE(page != MAP_FAILED);
+    shutdown_counter = (volatile int32_t *)page;
+
+    lc_sysret pid = lc_kernel_fork();
+    TEST_REQUIRE(pid >= 0);
+    if (pid == 0) {
+        (void)lc_atexit(shutdown_exit_handler);
+        lc_lifecycle_enable_shutdown_signals();
+        (void)lc_kernel_send_signal(lc_kernel_get_process_id(), LC_SIGTERM);
+        lc_kernel_exit(99);   /* not reached: the SIGTERM exits */
+    }
+    int32_t status = -1;
+    (void)lc_kernel_wait_for_child((int32_t)pid, &status, 0);
+    TEST_ASSERT_EQ(status & 0x7f, 0);   /* not ended by a signal */
+    TEST_ASSERT_EQ(status, 0);          /* lc_exit(0) */
+    TEST_ASSERT_EQ(shutdown_counter[0], 1);
+    TEST_ASSERT_EQ(shutdown_counter[1], 1);   /* the SIGINT did not end it early */
+    lc_kernel_unmap_memory(page, 4096);
+}
+
 /* ===== test_atexit_register ===== */
 
 static void dummy_atexit_handler(void) {
@@ -106,19 +144,22 @@ static void test_atexit_overflow(void) {
  * worker runs, and returns MAIN_RETURN_STATUS. The child must exit with that
  * status within 1 s. If _start ended only the main thread (SYS_exit), the
  * sleeping worker would keep the process alive: the parent then kills the
- * child after 1 s and the test fails.
+ * child after 1 s and the test fails. main also registers an atexit handler
+ * that exits with MAIN_RETURN_RAN_HANDLER: returning from main runs none.
  *
  * Under qemu-user without a binfmt handler for the guest arch, the host
  * kernel cannot exec the binary and execve fails with ENOEXEC: the child
  * prints SKIP: then. Natively, re-executing the running binary cannot fail
  * that way, and any other exec failure is a test failure.
  */
-#define MAIN_RETURN_MODE      "--main-returns-with-sleeping-thread"
-#define MAIN_RETURN_STATUS    7
-#define MAIN_RETURN_SKIPPED   77    /* exec failed with ENOEXEC */
-#define MAIN_RETURN_NO_THREAD 99    /* child could not start its worker */
-#define MAIN_RETURN_NO_EXEC   127   /* forked child could not exec the suite */
-#define ERRNO_NOEXEC          8     /* ENOEXEC: exec format error */
+#define MAIN_RETURN_MODE        "--main-returns-with-sleeping-thread"
+#define MAIN_RETURN_STATUS      7
+#define MAIN_RETURN_RAN_HANDLER 33    /* returning from main ran an atexit handler */
+#define MAIN_RETURN_SKIPPED     77    /* exec failed with ENOEXEC */
+#define MAIN_RETURN_NO_HANDLER  98    /* child could not register its handler */
+#define MAIN_RETURN_NO_THREAD   99    /* child could not start its worker */
+#define MAIN_RETURN_NO_EXEC     127   /* forked child could not exec the suite */
+#define ERRNO_NOEXEC            8     /* ENOEXEC: exec format error */
 
 static _Atomic(int32_t) main_return_worker_running;
 
@@ -130,8 +171,14 @@ static int32_t main_return_sleeping_worker(void *arg) {
     return 0;
 }
 
+static void main_return_atexit_handler(void) {
+    lc_kernel_exit(MAIN_RETURN_RAN_HANDLER);
+}
+
 /* main in MAIN_RETURN_MODE: return while the worker sleeps. */
 static int main_return_child(void) {
+    if (lc_atexit(main_return_atexit_handler).error)
+        return MAIN_RETURN_NO_HANDLER;
     lc_thread worker;
     if (lc_thread_create(&worker, main_return_sleeping_worker, NULL).error)
         return MAIN_RETURN_NO_THREAD;
@@ -196,6 +243,7 @@ int main(int argc, char **argv, char **envp) {
     /* Run first, while the atexit table still has room for the child to register
      * its handler (test_atexit_overflow fills the table afterwards). */
     TEST_RUN(test_exit_reentrancy_guard);
+    TEST_RUN(test_shutdown_signal_runs_handlers);
 
     TEST_RUN(test_atexit_register);
     TEST_RUN(test_atexit_overflow);

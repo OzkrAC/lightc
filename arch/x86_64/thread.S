@@ -17,6 +17,16 @@
  *   8(%rsp) = arg    (7th arg is on the stack)
  */
 
+/*
+ * The faultinject build, which configure's LC_FAULTINJECT selects, names
+ * this lc_fault_raw_thread_start: src/fault.c then defines lc_thread_start
+ * as a C function that checks the armed SYS_clone fault rules before it
+ * calls this one.
+ */
+#ifdef LC_FAULTINJECT
+#define lc_thread_start lc_fault_raw_thread_start
+#endif
+
 .section .text
 .global lc_thread_start
 .type lc_thread_start, @function

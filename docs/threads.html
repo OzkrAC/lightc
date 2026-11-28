@@ -40,9 +40,12 @@ Threads are real kernel threads created with `clone`; there is no pthread librar
 typedef int32_t (*lc_thread_func)(void *arg);
 typedef struct { int32_t tid; /* … stack, liveness … */ } lc_thread;
 
-#define LC_DEFAULT_STACK_SIZE (1024 * 1024)   /* 1 MiB */
+#define LC_DEFAULT_STACK_SIZE    (1024 * 1024)   /* 1 MiB */
+#define LC_THREAD_MIN_STACK_SIZE (16 * 1024)     /* the least the _with_stack form takes */
 ```
-A thread runs an `lc_thread_func` and is represented by an `lc_thread` the caller owns. After a successful create, `tid` is the kernel thread id. The function's `int32_t` return is the thread's result, available to the joiner.
+A thread runs an `lc_thread_func` and is represented by an `lc_thread` the caller owns. After a successful create, `tid` is the kernel thread id. The function's `int32_t` return becomes the status the thread exits with, which nothing collects: a thread's exit status is not reported to anyone, and `lc_thread_join` returns nothing. To hand a result back, have the function store it through `arg`; the join makes that store visible to the joiner.
+
+When the function returns, the thread gives its heap state back before it exits. A block it allocated, such as a result it hands back, stays valid, and any thread may free it: see [Thread exit](heap.html#thread-exit).
 :::
 
 :::member{#lc_thread_create}
@@ -57,16 +60,16 @@ Map a guard-paged stack, set up thread-local storage for the child, and `clone`.
 |---|---|
 | `thread` | out: filled with the thread handle |
 | `func`, `arg` | the entry function and its argument |
-| `stack_size` | stack bytes (the `_with_stack` form) |
+| `stack_size` | stack bytes (the `_with_stack` form): at least `LC_THREAD_MIN_STACK_SIZE`, rounded up to a whole number of pages |
 
-**Returns** — `lc_result`: `LC_OK`, or an error (e.g. `LC_ERR_NOMEM`) if the stack or thread could not be created.
+**Returns** — `lc_result`: `LC_OK`, or an error if the stack or thread could not be created: `LC_ERR_INVAL` for a `stack_size` below `LC_THREAD_MIN_STACK_SIZE`, or one that with the guard page does not fit in a `size_t`, `LC_ERR_NOMEM`, or the errno of `clone`, such as `EAGAIN`. A handle whose create failed is all zeros, so joining it returns at once.
 :::
 
 :::member{#lc_thread_join}
 ```c
 void lc_thread_join(lc_thread *thread);
 ```
-Block until the thread exits, then unmap its stack. **Idempotent**: a second join is a safe no-op, so it never double-unmaps a range a later `mmap` may have reused. There is no detached mode; join each thread you create, from the owning thread.
+Block until the thread exits, then unmap its stack. It returns nothing, as the thread's return value is not kept. A handle whose create failed is all zeros, and joins at once. **Idempotent**: a second join is a safe no-op, so it never double-unmaps a range a later `mmap` may have reused. There is no detached mode; join each thread you create, from the owning thread.
 :::
 
 ## Spinlock {#spinlock}
@@ -145,7 +148,7 @@ bool  lc_tls_key_create(lc_tls_key *key);   // false if no key is free
 void  lc_tls_set(lc_tls_key key, void *value);
 void *lc_tls_get(lc_tls_key key);           // NULL until set on this thread
 ```
-Generic thread-local slots, a `pthread_key`-style API with up to `LC_TLS_MAX_KEYS` keys. Each thread sees its own value for a given key, and a new thread starts with every slot `NULL`, even when the kernel reuses the id of a thread that has exited; the keys themselves are process-wide. The slots live in the same per-thread structure the [heap](heap.html#tls) uses.
+Generic thread-local slots, a `pthread_key`-style API with up to `LC_TLS_MAX_KEYS` keys, all of them the program's: the coroutine scheduler and lightio keep their per-thread state in slots of their own. Each thread sees its own value for a given key, and a new thread starts with every slot `NULL`, even when the kernel reuses the id of a thread that has exited; the keys themselves are process-wide. The slots live in the same per-thread structure the [heap](heap.html#tls) uses.
 :::
 
 {.source}

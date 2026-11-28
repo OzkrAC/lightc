@@ -22,6 +22,16 @@
  *   child:  never returns — calls fn(arg), then _exit_group
  */
 
+/*
+ * The faultinject build, which configure's LC_FAULTINJECT selects, names
+ * this lc_fault_raw_kernel_clone: src/fault.c then defines lc_kernel_clone
+ * as a C function that checks the armed SYS_clone fault rules before it
+ * calls this one.
+ */
+#ifdef LC_FAULTINJECT
+#define lc_kernel_clone lc_fault_raw_kernel_clone
+#endif
+
 .section .text
 .global lc_kernel_clone
 .type lc_kernel_clone, @function

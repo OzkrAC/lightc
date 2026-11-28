@@ -121,6 +121,50 @@ static inline bool plugin_file_has_rela_to(const plugin_file *file, uint16_t shn
     return false;
 }
 
+/* Whether an entry of the file's DT_RELA or DT_JMPREL has relocation type
+ * `type`. */
+static inline bool plugin_file_has_rela_type(const plugin_file *file, uint32_t type) {
+    static const int64_t tables[2][2] = { { DT_RELA, DT_RELASZ }, { DT_JMPREL, DT_PLTRELSZ } };
+    for (int t = 0; t < 2; t++) {
+        uint64_t table, size;
+        if (!plugin_file_dynamic(file, tables[t][0], &table) || !plugin_file_dynamic(file, tables[t][1], &size))
+            continue;
+        for (uint64_t i = 0; i < size / sizeof(Elf64_Rela); i++) {
+            const uint8_t *at = plugin_file_at(file, table + i * sizeof(Elf64_Rela), sizeof(Elf64_Rela));
+            if (!at) return false;
+            Elf64_Rela entry;
+            lc_bytes_copy(&entry, at, sizeof entry);
+            if (ELF64_R_TYPE(entry.r_info) == type) return true;
+        }
+    }
+    return false;
+}
+
+/* Sets *out to the file's dynamic symbol `name`, and returns whether it
+ * has one. The table is taken to run from DT_SYMTAB to DT_STRTAB, as GNU
+ * ld and lld put the string table right after it. */
+static inline bool plugin_file_symbol(const plugin_file *file, const char *name, Elf64_Sym *out) {
+    uint64_t symtab, strtab, strsz;
+    if (!plugin_file_dynamic(file, DT_SYMTAB, &symtab) || !plugin_file_dynamic(file, DT_STRTAB, &strtab) ||
+        !plugin_file_dynamic(file, DT_STRSZ, &strsz) || strtab <= symtab)
+        return false;
+    const uint8_t *names = plugin_file_at(file, strtab, strsz);
+    if (!names) return false;
+    size_t length = lc_string_length(name);
+    for (uint64_t i = 1; i < (strtab - symtab) / sizeof(Elf64_Sym); i++) {
+        const uint8_t *at = plugin_file_at(file, symtab + i * sizeof(Elf64_Sym), sizeof(Elf64_Sym));
+        if (!at) return false;
+        Elf64_Sym sym;
+        lc_bytes_copy(&sym, at, sizeof sym);
+        if (sym.st_name >= strsz || strsz - sym.st_name <= length) continue;
+        if (lc_bytes_compare(names + sym.st_name, name, length + 1) == 0) {
+            *out = sym;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* The address of the symbol `name` of `lib`, or NULL. */
 static inline void *plugin_symbol(lc_library *lib, const char *name) {
     lc_result_ptr r = lc_library_find_symbol(lib, name);

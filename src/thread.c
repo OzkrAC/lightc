@@ -1,6 +1,7 @@
 #include <lightc/thread.h>
 #include <lightc/syscall.h>
 #include <lightc/memory.h>
+#include <lightc/fault.h>    /* lc_chaos_point, in the faultinject build */
 #include "kernel.h"          /* CLONE_* */
 
 /*
@@ -29,17 +30,69 @@ extern int64_t lc_thread_start(uint64_t flags, uint8_t *stack_top,
 /* From heap.c — the null TLS sentinel so child threads can safely read %fs:0 */
 extern void *lc_heap_tls_sentinel(void);
 
+/* From heap.c — gives back the calling thread's heap state as it exits */
+extern void lc_heap_thread_exit(void);
+
+/*
+ * What a new thread is to run. lc_thread_create_with_stack writes it at the
+ * top of the thread's stack mapping, above the stack itself, and starts the
+ * thread in thread_entry with its address. It stays there until the join
+ * unmaps the stack.
+ */
+typedef struct {
+    lc_thread_func func;
+    void          *arg;
+} thread_start;
+
+/* The size the start block takes at the top of the mapping, a multiple of
+ * 16 so that the stack below it starts 16-byte aligned. */
+#define THREAD_START_SIZE ((sizeof(thread_start) + 15) & ~(size_t)15)
+
+/*
+ * The entry of every thread of lc_thread_create: run the thread's function,
+ * then give back its heap state, the last thing the thread does before
+ * thread.S makes SYS_exit with the status the function returned. A thread
+ * that makes its own SYS_exit skips lc_heap_thread_exit, and the heap keeps
+ * its local, for the next thread of that id to take over.
+ */
+static int32_t thread_entry(void *arg) {
+    thread_start *start = arg;
+    int32_t status = start->func(start->arg);
+    lc_heap_thread_exit();
+    return status;
+}
+
 lc_result lc_thread_create(lc_thread *thread, lc_thread_func func, void *arg) {
     return lc_thread_create_with_stack(thread, func, arg, LC_DEFAULT_STACK_SIZE);
 }
 
 lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, void *arg,
                                       size_t stack_size) {
+    /* The handle is all zeros until the thread runs, and stays so when the
+     * create fails: a join of it then returns at once and unmaps nothing,
+     * where stale or uninitialised fields made it unmap a mapping of
+     * someone else's or wait for ever on `alive`. */
+    thread->tid        = 0;
+    thread->stack_base = NULL;
+    thread->stack_size = 0;
+    atomic_store_explicit(&thread->alive, 0, memory_order_relaxed);
+
+    /* A stack smaller than LC_THREAD_MIN_STACK_SIZE has no room for the
+     * thread's first calls, and the guard page above all would leave none:
+     * the thread would fault, and take the process with it. */
+    if (stack_size < LC_THREAD_MIN_STACK_SIZE) return lc_err(LC_ERR_INVAL);
+
     /* One real page of guard. mprotect rounds a sub-page length up to a full
      * page, so using the kernel's actual page size keeps the guard from eating
-     * into the usable stack on 16K/64K-page aarch64 kernels. */
+     * into the usable stack on 16K/64K-page aarch64 kernels. The total is a
+     * whole number of pages, so the stack's top is aligned to a page, and a
+     * size near SIZE_MAX, whose total would wrap to a small one, fails. */
     size_t guard_size = lc_runtime_page_size();
-    size_t total_size = stack_size + guard_size;
+    size_t total_size;
+    if (__builtin_add_overflow(stack_size, guard_size, &total_size) ||
+        __builtin_add_overflow(total_size, guard_size - 1, &total_size))
+        return lc_err(LC_ERR_INVAL);
+    total_size &= ~(guard_size - 1);
 
     void *stack = lc_kernel_map_memory(NULL, total_size,
                                        PROT_READ | PROT_WRITE,
@@ -57,8 +110,15 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
     thread->stack_base = stack;
     thread->stack_size = total_size;
 
-    /* Stack grows downward — pass the top */
-    uint8_t *stack_top = (uint8_t *)stack + total_size;
+    /* Stack grows downward — pass the top, below the start block. The
+     * mapping is whole pages and the stack at least LC_THREAD_MIN_STACK_SIZE,
+     * so the block fits, and the clone makes these stores visible to the
+     * child. */
+    uint8_t *mapping_top = (uint8_t *)stack + total_size;
+    thread_start *start = (thread_start *)(mapping_top - THREAD_START_SIZE);
+    start->func = func;
+    start->arg = arg;
+    uint8_t *stack_top = (uint8_t *)start;
 
     /* Both parent_tid and child_tid point to thread->alive:
      *   CLONE_PARENT_SETTID → kernel stores tid here before returning to parent
@@ -67,9 +127,10 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
                                   (int32_t *)&thread->alive,
                                   (int32_t *)&thread->alive,
                                   lc_heap_tls_sentinel(),
-                                  func, arg);
+                                  thread_entry, start);
     if (tid < 0) {
         thread->stack_base = NULL;  /* so a join cannot unmap it a second time */
+        thread->stack_size = 0;
         lc_kernel_unmap_memory(stack, total_size);
         return lc_err((int32_t)(-tid));
     }
@@ -102,6 +163,12 @@ void lc_spinlock_acquire(lc_spinlock *lock) {
     while (atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) != 0) {
         /* spin */
     }
+#ifdef LC_FAULTINJECT
+    /* A chaos point with the lock held: a yield or spin here keeps every
+     * thread that wants the lock waiting, so the heap's critical sections
+     * last longer, and a fork or a signal comes in one more often. */
+    lc_chaos_point();
+#endif
 }
 
 void lc_spinlock_release(lc_spinlock *lock) {
@@ -109,7 +176,14 @@ void lc_spinlock_release(lc_spinlock *lock) {
 }
 
 bool lc_spinlock_try_acquire(lc_spinlock *lock) {
-    return atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) == 0;
+    bool taken = atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) == 0;
+#ifdef LC_FAULTINJECT
+    /* As in lc_spinlock_acquire, once the lock is taken: the heap's free
+     * into an abandoned page takes it so, and other frees then find it
+     * taken more often. */
+    if (taken) lc_chaos_point();
+#endif
+    return taken;
 }
 
 /*

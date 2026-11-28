@@ -87,10 +87,17 @@ typedef struct {
 #define IORING_OP_ACCEPT   13
 #define IORING_OP_READ     22
 #define IORING_OP_WRITE    23
+#define IORING_OP_SEND     26
+#define IORING_OP_RECV     27
 
 #define IORING_ENTER_GETEVENTS  (1U << 0)
 
+/* io_uring_params.features */
 #define IORING_FEAT_SINGLE_MMAP  (1U << 0)
+#define IORING_FEAT_NODROP       (1U << 1)
+
+/* The SQ ring's flags: the kernel holds completions the CQ had no room for */
+#define IORING_SQ_CQ_OVERFLOW    (1U << 1)
 
 /* mmap flag for the rings: <lightc/syscall.h> has the others */
 #define MAP_POPULATE  0x008000
@@ -111,9 +118,18 @@ struct linux_dirent64 {
 
 /* --- statx (<linux/stat.h>), for io.c --- */
 
+/* One of the four times of struct statx. */
+struct statx_timestamp {
+    int64_t  tv_sec;
+    uint32_t tv_nsec;
+    int32_t  _reserved;
+};
+_Static_assert(sizeof(struct statx_timestamp) == 16, "struct statx_timestamp must be 16 bytes");
+
 /*
- * statx fills all 256 bytes of struct statx. lc_file_get_size reads only
- * stx_size, so the fields after it are one array here.
+ * statx fills all 256 bytes of struct statx. lc_file_stat and its kin copy
+ * the fields up to stx_mnt_id into an lc_file_info. The fields after it,
+ * which Linux 6.1 and later fill, are one array here.
  */
 struct statx {
     uint32_t stx_mask;
@@ -126,11 +142,24 @@ struct statx {
     uint16_t _spare0;
     uint64_t stx_ino;
     uint64_t stx_size;
-    uint64_t _rest[26];     /* stx_blocks to the end */
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    struct statx_timestamp stx_atime;
+    struct statx_timestamp stx_btime;
+    struct statx_timestamp stx_ctime;
+    struct statx_timestamp stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t stx_mnt_id;
+    uint64_t _rest[13];     /* stx_dio_mem_align to the end */
 };
 _Static_assert(sizeof(struct statx) == 256, "struct statx must be 256 bytes");
 
-#define STATX_SIZE  0x00000200U
+/* statx flag: with an empty path, the file that the dirfd argument is open
+ * on, for lc_file_stat_fd (<linux/fcntl.h>) */
+#define AT_EMPTY_PATH  0x1000
 
 /* --- writev (<linux/uio.h>), for log.c --- */
 
@@ -179,6 +208,96 @@ struct iovec {
 
 /* SA_RESTORER flag — required on x86_64, not used on aarch64 */
 #define SA_RESTORER 0x04000000
+
+/* sigaction flag: call the handler with the siginfo_t and the context */
+#define SA_SIGINFO  4
+
+/* SIGIO's other name, which the kernel's tables use */
+#define SIGPOLL  29
+
+/*
+ * siginfo_t (<asm-generic/siginfo.h>), which the kernel gives a handler
+ * installed with SA_SIGINFO: 128 bytes on both arches. After si_code comes
+ * a union, whose member the signal and si_code choose, as the kernel's
+ * siginfo_layout (kernel/signal.c) does: _kill for kill and the kernel's
+ * own, _timer for a POSIX timer, _rt for a queued signal or tkill,
+ * _sigchld for SIGCHLD, _sigfault for a fault, _sigpoll for SIGIO and
+ * _sigsys for a seccomp filter's SIGSYS. Each member has the UAPI's name;
+ * _sigfault leaves out the fields of other arches and of the fault kinds
+ * whose fields a signalfd does not give.
+ */
+typedef struct {
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    union {
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+        } _kill;
+        struct {
+            int32_t _tid;
+            int32_t _overrun;
+            union {
+                int32_t sival_int;
+                void   *sival_ptr;
+            } _sigval;
+        } _timer;
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+            union {
+                int32_t sival_int;
+                void   *sival_ptr;
+            } _sigval;
+        } _rt;
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+            int32_t  _status;
+            int64_t  _utime;
+            int64_t  _stime;
+        } _sigchld;
+        struct {
+            void   *_addr;
+            int16_t _addr_lsb;
+        } _sigfault;
+        struct {
+            int64_t _band;
+            int32_t _fd;
+        } _sigpoll;
+        struct {
+            void    *_call_addr;
+            int32_t  _syscall;
+            uint32_t _arch;
+        } _sigsys;
+        uint8_t _pad[112];
+    } _sifields;
+} siginfo_t;
+_Static_assert(sizeof(siginfo_t) == 128, "siginfo_t must be 128 bytes");
+
+/* si_code: who sent the signal, when it is 0 or less, or SI_KERNEL */
+#define SI_USER    0
+#define SI_KERNEL  0x80
+#define SI_TIMER   (-2)
+#define SI_SIGIO   (-5)
+
+/* The number of si_codes of each signal that has codes of its own:
+ * siginfo_layout reads a code above it as not the signal's. These are
+ * the UAPI headers' that tests/abi_check.c checks against; a later kernel
+ * may add codes, which signal.c then reads as one without them would. */
+#define NSIGILL   11
+#define NSIGFPE   15
+#define NSIGSEGV  10
+#define NSIGBUS   5
+#define NSIGTRAP  6
+#define NSIGCHLD  6
+#define NSIGPOLL  6
+#define NSIGSYS   2
+
+/* SIGBUS's codes for a memory error, whose siginfo has _addr_lsb */
+#define BUS_MCEERR_AR  4
+#define BUS_MCEERR_AO  5
 
 /* --- ELF64 (<linux/elf.h>), for library.c --- */
 
@@ -296,6 +415,11 @@ typedef struct {
 #define DT_RELRENT      37
 #define DT_GNU_HASH     0x6ffffef5
 #define DT_RELACOUNT    0x6ffffff9
+#define DT_FLAGS        30
+#define DT_VERSYM       0x6ffffff0
+
+/* DT_FLAGS: the object uses the static TLS model */
+#define DF_STATIC_TLS   0x10
 
 /* Symbol binding/type extraction */
 #define ELF64_ST_BIND(i)  ((i) >> 4)
@@ -305,6 +429,7 @@ typedef struct {
 #define STT_FUNC   2
 #define STT_OBJECT 1
 #define STT_TLS    6
+#define STT_GNU_IFUNC 10
 #define SHN_UNDEF  0
 #define SHN_ABS    0xfff1
 
@@ -314,6 +439,11 @@ typedef struct {
 #define R_X86_64_GLOB_DAT  6
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE  8
+#define R_X86_64_DTPMOD64  16
+#define R_X86_64_DTPOFF64  17
+#define R_X86_64_TPOFF64   18
+#define R_X86_64_TLSDESC   36
+#define R_X86_64_IRELATIVE 37
 
 /* Relocation types (aarch64) */
 #define R_AARCH64_NONE      0
@@ -321,6 +451,11 @@ typedef struct {
 #define R_AARCH64_GLOB_DAT  1025
 #define R_AARCH64_JUMP_SLOT 1026
 #define R_AARCH64_ABS64     257
+#define R_AARCH64_TLS_DTPMOD 1028
+#define R_AARCH64_TLS_DTPREL 1029
+#define R_AARCH64_TLS_TPREL  1030
+#define R_AARCH64_TLSDESC    1031
+#define R_AARCH64_IRELATIVE  1032
 
 /* Relocation info extraction */
 #define ELF64_R_SYM(i)   ((i) >> 32)

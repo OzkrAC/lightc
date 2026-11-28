@@ -1,18 +1,60 @@
-# SKIP: lines per test suite when the aarch64 debug build runs under
-# qemu-user, in the aarch64-qemu job of .github/workflows/build.yml.
-# The job counts the SKIP: lines each suite prints and fails unless every
-# count equals the one here, so a skip that appears or goes away fails it.
-# Suites that print no SKIP: line are not listed; a count of 0 means the same.
+# SKIP: lines per test suite and per regress program when the aarch64
+# debug build runs under qemu-user, in the aarch64-qemu job of
+# .github/workflows/build.yml. The job counts the SKIP: lines each prints
+# and fails unless every count equals the one here, so a skip that appears
+# or goes away fails it. Those that print no SKIP: line are not listed; a
+# count of 0 means the same.
 #
-# Format: one "suite count" pair per line; "#" starts a comment.
+# Format: one "name count" pair per line; "#" starts a comment. A suite is
+# named as test_async, a regress program as regress/async-1.
 
 # qemu-user has no io_uring, so every test in these suites skips, one SKIP:
 # line each. Adding a test to either suite adds one here. The job's
 # LIGHTC_TEST_ALLOW_SKIP names both, so tests/run.sh lets them skip every test.
-test_async      7
-test_lightio    3
+test_async      14
+test_lightio    5
 
 # The tmpfs mount case: unshare(CLONE_NEWUSER) fails in a threaded process,
 # and qemu-user runs threads of its own. The fchmodat case's check of the
 # pre-6.6 ENOSYS path: qemu-user does not implement seccomp.
 test_syscall    2
+
+# qemu-user does not run a guest's seccomp filter, and test_index runs each
+# function under one, so its eight tests that do skip. The ninth, that every
+# covered function has a case, needs no filter and runs.
+test_index      8
+
+# test_probe stands in for a kernel without a feature with a seccomp filter,
+# so its six tests that install one skip. The other three run: the probes'
+# answers agree with real uses of the features, whatever qemu-user
+# implements, and threads that probe at once agree.
+test_probe      6
+
+# qemu-user's clone refuses CLONE_NEWUSER and the other namespace flags, so
+# every test of test_sandbox, each of which runs in a sandbox of
+# tests/sandbox.h, skips, one SKIP: line each. Adding a test adds one here.
+# The job's LIGHTC_TEST_ALLOW_SKIP names it, so tests/run.sh lets it skip
+# every test.
+test_sandbox    12
+
+# The regress programs of the async ring's and lightio's defects need
+# io_uring, and async-1 seccomp too, and LOG-ts-uninit needs seccomp, so
+# under qemu-user each of their tests skips. The job's
+# LIGHTC_TEST_ALLOW_SKIP names them, so tests/run.sh lets them.
+# NET-no-cloexec's lightio test needs io_uring too and skips, but its
+# others run, so that program is not in LIGHTC_TEST_ALLOW_SKIP.
+regress/async-1                  2
+regress/async-2                  2
+regress/xm-wait-swallows-errors  1
+regress/LIO-coro-stack-align     1
+regress/lio-3                    1
+regress/LOG-ts-uninit            1
+regress/NET-no-cloexec           1
+regress/NET-uring-sigpipe        1
+
+# Under qemu-user, VmRSS in /proc/self/status is the emulator's, which
+# counts memory that none of the program's mappings holds, so the three
+# tests of HEAP-thread-exit-leak that check VmRSS skip. The program tells
+# by VmSize, which is then more than 64 MiB above the size of the
+# mappings /proc/self/maps lists. Its two tests of the mapping counts run.
+regress/HEAP-thread-exit-leak    3

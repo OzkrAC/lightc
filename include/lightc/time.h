@@ -38,6 +38,10 @@ int64_t lc_time_now_unix(void);
 /* Get a monotonic timestamp in nanoseconds (for measuring elapsed time). */
 int64_t lc_time_now_monotonic(void);
 
+/* Read the clock `clock_id`, LC_CLOCK_REALTIME or LC_CLOCK_MONOTONIC, in
+ * nanoseconds. 0 when the clock cannot be read. */
+int64_t lc_time_now_ns(int32_t clock_id);
+
 /* --- Conversion --- */
 
 /* Convert Unix epoch seconds to broken-down date/time (UTC). */
@@ -65,30 +69,44 @@ int64_t lc_time_elapsed_milliseconds(int64_t start);
 /* --- Formatting --- */
 
 /* YYYY is the year zero-padded to four digits, with a minus sign first for a
- * year before 0: 0042, 2026, 10000, -0001, -10000. */
+ * year before 0: 0042, 2026, 10000, -0001, -10000.
+ *
+ * Each formatter returns the length of the whole text, as lc_format_finish
+ * does: when buf_size is too small, that is more than buf holds. buf holds
+ * at most buf_size - 1 bytes of the text and a NUL after them, so write or
+ * print the smaller of the return and buf_size - 1, never the return
+ * alone. A return of buf_size or more says the text was cut. */
 
-/* Format date/time as "YYYY-MM-DD HH:MM:SS" into buf. Returns length written. */
+/* Format date/time as "YYYY-MM-DD HH:MM:SS" into buf. Returns the text's whole length. */
 [[gnu::nonnull(1, 2)]]
 size_t lc_time_format(const lc_date_time *dt, char *buf, size_t buf_size);
 
-/* Format date only as "YYYY-MM-DD". Returns length written. */
+/* Format date only as "YYYY-MM-DD". Returns the text's whole length. */
 [[gnu::nonnull(1, 2)]]
 size_t lc_time_format_date(const lc_date_time *dt, char *buf, size_t buf_size);
 
-/* Format time only as "HH:MM:SS". Returns length written. */
+/* Format time only as "HH:MM:SS". Returns the text's whole length. */
 [[gnu::nonnull(1, 2)]]
 size_t lc_time_format_time(const lc_date_time *dt, char *buf, size_t buf_size);
 
-/* Format as ISO 8601: "2026-03-15T21:30:00Z". Returns length written. */
+/* Format as ISO 8601: "2026-03-15T21:30:00Z". Returns the text's whole length. */
 [[gnu::nonnull(1, 2)]]
 size_t lc_time_format_iso8601(const lc_date_time *dt, char *buf, size_t buf_size);
 
 /* --- Sleep --- */
 
-/* Sleep for the given number of milliseconds. */
+/* Sleep until CLOCK_MONOTONIC reaches `deadline_ns`, a time of
+ * lc_time_now_ns(LC_CLOCK_MONOTONIC). A signal handler that interrupts the
+ * sleep only delays its end by its own run, as the deadline stays where it
+ * was. A deadline that has passed returns at once. */
+void lc_time_sleep_until(int64_t deadline_ns);
+
+/* Sleep for the given number of milliseconds, until a deadline that far
+ * ahead, as lc_time_sleep_until; 0 or less returns at once. */
 void lc_time_sleep_milliseconds(int64_t ms);
 
-/* Sleep for the given number of microseconds. */
+/* Sleep for the given number of microseconds, until a deadline that far
+ * ahead, as lc_time_sleep_until; 0 or less returns at once. */
 void lc_time_sleep_microseconds(int64_t us);
 
 #endif /* LIGHTC_TIME_H */

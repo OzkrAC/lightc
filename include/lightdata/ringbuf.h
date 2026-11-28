@@ -31,6 +31,8 @@ typedef struct {
 
 /* Create ring buffer. Capacity is rounded up to next power of 2. */
 lc_ringbuf lc_ringbuf_create(size_t element_size, size_t min_capacity);
+
+/* Free the buffer. */
 void lc_ringbuf_destroy(lc_ringbuf *ring);
 
 /* Push element to tail. error = LC_ERR_FULL if full. */

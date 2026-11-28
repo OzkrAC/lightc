@@ -1,10 +1,14 @@
 name: Build & Test
 
+# A release's work collects on its own branch, such as 0.2.0-pre: feature
+# branches open pull requests into it, and it merges into main when the
+# release is ready. So CI runs on pushes to, and pull requests into, main and
+# every *-pre branch.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, '*-pre']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, '*-pre']
 
 # Branch protection should require the check of every job here except the
 # two with continue-on-error, clang and regress-pending, which report
@@ -44,8 +48,19 @@ jobs:
           "$CC" --version | head -n 1
           ./configure ${{ matrix.mode }}
           ninja
+      # Only ./configure faultinject compiles the fault rules and chaos
+      # points of <lightc/fault.h>, so the library of each mode here must
+      # define none of their symbols.
+      - name: Check that the library has no fault injection
+        run: |
+          if nm -g --defined-only build/liblightc.a | grep -E ' (lc_fault_|lc_chaos_)'; then
+            echo "::error title=Fault injection::the ${{ matrix.mode }} build/liblightc.a defines the symbols above"
+            exit 1
+          fi
       # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
+      # test_sandbox, which runs each of its tests in user, mount, pid and
+      # UTS namespaces of its own, would skip every test, which fails the run.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # HEAP-tid-reuse-tls checks a thread that gets the id of one that has
@@ -128,6 +143,93 @@ jobs:
         if: ${{ failure() }}
         run: sudo dmesg | sh ci/crash-report.sh
 
+  # The faultinject mode on x86_64 with GCC 14, as the x86_64 cells run the
+  # other modes. Its ninja test also runs test_fault, which only this mode
+  # builds: fault rules that make mmap, munmap, madvise, clone and the others
+  # fail as the kernel could, and the heap's state when they do at a thread's
+  # exit. The suites then run a second time with the chaos points seeded,
+  # which yield or spin at random in lc_spinlock_acquire and in the heap's
+  # remote free, so the threads of test_heap, test_thread, test_thread_sync
+  # and test_fault interleave in more ways; a fixed seed gives each thread
+  # the same delays in every run, and the suites print it, so a failure can
+  # be run again with it (see tests/test.h).
+  faultinject:
+    name: x86_64 gcc 14 faultinject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CC: gcc-14
+      CHAOS_SEED: 20261127
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-14
+      - name: Build
+        run: |
+          "$CC" --version | head -n 1
+          ./configure faultinject
+          ninja
+      # The other way round from the x86_64 cells: here the library must
+      # define the fault rules and the chaos points.
+      - name: Check that the library has fault injection
+        run: |
+          for symbol in lc_fault_arm lc_chaos_seed; do
+            if ! nm -g --defined-only build/liblightc.a | grep -qE " T $symbol\$"; then
+              echo "::error title=Fault injection::the faultinject build/liblightc.a does not define $symbol"
+              exit 1
+            fi
+          done
+      # As in the x86_64 cells, so test_syscall's tmpfs mount runs.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As in the x86_64 cells, so HEAP-tid-reuse-tls runs rather than skips.
+      - name: Wrap thread ids at 32768
+        run: sudo sysctl -w kernel.pid_max=32768
+      - name: Run tests
+        run: |
+          set -o pipefail
+          ninja test 2>&1 | tee build/test.log
+      # As in the x86_64 cells: the totals of the run above, here with
+      # test_fault's. It always exits 0.
+      - name: Report the measured numbers
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          cc=$("$CC" --version | head -n 1)
+          if [ -f build/test.log ]; then
+            awk -v cc="$cc" '
+                /^Suites: [0-9]/ { suites = $0 }
+                /^Tests: +[0-9]/ { tests = $0 }
+                END {
+                    if (suites == "" || tests == "") {
+                        print "::warning title=Test totals::build/test.log has no summary of tests/run.sh"
+                        exit
+                    }
+                    gsub(/ +/, " ", suites)
+                    gsub(/ +/, " ", tests)
+                    print "::notice title=Test totals::" tests ". " suites ". (faultinject, " cc ")"
+                }' build/test.log
+          else
+            echo "::warning title=Test totals::no build/test.log"
+          fi
+          exit 0
+      # This also runs when the suites failed above, so one run reports both.
+      - name: Run tests with the chaos points seeded
+        if: ${{ !cancelled() }}
+        run: LC_CHAOS="$CHAOS_SEED" ninja test
+      - name: Run regress programs
+        if: ${{ !cancelled() }}
+        run: ninja regress
+      - name: Run examples
+        if: ${{ !cancelled() }}
+        run: ninja smoke
+      - name: Check the program headers of every binary
+        if: ${{ !cancelled() }}
+        run: sh ci/elfcheck.sh build
+      - name: Show where crashed programs stopped
+        if: ${{ failure() }}
+        run: sudo dmesg | sh ci/crash-report.sh
+
   # debug and release on a native aarch64 runner. These are the aarch64
   # checks of record: they run every case on a real arm64 kernel.
   # aarch64-qemu stays beside them as a smoke lane, and its check is
@@ -150,7 +252,7 @@ jobs:
       # -z pack-relative-relocs on aarch64, and LIB-relr needs DT_RELR.
       # configure picks lld only when ld does not pack.
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc lld
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc lld pkg-config
       # What an aarch64 failure can depend on, so the log alone can explain
       # one: the kernel, the toolchain, the CPU and its features, the page
       # size, and whether io_uring and user namespaces are allowed.
@@ -171,6 +273,7 @@ jobs:
           grep -qx 'arch = aarch64' build.ninja
           ninja
       # As on x86_64, so test_syscall's tmpfs mount case runs.
+      # Every test of test_sandbox needs it too.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # As on x86_64, so HEAP-tid-reuse-tls runs rather than skips.
@@ -204,6 +307,12 @@ jobs:
             echo "A gating regress program skipped a test."
             exit 1
           fi
+      # As in the pkg-config consumer job, which runs on x86_64 with a
+      # release install: here with this cell's mode, so a debug install is
+      # checked too, as is the ABI guard of <lightc/version.h> on aarch64.
+      - name: Install and build consumers with pkg-config
+        if: ${{ !cancelled() }}
+        run: sh ci/consumer.sh
       # The examples that check their own results, and lightio_test. An
       # example prints a skipped check as "NAME SKIP: REASON", and this
       # fails on any such line but one: release keeps no heap statistics
@@ -333,10 +442,12 @@ jobs:
       # minutes running out. qemu-user has no io_uring, so test_async and
       # test_lightio skip every test, which only this job allows: in the
       # x86_64 jobs that fails the run.
+      # qemu-user's clone refuses the namespace flags, so test_sandbox skips
+      # every test too.
       - name: Run tests
         run: |
           set -o pipefail
-          LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio" ninja test 2>&1 | tee build/test.log
+          LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio test_sandbox" ninja test 2>&1 | tee build/test.log
       # Cases qemu-user cannot run print SKIP: instead. Count the SKIP: lines
       # of each suite and fail unless the counts equal ci/qemu-skips.txt, so a
       # skip that appears or goes away fails the job. This also runs when a
@@ -351,24 +462,33 @@ jobs:
           awk '/^--- build\/test_[a-z0-9_]* ---$/ { suite = $2; sub(/^build\//, "", suite); next }
                /^[ \t]*SKIP:/ { skips[suite]++ }
                END { for (s in skips) print s, skips[s] }' build/test.log | sort > build/skips.actual
-          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 { print $1, $2 }' | sort > build/skips.expected
+          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 && $1 !~ /^regress\// { print $1, $2 }' | sort > build/skips.expected
           echo "SKIP: lines per suite in this run:"
           cat build/skips.actual
           if ! diff -u build/skips.expected build/skips.actual; then
             echo "The SKIP: counts differ from ci/qemu-skips.txt (-: the list, +: this run)."
             exit 1
           fi
-      # The gating regress programs need nothing qemu-user lacks, so unlike
-      # the suites none may skip: the step fails on any SKIP: line. Their
-      # output stays out of build/test.log, whose SKIP: lines the step above
-      # counts.
+      # The gating regress programs run as the suites do: those of the async
+      # ring's and lightio's defects need io_uring, and LOG-ts-uninit
+      # seccomp, so each of their tests skips, which LIGHTC_TEST_ALLOW_SKIP
+      # lets them, and ci/qemu-skips.txt lists them as regress/<id>. The
+      # SKIP: lines of each program must equal the count there, so any other
+      # program that skips fails the step. Their output stays out of
+      # build/test.log, whose SKIP: lines the step above counts.
       - name: Run regress programs
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          ninja regress 2>&1 | tee build/regress.log
-          if grep -E '^[[:space:]]*SKIP:' build/regress.log; then
-            echo "A gating regress program skipped a test under qemu-user."
+          LIGHTC_TEST_ALLOW_SKIP="async-1 async-2 xm-wait-swallows-errors LIO-coro-stack-align lio-3 LOG-ts-uninit NET-uring-sigpipe" ninja regress 2>&1 | tee build/regress.log
+          awk '/^--- build\/regress\/[A-Za-z0-9-]* ---$/ { prog = $2; sub(/^build\//, "", prog); next }
+               /^[ \t]*SKIP:/ { skips[prog]++ }
+               END { for (p in skips) print p, skips[p] }' build/regress.log | sort > build/regress-skips.actual
+          sed 's/#.*//' ci/qemu-skips.txt | awk 'NF && $2 != 0 && $1 ~ /^regress\// { print $1, $2 }' | sort > build/regress-skips.expected
+          echo "SKIP: lines per regress program in this run:"
+          cat build/regress-skips.actual
+          if ! diff -u build/regress-skips.expected build/regress-skips.actual; then
+            echo "The SKIP: counts of the regress programs differ from ci/qemu-skips.txt (-: the list, +: this run)."
             exit 1
           fi
       # The examples that check their own results, and lightio_test.
@@ -556,6 +676,13 @@ jobs:
         run: |
           ./configure
           ninja api-check
+      # AGENTS.md tells people and agents how to work on lightc: a path,
+      # ninja target, configure mode, function or macro it names that no
+      # longer exists fails this step, which reads api/decls.txt for the
+      # functions.
+      - name: Check that AGENTS.md names only what exists
+        if: ${{ !cancelled() }}
+        run: sh ci/agents-check.sh
 
   pkg-config-consumer:
     name: pkg-config consumer (install + link)
@@ -570,7 +697,11 @@ jobs:
       # Installs into a temporary DESTDIR, then builds with only the installed
       # lightc.pc's flags: hello must be a static EXEC that passes
       # ci/elfcheck.sh, runs and exits 0, and a thread_local program must
-      # fail to link.
+      # fail to link. It also checks the ABI guard: hello must not link
+      # against a liblightc.a of another minor version, a program with the
+      # other NDEBUG must agree on lc_arena, a -DLC_STATS other than the
+      # install's must stop at its config.h, and a -fPIC plugin built with
+      # the installed headers must load.
       - name: Install and build consumers with pkg-config
         run: sh ci/consumer.sh
 

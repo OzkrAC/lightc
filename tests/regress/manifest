@@ -24,6 +24,9 @@
 #
 # configure reads this file and writes the build edges, so run ./configure
 # again after editing it; the regress-pending job reads its pending ids too.
+# A program that needs link flags of its own, such as -Wl,--wrap=NAME to
+# stand in for a library function, has them in tests/regress/<id>.ldflags,
+# which configure reads too.
 # Format: one "id state" pair per line, "#" starts a comment. An id has only
 # letters, digits and dashes.
 
@@ -56,4 +59,30 @@ LOG-fork-deadlock       gating
 LOG-interleave          gating
 LOG-spin-across-write   gating
 LOG-uninit-bytes        gating
-TIME-sleep-eintr        pending
+ARENA-abi-lcstats       gating
+DS-array-self-alias     gating
+DS-ringbuf-overflow     gating
+ARENA-aligned-math      gating
+ARENA-create-wrap       gating
+async-1                 gating
+async-2                 gating
+xm-wait-swallows-errors gating
+LIB-p-align             gating
+LIB-symvalue            gating
+LIB-errno               gating
+xm-plugin-tls-key-collision gating
+LIO-coro-stack-align    gating
+THR-tls-key-fail        gating
+THR-create-fail         gating
+THR-stack-size          gating
+lio-3                   gating
+LOG-ts-uninit           gating
+LOG-utf8-truncation     gating
+NET-send-sigpipe        gating
+NET-no-cloexec          gating
+NET-uring-sigpipe       gating
+TIME-sleep-eintr        gating
+TIME-format-retlen      gating
+IO-dir-close-fd         gating
+HEAP-thread-exit-leak   gating
+RT-signal-block-range   gating

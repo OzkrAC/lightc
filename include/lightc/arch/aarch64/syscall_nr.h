@@ -11,6 +11,7 @@
  */
 
 #define SYS_dup3              24   /* 3 args */
+#define SYS_fcntl             25   /* 3 args */
 #define SYS_ioctl             29   /* 3 args */
 #define SYS_mknodat           33   /* 4 args */
 #define SYS_mkdirat           34   /* 3 args */
@@ -40,11 +41,15 @@
 #define SYS_nanosleep         101  /* 2 args */
 #define SYS_setitimer         103  /* 3 args */
 #define SYS_clock_gettime     113  /* 2 args */
+#define SYS_clock_nanosleep   115  /* 4 args */
+#define SYS_sched_yield       124  /* 0 args */
 #define SYS_kill              129  /* 2 args */
 #define SYS_rt_sigaction      134  /* 4 args */
 #define SYS_rt_sigprocmask    135  /* 4 args */
 #define SYS_setgid            144  /* 1 arg */
 #define SYS_setuid            146  /* 1 arg */
+#define SYS_setresuid         147  /* 3 args */
+#define SYS_setresgid         149  /* 3 args */
 #define SYS_setsid            157  /* 0 args */
 #define SYS_setgroups         159  /* 2 args */
 #define SYS_sethostname       161  /* 2 args */
@@ -60,6 +65,7 @@
 #define SYS_sendto            206  /* 6 args */
 #define SYS_recvfrom          207  /* 6 args */
 #define SYS_setsockopt        208  /* 5 args */
+#define SYS_getsockopt        209  /* 5 args */
 #define SYS_shutdown          210  /* 2 args */
 #define SYS_brk               214  /* 1 arg */
 #define SYS_munmap            215  /* 2 args */
@@ -70,13 +76,25 @@
 #define SYS_madvise           233  /* 3 args */
 #define SYS_accept4           242  /* 4 args */
 #define SYS_wait4             260  /* 4 args */
+#define SYS_prlimit64         261  /* 4 args */
 #define SYS_setns             268  /* 2 args */
 #define SYS_seccomp           277  /* 3 args */
 #define SYS_statx             291  /* 5 args */
 #define SYS_io_uring_setup    425  /* 2 args */
 #define SYS_io_uring_enter    426  /* 6 args */
 #define SYS_io_uring_register 427  /* 4 args */
+#define SYS_open_tree         428  /* 3 args */
+#define SYS_move_mount        429  /* 5 args */
+#define SYS_fsopen            430  /* 2 args */
+#define SYS_fsconfig          431  /* 5 args */
+#define SYS_fsmount           432  /* 3 args */
+#define SYS_fspick            433  /* 3 args */
+#define SYS_pidfd_open        434  /* 2 args */
+#define SYS_clone3            435  /* 2 args */
+#define SYS_close_range       436  /* 3 args */
+#define SYS_openat2           437  /* 4 args */
 #define SYS_faccessat2        439  /* 4 args */
+#define SYS_mount_setattr     442  /* 5 args */
 #define SYS_fchmodat2         452  /* 4 args */
 
 #endif /* LIGHTC_SYSCALL_NR_AARCH64_H */

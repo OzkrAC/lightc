@@ -9,7 +9,8 @@
 #include <lightc/thread.h>
 #include <lightc/time.h>
 #include <stdatomic.h>
-#include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, lio_kernel_timespec */
+#include "kernel.h"          /* IORING_OP_TIMEOUT, IORING_OP_ACCEPT, SOCK_CLOEXEC, lio_kernel_timespec */
+#include "internal.h"        /* LC_SLOT_LIO_LOOP, guarded_stack_map */
 
 /* ========================================================================
  * Constants
@@ -43,6 +44,7 @@ typedef struct {
     int32_t              state;
     int32_t              fd;
     void                *stack_base;
+    size_t               stack_size;     /* of the mapping, guard included */
     int32_t              pending_result;
     lc_coroutine_context context;
     lio_handler          handler;
@@ -66,6 +68,9 @@ struct lio_loop {
 
     /* Timeout support — one timespec per slot (for lio_sleep) */
     lio_kernel_timespec  timeout_specs[LIO_MAX_SLOTS];
+
+    /* The errno of the io_uring failure that stopped the loop, or 0 */
+    int32_t              error;
 };
 
 /* ========================================================================
@@ -76,29 +81,31 @@ extern void lc_coroutine_switch(lc_coroutine_context *save,
                                 lc_coroutine_context *restore);
 
 /* ========================================================================
- * Per-thread: the trampoline needs to know which loop is current
+ * Per-thread: the trampoline needs to know which loop is current. It is in
+ * the library's slot of the per-thread block, not in a TLS key, which a
+ * program that took every key would have shared.
  * ======================================================================== */
 
-static lc_tls_key loop_tls_key;
-static lc_once loop_tls_init = LC_ONCE_INIT;
-
-static void init_loop_tls(void) {
-    lc_tls_key_create(&loop_tls_key);
-}
-
 static lio_loop *get_current_loop(void) {
-    lc_call_once(&loop_tls_init, init_loop_tls);
-    return (lio_loop *)lc_tls_get(loop_tls_key);
+    void **slots = lc_heap_tls_slots();
+    return slots ? (lio_loop *)slots[LC_SLOT_LIO_LOOP] : NULL;
 }
 
 static void set_current_loop(lio_loop *loop) {
-    lc_call_once(&loop_tls_init, init_loop_tls);
-    lc_tls_set(loop_tls_key, loop);
+    void **slots = lc_heap_tls_slots();
+    if (slots) slots[LC_SLOT_LIO_LOOP] = loop;
 }
 
 /* ========================================================================
  * Internal helpers
  * ======================================================================== */
+
+/* Queue an accept on the loop's server socket. Its op flags are accept4's:
+ * the accepted socket is close-on-exec, as every socket lightc makes. */
+static lc_result submit_accept(lio_loop *loop) {
+    return lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT, loop->server_fd,
+                               0, 0, 0, SOCK_CLOEXEC, LIO_TAG_ACCEPT);
+}
 
 static int32_t alloc_slot(lio_loop *loop, int32_t fd) {
     for (int32_t i = 0; i < LIO_MAX_SLOTS; i++) {
@@ -139,17 +146,15 @@ static void connection_trampoline(void) {
 static void init_coroutine_for_slot(lio_loop *loop, int32_t slot) {
     lio_slot *s = &loop->slots[slot];
 
-    /* Allocate stack via mmap */
-    s->stack_base = lc_kernel_map_memory(NULL, LIO_STACK_SIZE,
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (s->stack_base == MAP_FAILED) {
+    /* A stack with a guard page below it, as coroutine.c's: an overflow
+     * faults instead of running into the mapping below. */
+    s->stack_base = guarded_stack_map(LIO_STACK_SIZE, &s->stack_size);
+    if (s->stack_base == NULL) {
         /* Roll the slot fully back to FREE. Marking it SLOT_FINISHED would
          * strand it: the event loop only cleans up FINISHED slots on the path
          * out of a RUNNING coroutine, which this slot never entered — so the
          * client fd, the slot, and its active_count would all leak, and the
          * phantom count would keep the loop from ever going idle. */
-        s->stack_base = NULL;
         if (s->fd >= 0) {
             lc_kernel_close_file(s->fd);
             s->fd = -1;
@@ -159,43 +164,8 @@ static void init_coroutine_for_slot(lio_loop *loop, int32_t slot) {
         return;
     }
 
-    /* Zero the context */
-    lc_bytes_fill(&s->context, 0, sizeof(s->context));
-
-    /*
-     * Set up the initial context so that lc_coroutine_switch "returns"
-     * into connection_trampoline.
-     */
-#if defined(__x86_64__)
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)s->stack_base + LIO_STACK_SIZE);
-
-    /* Reserve 16 bytes and put the trampoline "return address" in the low
-     * slot, as coroutine.c does: context.rsp stays 16-byte aligned, so the
-     * `ret` of lc_coroutine_switch enters the trampoline with rsp ≡ 8 mod 16,
-     * as the System V ABI requires. */
-    stack_top -= 2;
-    *stack_top = (uint64_t)connection_trampoline;
-
-    s->context.rsp = (uint64_t)stack_top;
-    s->context.rbp = 0;
-    s->context.rbx = 0;
-    s->context.r12 = 0;
-    s->context.r13 = 0;
-    s->context.r14 = 0;
-    s->context.r15 = 0;
-#elif defined(__aarch64__)
-    uint64_t *stack_top = (uint64_t *)((uint8_t *)s->stack_base + LIO_STACK_SIZE);
-    stack_top = (uint64_t *)((uintptr_t)stack_top & ~15ULL);
-
-    s->context.sp  = (uint64_t)stack_top;
-    s->context.x30 = (uint64_t)connection_trampoline;  /* lr */
-    s->context.x29 = 0;                                /* fp */
-    s->context.x19 = 0; s->context.x20 = 0;
-    s->context.x21 = 0; s->context.x22 = 0;
-    s->context.x23 = 0; s->context.x24 = 0;
-    s->context.x25 = 0; s->context.x26 = 0;
-    s->context.x27 = 0; s->context.x28 = 0;
-#endif
+    /* Enter connection_trampoline on it, aligned as after a call. */
+    coroutine_context_init(&s->context, s->stack_base, s->stack_size, connection_trampoline);
 }
 
 /* ========================================================================
@@ -243,7 +213,7 @@ void lio_loop_destroy(lio_loop *loop) {
     /* Free all active slot stacks */
     for (int32_t i = 0; i < LIO_MAX_SLOTS; i++) {
         if (loop->slots[i].state != SLOT_FREE && loop->slots[i].stack_base) {
-            lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+            lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
         }
     }
 
@@ -255,8 +225,20 @@ void lio_loop_stop(lio_loop *loop) {
     loop->running = false;
 }
 
+int32_t lio_loop_error(const lio_loop *loop) {
+    return loop->error;
+}
+
+/* An io_uring error the loop waits out: EINTR, and EAGAIN and EBUSY, which
+ * clear as completions are reaped. Any other, such as EBADF, recurs on every
+ * enter, so the loop stops instead of spinning. */
+static bool lio_can_retry(int32_t error) {
+    return error == 0 || error == LC_ERR_INTR || error == LC_ERR_AGAIN || error == LC_ERR_BUSY;
+}
+
 void lio_loop_run(lio_loop *loop) {
     loop->running = true;
+    loop->error   = 0;
     set_current_loop(loop);
 
     while (loop->running) {
@@ -275,7 +257,7 @@ void lio_loop_run(lio_loop *loop) {
                         loop->slots[i].fd = -1;
                     }
                     if (loop->slots[i].stack_base) {
-                        lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+                        lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
                         loop->slots[i].stack_base = NULL;
                     }
                     loop->slots[i].state = SLOT_FREE;
@@ -288,14 +270,22 @@ void lio_loop_run(lio_loop *loop) {
         if (!loop->running) break;
 
         /* 2. Flush io_uring submissions */
-        lc_async_flush(loop->ring);
+        lc_result flushed = lc_async_flush_ex(loop->ring);
+        if (!lio_can_retry(flushed.error)) {
+            loop->error   = flushed.error;
+            loop->running = false;
+            break;
+        }
 
         /* 3. Wait for completions (only if there's work to do) */
         lc_async_result results[64];
         uint32_t n = 0;
+        int32_t wait_error = 0;
 
         if (loop->active_count > 0 || loop->server_fd >= 0) {
-            n = lc_async_wait(loop->ring, results, 64);
+            lc_result waited = lc_async_wait_ex(loop->ring, results, 64);
+            n = (uint32_t)waited.value;
+            wait_error = waited.error;
         } else {
             /* Nothing left to do */
             break;
@@ -316,9 +306,7 @@ void lio_loop_run(lio_loop *loop) {
                 }
                 /* Re-submit accept for next connection */
                 if (loop->running) {
-                    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                                              loop->server_fd, 0, 0, 0, 0,
-                                              LIO_TAG_ACCEPT);
+                    (void)submit_accept(loop);
                 }
             } else {
                 /* I/O completion — resume the waiting coroutine */
@@ -330,6 +318,13 @@ void lio_loop_run(lio_loop *loop) {
                 }
             }
         }
+
+        /* After the completions the wait returned, so none is lost */
+        if (!lio_can_retry(wait_error)) {
+            loop->error   = wait_error;
+            loop->running = false;
+            break;
+        }
     }
 }
 
@@ -339,7 +334,7 @@ void lio_loop_run(lio_loop *loop) {
 
 lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
     /* Create server socket */
-    lc_result r = lc_socket_create(LC_SOCK_STREAM);
+    lc_result r = lc_socket_open(LC_AF_INET, LC_SOCK_STREAM, 0);
     if (lc_is_err(r)) return r;
     int32_t fd = (int32_t)r.value;
 
@@ -366,8 +361,7 @@ lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
     loop->accept_handler = handler;
 
     /* Submit initial accept via io_uring */
-    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT, fd,
-                              0, 0, 0, 0, LIO_TAG_ACCEPT);
+    (void)submit_accept(loop);
 
     return lc_ok(0);
 }
@@ -385,21 +379,24 @@ lc_result lio_tcp_serve(lio_loop *loop, uint16_t port, lio_handler handler) {
  */
 static bool lio_try_submit_read(lio_loop *loop, int32_t fd, void *buf,
                                 uint32_t count, uint32_t slot, int32_t *err) {
-    lc_result r = lc_async_submit_read(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+    lc_result r = lc_async_submit_receive(loop->ring, fd, buf, count, 0, (uint64_t)slot);
     if (lc_is_err(r)) {
         lc_async_flush(loop->ring);
-        r = lc_async_submit_read(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+        r = lc_async_submit_receive(loop->ring, fd, buf, count, 0, (uint64_t)slot);
         if (lc_is_err(r)) { *err = -(int32_t)r.error; return false; }
     }
     return true;
 }
 
+/* A send, not a write: a write to a socket whose peer has reset the
+ * connection raises SIGPIPE, which ends the process, as one client could
+ * make it. The send has MSG_NOSIGNAL, and completes with -EPIPE instead. */
 static bool lio_try_submit_write(lio_loop *loop, int32_t fd, const void *buf,
                                  uint32_t count, uint32_t slot, int32_t *err) {
-    lc_result r = lc_async_submit_write(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+    lc_result r = lc_async_submit_send(loop->ring, fd, buf, count, 0, (uint64_t)slot);
     if (lc_is_err(r)) {
         lc_async_flush(loop->ring);
-        r = lc_async_submit_write(loop->ring, fd, buf, count, (uint64_t)-1, (uint64_t)slot);
+        r = lc_async_submit_send(loop->ring, fd, buf, count, 0, (uint64_t)slot);
         if (lc_is_err(r)) { *err = -(int32_t)r.error; return false; }
     }
     return true;
@@ -519,6 +516,7 @@ typedef struct {
     lio_handler handler;
     uint32_t    worker_id;
     _Atomic(bool) *stop_flag;
+    int32_t     error;   /* set by the worker: why it stopped, or 0 */
 } lio_worker_args;
 
 static int32_t lio_worker_thread(void *arg) {
@@ -533,8 +531,7 @@ static int32_t lio_worker_thread(void *arg) {
     loop->accept_handler = wargs->handler;
 
     /* Submit initial accept on the shared server fd */
-    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                              loop->server_fd, 0, 0, 0, 0, LIO_TAG_ACCEPT);
+    (void)submit_accept(loop);
 
     /* Run until stop flag is set */
     loop->running = true;
@@ -555,7 +552,7 @@ static int32_t lio_worker_thread(void *arg) {
                         loop->slots[i].fd = -1;
                     }
                     if (loop->slots[i].stack_base) {
-                        lc_kernel_unmap_memory(loop->slots[i].stack_base, LIO_STACK_SIZE);
+                        lc_kernel_unmap_memory(loop->slots[i].stack_base, loop->slots[i].stack_size);
                         loop->slots[i].stack_base = NULL;
                     }
                     loop->slots[i].state = SLOT_FREE;
@@ -566,10 +563,16 @@ static int32_t lio_worker_thread(void *arg) {
 
         if (atomic_load(wargs->stop_flag)) break;
 
-        /* Flush + wait */
-        lc_async_flush(loop->ring);
+        /* Flush + wait. As in lio_loop_run, an error but EINTR, EAGAIN or
+         * EBUSY stops this worker, with its errno kept. */
+        lc_result flushed = lc_async_flush_ex(loop->ring);
+        if (!lio_can_retry(flushed.error)) {
+            wargs->error = flushed.error;
+            break;
+        }
         lc_async_result results[64];
-        uint32_t n = lc_async_wait(loop->ring, results, 64);
+        lc_result waited = lc_async_wait_ex(loop->ring, results, 64);
+        uint32_t n = (uint32_t)waited.value;
 
         /* Process completions */
         for (uint32_t i = 0; i < n; i++) {
@@ -584,9 +587,7 @@ static int32_t lio_worker_thread(void *arg) {
                     }
                 }
                 if (!atomic_load(wargs->stop_flag)) {
-                    (void)lc_async_submit_raw(loop->ring, IORING_OP_ACCEPT,
-                                              loop->server_fd, 0, 0, 0, 0,
-                                              LIO_TAG_ACCEPT);
+                    (void)submit_accept(loop);
                 }
             } else {
                 uint32_t slot = (uint32_t)results[i].tag;
@@ -596,6 +597,10 @@ static int32_t lio_worker_thread(void *arg) {
                     loop->slots[slot].state = SLOT_READY;
                 }
             }
+        }
+        if (!lio_can_retry(waited.error)) {
+            wargs->error = waited.error;
+            break;
         }
     }
 
@@ -618,13 +623,19 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count) {
     lc_thread threads[LIO_MAX_WORKERS];
 
     /* Spawn worker threads (all share the same server fd) */
+    /* The workers that start are packed at the front: each goes into the
+     * next unused handle, so threads[0 .. created_count) are exactly the
+     * live ones, the ones joined below. A create that fails reuses its
+     * handle for the next try. */
     uint32_t created_count = 0;
     for (uint32_t i = 0; i < thread_count; i++) {
-        args[i].server_fd = loop->server_fd;
-        args[i].handler = loop->accept_handler;
-        args[i].worker_id = i;
-        args[i].stop_flag = &stop_flag;
-        if (lc_is_ok(lc_thread_create(&threads[i], lio_worker_thread, &args[i]))) {
+        lio_worker_args *a = &args[created_count];
+        a->server_fd = loop->server_fd;
+        a->handler = loop->accept_handler;
+        a->worker_id = i;
+        a->stop_flag = &stop_flag;
+        a->error = 0;
+        if (lc_is_ok(lc_thread_create(&threads[created_count], lio_worker_thread, a))) {
             created_count++;
         }
     }
@@ -646,8 +657,11 @@ void lio_loop_run_threaded(lio_loop *loop, uint32_t thread_count) {
         if (!lc_is_err(wr)) lc_socket_close((int32_t)wr.value);
     }
 
-    /* Join only the threads that were actually created */
+    /* Join only the threads that were actually created. The join orders each
+     * worker's write of its error before the read here. */
+    loop->error = 0;
     for (uint32_t i = 0; i < created_count; i++) {
         lc_thread_join(&threads[i]);
+        if (loop->error == 0) loop->error = args[i].error;
     }
 }
