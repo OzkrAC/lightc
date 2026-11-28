@@ -491,6 +491,8 @@ static void case_lc_kernel_getuid(void) { enter(); (void)lc_kernel_getuid(); }
 static void case_lc_kernel_setuid(void) { enter(); (void)lc_kernel_setuid((uint32_t)-1); }
 static void case_lc_kernel_setgid(void) { enter(); (void)lc_kernel_setgid((uint32_t)-1); }
 static void case_lc_kernel_setgroups(void) { enter(); (void)lc_kernel_setgroups(70000, NULL); }
+static void case_lc_kernel_setresuid(void) { enter(); (void)lc_kernel_setresuid((uint32_t)-1, (uint32_t)-1, (uint32_t)-1); }
+static void case_lc_kernel_setresgid(void) { enter(); (void)lc_kernel_setresgid((uint32_t)-1, (uint32_t)-1, (uint32_t)-1); }
 static void case_lc_kernel_io_ring_setup(void) { uint8_t params[128] = {0}; enter(); (void)lc_kernel_io_ring_setup(0, params); }
 static void case_lc_kernel_io_ring_enter(void) { enter(); (void)lc_kernel_io_ring_enter(-1, 0, 0, 0); }
 
@@ -689,6 +691,7 @@ static const index_case cases[] = {
     CASE(lc_kernel_unshare), CASE(lc_kernel_setns), CASE(lc_kernel_sethostname), CASE(lc_kernel_prctl),
     CASE(lc_kernel_seccomp), CASE(lc_kernel_getuid), CASE(lc_kernel_setuid), CASE(lc_kernel_setgid),
     CASE(lc_kernel_setgroups), CASE(lc_kernel_io_ring_setup), CASE(lc_kernel_io_ring_enter),
+    CASE(lc_kernel_setresuid), CASE(lc_kernel_setresgid),
 
     CASE(lc_writer_create), CASE(lc_writer_destroy), CASE(lc_writer_flush), CASE(lc_writer_put_byte),
     CASE(lc_writer_put_char), CASE(lc_writer_put_hex), CASE(lc_writer_put_line), CASE(lc_writer_put_newline),

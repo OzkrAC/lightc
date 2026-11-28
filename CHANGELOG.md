@@ -4,6 +4,10 @@
 
 Changes since 0.2.0-rc1.
 
+### Upgrading
+
+- `ninja test` now needs unprivileged user namespaces: the new `test_sandbox` skips every test where one cannot be made, or where AppArmor gives an unprivileged user's new user namespace no capabilities (`kernel.apparmor_restrict_unprivileged_userns=1`, Ubuntu's default from 23.10), and a suite that skips every test fails the run. Lift the restriction with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, as CI does, or set `LIGHTC_TEST_ALLOW_SKIP=test_sandbox`.
+
 ### Added
 
 - `lc_probe_kernel(feature)`, in the new `<lightc/probe.h>`, tells whether this process can use a kernel feature that is newer than lightc's 5.10 floor, or that a sandbox may take away: `LC_KFEAT_FCHMODAT2`, `LC_KFEAT_FACCESSAT2`, `LC_KFEAT_OPENAT2`, `LC_KFEAT_CLOSE_RANGE`, `LC_KFEAT_CLONE3`, `LC_KFEAT_PIDFD`, `LC_KFEAT_MOUNT_API`, `LC_KFEAT_MOUNT_SETATTR` and `LC_KFEAT_IO_URING`. It tests each feature once, with calls the kernel refuses before it does anything, and keeps the answer, and threads may call it at once. Its `lc_result` has error 0 when the feature can be used, `LC_ERR_NOSYS` when a call answers ENOSYS, and `LC_ERR_PERM` when a seccomp filter refuses one with EPERM or `kernel.io_uring_disabled` forbids io_uring.
@@ -11,11 +15,15 @@ Changes since 0.2.0-rc1.
 - The Kernel section of `docs/contracts.html` gives each probed feature's minimum kernel and what lightc does without it, and the `O_PATH` fallback for `lc_kernel_fchmodat` with flags before Linux 6.6, and says why a symlink has none.
 - `./configure faultinject`, a build mode for tests. In it, `lc_syscall0` to `lc_syscall6`, `lc_kernel_clone` and the clone that starts a thread in `lc_thread_create` check a table of fault rules before they make their system call. `lc_fault_arm(&rule)` arms an `lc_fault_rule`, which fails calls `nth` to `nth + count - 1` of one system call, or every call from `nth` on when `count` is 0, with a chosen errno, without making them; `lc_fault_hits`, `lc_fault_disarm` and `lc_fault_reset` go with it. Chaos points in `lc_spinlock_acquire` and in the heap's lock-free remote free yield or spin at random once `lc_chaos_seed` seeds them, and `lc_chaos_point` and `lc_chaos_count` let a program add and count its own. `<lightc/fault.h>` declares all of it only when `LC_FAULTINJECT` is defined, and no other mode compiles any of it: their objects are unchanged.
 - `SYS_sched_yield` (24 on x86_64, 124 on aarch64).
+- `lc_kernel_setresgid(rgid, egid, sgid)` and `lc_kernel_setresuid(ruid, euid, suid)` in `<lightc/syscall.h>`, both `[[nodiscard]]`, with `SYS_setresgid` (119 on x86_64, 149 on aarch64) and `SYS_setresuid` (117 on x86_64, 147 on aarch64). A privilege drop calls `lc_kernel_setgroups`, then `lc_kernel_setresgid`, then `lc_kernel_setresuid`, as their comments say.
+- The comments of `lc_kernel_mount`, `lc_kernel_umount`, `lc_kernel_pivot_root`, `lc_kernel_mknodat` and `lc_kernel_sethostname` say what each does in a user namespace of its own, as `test_sandbox` checks: mknodat makes FIFOs and whiteouts, the character device 0:0, but gets `-EPERM` for any other device, and umount2 of a mount that came with the namespace's copy of its parent's mounts gives `-EINVAL`, as it is locked.
 
 ### Build and CI
 
-- `ninja test` runs 322 tests in 22 suites. The new `test_probe` checks each probe against a real use of its feature, and that threads probing at once agree. Under a seccomp filter that stands in for a kernel without a feature, it checks that each probe reports the feature absent, and that each lightc path that depends on it takes its documented fallback. `test_index` now covers `<lightc/probe.h>`. Under qemu-user, `test_probe` skips the six tests that need a filter and `test_index` skips eight, as `ci/qemu-skips.txt` pins.
+- `ninja test` runs 334 tests in 23 suites.
+- The new `test_probe` checks each probe against a real use of its feature, and that threads probing at once agree. Under a seccomp filter that stands in for a kernel without a feature, it checks that each probe reports the feature absent, and that each lightc path that depends on it takes its documented fallback. `test_index` now covers `<lightc/probe.h>`. Under qemu-user, `test_probe` skips the six tests that need a filter and `test_index` skips eight, as `ci/qemu-skips.txt` pins.
 - In the faultinject mode `ninja test` also runs the new `test_fault`, 17 tests of the fault rules and the chaos points. `test_fault`, `test_thread` and `test_thread_sync` seed the chaos points from `LC_CHAOS` in the environment, through `tests/test.h`'s new `test_chaos_init`, and print the seed, so a failing run can be repeated.
+- The new `test_sandbox` runs each test in user, mount, pid and UTS namespaces of its own, without privilege, through the fixture `tests/sandbox.h`, which later suites use too. It covers tmpfs, bind and propagation mounts, `MS_PRIVATE` among them, umount2, `pivot_root`, sethostname, mknodat and the order of a privilege drop. A body that hangs is killed by a watchdog and fails its test. qemu-user's clone refuses the namespace flags, so there every test skips: the qemu job names the suite in `LIGHTC_TEST_ALLOW_SKIP`, and `ci/qemu-skips.txt` counts its 12 skips.
 - Each x86_64 CI job checks that its `liblightc.a` defines no `lc_fault_` or `lc_chaos_` symbol, and `ci/abilint.sh` fails on an `lc_fault_raw_` name outside `src/fault.c`, as such a call would make a system call that no fault rule checks.
 
 ## 0.2.0-rc1

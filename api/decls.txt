@@ -406,6 +406,8 @@ lightc/syscall.h: static inline lc_sysret lc_kernel_setgid(uint32_t gid);
 lightc/syscall.h: static inline lc_sysret lc_kernel_setgroups(size_t size, const uint32_t *list);
 lightc/syscall.h: static inline lc_sysret lc_kernel_sethostname(const char *name, size_t len);
 lightc/syscall.h: static inline lc_sysret lc_kernel_setns(int32_t fd, int32_t nstype);
+lightc/syscall.h: [[nodiscard]] static inline lc_sysret lc_kernel_setresgid(uint32_t rgid, uint32_t egid, uint32_t sgid);
+lightc/syscall.h: [[nodiscard]] static inline lc_sysret lc_kernel_setresuid(uint32_t ruid, uint32_t euid, uint32_t suid);
 lightc/syscall.h: static inline lc_sysret lc_kernel_setuid(uint32_t uid);
 lightc/syscall.h: typedef struct { ... } lc_kernel_sigaction;
 lightc/syscall.h: static inline lc_sysret lc_kernel_sleep(const lc_timespec *duration);

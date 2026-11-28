@@ -179,6 +179,8 @@ lc_kernel_setgid	setgid	x86_64 aarch64
 lc_kernel_setgroups	setgroups	x86_64 aarch64
 lc_kernel_sethostname	sethostname	x86_64 aarch64
 lc_kernel_setns	setns	x86_64 aarch64
+lc_kernel_setresgid	setresgid	x86_64 aarch64
+lc_kernel_setresuid	setresuid	x86_64 aarch64
 lc_kernel_setuid	setuid	x86_64 aarch64
 lc_kernel_sleep	nanosleep	x86_64 aarch64
 lc_kernel_symlinkat	symlinkat	x86_64 aarch64

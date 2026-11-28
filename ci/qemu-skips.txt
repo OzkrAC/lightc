@@ -30,6 +30,13 @@ test_index      8
 # implements, and threads that probe at once agree.
 test_probe      6
 
+# qemu-user's clone refuses CLONE_NEWUSER and the other namespace flags, so
+# every test of test_sandbox, each of which runs in a sandbox of
+# tests/sandbox.h, skips, one SKIP: line each. Adding a test adds one here.
+# The job's LIGHTC_TEST_ALLOW_SKIP names it, so tests/run.sh lets it skip
+# every test.
+test_sandbox    12
+
 # The regress programs of the async ring's and lightio's defects need
 # io_uring, and async-1 seccomp too, and LOG-ts-uninit needs seccomp, so
 # under qemu-user each of their tests skips. The job's

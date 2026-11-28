@@ -59,6 +59,8 @@ jobs:
           fi
       # Ubuntu's AppArmor restricts unprivileged user namespaces by default,
       # and test_syscall then skips its tmpfs mount. Lift that so it runs.
+      # test_sandbox, which runs each of its tests in user, mount, pid and
+      # UTS namespaces of its own, would skip every test, which fails the run.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # HEAP-tid-reuse-tls checks a thread that gets the id of one that has
@@ -184,6 +186,7 @@ jobs:
           grep -qx 'arch = aarch64' build.ninja
           ninja
       # As on x86_64, so test_syscall's tmpfs mount case runs.
+      # Every test of test_sandbox needs it too.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # As on x86_64, so HEAP-tid-reuse-tls runs rather than skips.
@@ -352,10 +355,12 @@ jobs:
       # minutes running out. qemu-user has no io_uring, so test_async and
       # test_lightio skip every test, which only this job allows: in the
       # x86_64 jobs that fails the run.
+      # qemu-user's clone refuses the namespace flags, so test_sandbox skips
+      # every test too.
       - name: Run tests
         run: |
           set -o pipefail
-          LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio" ninja test 2>&1 | tee build/test.log
+          LIGHTC_TEST_ALLOW_SKIP="test_async test_lightio test_sandbox" ninja test 2>&1 | tee build/test.log
       # Cases qemu-user cannot run print SKIP: instead. Count the SKIP: lines
       # of each suite and fail unless the counts equal ci/qemu-skips.txt, so a
       # skip that appears or goes away fails the job. This also runs when a

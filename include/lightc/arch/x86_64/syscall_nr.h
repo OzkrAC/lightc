@@ -50,6 +50,8 @@
 #define SYS_setgid            106  /* 1 arg */
 #define SYS_setsid            112  /* 0 args */
 #define SYS_setgroups         116  /* 2 args */
+#define SYS_setresuid         117  /* 3 args */
+#define SYS_setresgid         119  /* 3 args */
 #define SYS_pivot_root        155  /* 2 args */
 #define SYS_prctl             157  /* 5 args */
 #define SYS_arch_prctl        158  /* 2 args */

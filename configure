@@ -698,8 +698,10 @@ build \$builddir/test_index.o: cc_test tests/test_index.c
 build \$builddir/test_index: link \$builddir/test_index.o \$builddir/liblightc.a | \$ldscript
 build \$builddir/test_probe.o: cc_test tests/test_probe.c
 build \$builddir/test_probe: link \$builddir/test_probe.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_sandbox.o: cc_test tests/test_sandbox.c
+build \$builddir/test_sandbox: link \$builddir/test_sandbox.o \$builddir/liblightc.a | \$ldscript
 ${FAULT_SUITE_EDGES}
-build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe${FAULT_SUITES}
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox${FAULT_SUITES}
 
 # tests/run.sh runs every suite, even after one fails, each with a time
 # limit, and ends with a summary. The console pool streams each suite's
@@ -710,7 +712,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 

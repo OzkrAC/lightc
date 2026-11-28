@@ -500,19 +500,44 @@ static inline lc_sysret lc_kernel_send_signal(int32_t pid, int32_t signal) {
 #define W_OK  2
 #define X_OK  1
 
-/* Mount `source` on `target`, as mount(2) does. */
+/*
+ * Mount `source` on `target`, as mount(2) does.
+ *
+ * It needs CAP_SYS_ADMIN in the user namespace that owns the caller's mount
+ * namespace. So the first process of new user and mount namespaces, which
+ * has every capability in them, can mount a tmpfs, make bind mounts and
+ * change propagation, MS_PRIVATE among it, with no privilege outside. The
+ * mounts that a mount namespace made in a new user namespace copied from
+ * its parent are locked: see lc_kernel_umount.
+ */
 static inline lc_sysret lc_kernel_mount(const char *source, const char *target,
                                          const char *fstype, uint64_t flags, const void *data) {
     return lc_syscall5(SYS_mount, (int64_t)source, (int64_t)target,
                        (int64_t)fstype, (int64_t)flags, (int64_t)data);
 }
 
-/* Unmount `target`. */
+/*
+ * Unmount `target`.
+ *
+ * Of umount2's flags this header names MNT_DETACH. A busy mount gives
+ * -EBUSY, but MNT_DETACH takes it from the tree at once, and the kernel
+ * frees it when its last user is done. A mount that a mount namespace made
+ * in a new user namespace copied from its parent is locked to the mount
+ * above it and gives -EINVAL, so that the new user namespace cannot uncover
+ * what the mount hides.
+ */
 static inline lc_sysret lc_kernel_umount(const char *target, int32_t flags) {
     return lc_syscall2(SYS_umount2, (int64_t)target, flags);
 }
 
-/* Make `new_root` the root mount, and move the old one to `put_old`. */
+/*
+ * Make `new_root` the root mount, and move the old one to `put_old`.
+ *
+ * new_root must be a mount point, and put_old a directory at or below it;
+ * pivot_root(2) gives the rest of the rules. A container's setup then
+ * changes directory to "/" and detaches the old root with
+ * lc_kernel_umount(put_old, MNT_DETACH).
+ */
 static inline lc_sysret lc_kernel_pivot_root(const char *new_root, const char *put_old) {
     return lc_syscall2(SYS_pivot_root, (int64_t)new_root, (int64_t)put_old);
 }
@@ -527,7 +552,17 @@ static inline lc_sysret lc_kernel_mkdirat(int32_t dirfd, const char *path, int32
     return lc_syscall3(SYS_mkdirat, dirfd, (int64_t)path, mode);
 }
 
-/* Create the file node `path`, relative to `dirfd`: a FIFO, a device or the like. */
+/*
+ * Create the file node `path`, relative to `dirfd`: a FIFO, a device or the like.
+ *
+ * mode holds the file type, such as S_IFIFO (0010000) or S_IFCHR (0020000),
+ * and the permission bits; dev is the device number, as the kernel's
+ * new_encode_dev packs it: (minor & 0xff) | major << 8 | (minor & ~0xff) << 12.
+ * A character or block device needs CAP_MKNOD in the initial user namespace,
+ * so a process in a user namespace of its own gets -EPERM for one, except
+ * for a whiteout, the character device 0:0, which overlayfs takes for a
+ * deleted file. A FIFO needs no privilege.
+ */
 static inline lc_sysret lc_kernel_mknodat(int32_t dirfd, const char *path, int32_t mode, uint64_t dev) {
     return lc_syscall4(SYS_mknodat, dirfd, (int64_t)path, mode, (int64_t)dev);
 }
@@ -600,7 +635,14 @@ static inline lc_sysret lc_kernel_setns(int32_t fd, int32_t nstype) {
     return lc_syscall2(SYS_setns, fd, nstype);
 }
 
-/* Set the host name of the UTS namespace. */
+/*
+ * Set the host name of the UTS namespace.
+ *
+ * It takes `len` bytes of `name`, which need no NUL, and at most 64: a
+ * longer name gives -EINVAL. It needs CAP_SYS_ADMIN in the user namespace
+ * that owns the UTS namespace, so a process in new user and UTS namespaces
+ * can name its own.
+ */
 static inline lc_sysret lc_kernel_sethostname(const char *name, size_t len) {
     return lc_syscall2(SYS_sethostname, (int64_t)name, (int64_t)len);
 }
@@ -637,6 +679,37 @@ static inline lc_sysret lc_kernel_setgid(uint32_t gid) {
 /* Set the supplementary groups of the caller. */
 static inline lc_sysret lc_kernel_setgroups(size_t size, const uint32_t *list) {
     return lc_syscall2(SYS_setgroups, (int64_t)size, (int64_t)list);
+}
+
+/*
+ * Set the real, effective and saved group ids of the caller. An id of
+ * (uint32_t)-1 leaves that one as it is.
+ *
+ * Each id must be mapped in the caller's user namespace, or the call fails
+ * with -EINVAL. Without CAP_SETGID, each must be one of the caller's three
+ * group ids, or it fails with -EPERM. To drop privileges, call
+ * lc_kernel_setgroups, then this, then lc_kernel_setresuid: the first two
+ * need CAP_SETGID, which the process loses when lc_kernel_setresuid leaves
+ * none of its user ids 0.
+ */
+[[nodiscard]] static inline lc_sysret lc_kernel_setresgid(uint32_t rgid, uint32_t egid, uint32_t sgid) {
+    return lc_syscall3(SYS_setresgid, rgid, egid, sgid);
+}
+
+/*
+ * Set the real, effective and saved user ids of the caller. An id of
+ * (uint32_t)-1 leaves that one as it is.
+ *
+ * Each id must be mapped in the caller's user namespace, or the call fails
+ * with -EINVAL. Without CAP_SETUID, each must be one of the caller's three
+ * user ids, or it fails with -EPERM. A call that leaves none of the three
+ * 0, where one was, clears the process's effective and permitted
+ * capabilities, or only the effective ones after PR_SET_KEEPCAPS, so in a
+ * privilege drop it comes last, after lc_kernel_setgroups and
+ * lc_kernel_setresgid.
+ */
+[[nodiscard]] static inline lc_sysret lc_kernel_setresuid(uint32_t ruid, uint32_t euid, uint32_t suid) {
+    return lc_syscall3(SYS_setresuid, ruid, euid, suid);
 }
 
 /* --- Async I/O --- */

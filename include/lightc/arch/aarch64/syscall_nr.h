@@ -48,6 +48,8 @@
 #define SYS_rt_sigprocmask    135  /* 4 args */
 #define SYS_setgid            144  /* 1 arg */
 #define SYS_setuid            146  /* 1 arg */
+#define SYS_setresuid         147  /* 3 args */
+#define SYS_setresgid         149  /* 3 args */
 #define SYS_setsid            157  /* 0 args */
 #define SYS_setgroups         159  /* 2 args */
 #define SYS_sethostname       161  /* 2 args */

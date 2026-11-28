@@ -51,6 +51,7 @@ What `ninja regress` and `ninja test` need of the machine:
 
 - **Thread ids that wrap.** `HEAP-tid-reuse-tls` skips above a `kernel.pid_max` of 32768, which fails the run. Lower it with `sudo sysctl -w kernel.pid_max=32768`, or name the program in `LIGHTC_TEST_ALLOW_SKIP`.
 - **io_uring.** Without it, `test_async` and `test_lightio` skip every test, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names them.
+- **User namespaces.** `test_sandbox` runs each test in user, mount, pid and UTS namespaces of its own, made with `tests/sandbox.h`. Where they cannot be made, or AppArmor's `kernel.apparmor_restrict_unprivileged_userns=1` gives them no capabilities, every test skips, which fails the run unless `LIGHTC_TEST_ALLOW_SKIP` names it. Lift that with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 - **lld on aarch64.** `LIB-relr` needs a linker that packs relative relocations. GNU ld 2.42 does not on aarch64, so there `configure` links that plugin with lld, and without lld `LIB-relr` fails.
 
 In a tree built with `./configure faultinject`, every system call of the library first checks a table of fault rules, so a test can make the Nth call of one fail with the errno it chooses, and chaos points that `LC_CHAOS` seeds yield or spin in `lc_spinlock_acquire` and in the heap's remote frees: `<lightc/fault.h>` says how. Only that mode builds `tests/test_fault.c`, and `ninja test` runs it there; no other mode compiles any of it.

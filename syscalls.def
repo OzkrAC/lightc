@@ -138,6 +138,8 @@ syscall getuid             102     174      0
 syscall setuid             105     146      1
 syscall setgid             106     144      1
 syscall setgroups          116     159      2
+syscall setresuid          117     147      3
+syscall setresgid          119     149      3
 
 # io_uring, numbered the same on every arch
 syscall io_uring_setup     425     425      2
