@@ -274,11 +274,15 @@ static void test_classify_evaluates_once(void) {
     TEST_ASSERT(q == doubles + 4);
 }
 
-/* A const or volatile operand picks the function of its type. */
+/* A const or volatile operand picks the function of its type. The negative
+ * zero is made from bits the compiler cannot see: under -ffast-math, which
+ * test_math_fast is built with, GCC may store a folded -0.0 as +0.0, as it
+ * does on aarch64 with the zero register. */
 static void test_classify_qualified(void) {
     const float infinity = lc_float_from_bits(0x7f800000u);
     volatile double nan = lc_double_from_bits(0xfff8000000000000u);
-    const volatile float negative_zero = lc_float_from_bits(0x80000000u);
+    volatile uint32_t negative_zero_bits = 0x80000000u;
+    const volatile float negative_zero = lc_float_from_bits(negative_zero_bits);
     TEST_ASSERT(lc_isinf(infinity));
     TEST_ASSERT(lc_isnan(nan));
     TEST_ASSERT(lc_signbit(nan));

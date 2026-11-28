@@ -722,15 +722,18 @@ static void test_file_stat_at_socket(void) {
 
 /* A /proc file reports size 0, whatever it holds, as fstat says too. /proc/self
  * is a symlink, which AT_SYMLINK_NOFOLLOW stats, and without it the
- * directory it points at. */
+ * directory it points at. The file is /proc/version, not one of /proc/self:
+ * qemu-user, CI's aarch64 lane, answers an open of /proc/self/stat, maps,
+ * auxv or cmdline with a file of its own, whose fstat gives that file's size,
+ * while statx of the path reaches the kernel's. */
 static void test_file_stat_at_proc(void) {
     lc_file_info info;
-    TEST_ASSERT_OK(lc_file_stat_at(AT_FDCWD, "/proc/self/stat", 0, &info));
+    TEST_ASSERT_OK(lc_file_stat_at(AT_FDCWD, "/proc/version", 0, &info));
     TEST_ASSERT_EQ(info.type, LC_DT_REG);
     TEST_ASSERT_EQ(info.size, 0);
     uint64_t size = 1;
     uint32_t type = 0;
-    TEST_ASSERT(fstat_size_and_type("/proc/self/stat", &size, &type));
+    TEST_ASSERT(fstat_size_and_type("/proc/version", &size, &type));
     TEST_ASSERT_EQ(info.size, size);
     TEST_ASSERT_EQ(info.type, type);
 
