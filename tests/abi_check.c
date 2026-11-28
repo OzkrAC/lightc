@@ -50,6 +50,7 @@
 
 #include <asm/errno.h>       /* E* */
 #include <asm/signal.h>      /* SIG*, SA_RESTORER, struct sigaction */
+#include <asm/siginfo.h>     /* siginfo_t, SI_*, NSIG*, BUS_MCEERR_* */
 #include <asm/socket.h>      /* SOL_SOCKET, SO_* */
 #include <asm/unistd.h>      /* __NR_* */
 #include <linux/auxvec.h>    /* AT_NULL, AT_PAGESZ */
@@ -107,6 +108,10 @@
     X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF)                      \
     X(PT_TLS) X(PT_GNU_RELRO) X(DT_PLTRELSZ) X(DT_PLTREL) X(DT_JMPREL)      \
     X(AT_EMPTY_PATH)                                                        \
+    /* src/kernel.h: SA_SIGINFO and siginfo_t's codes, for signal.c */      \
+    X(SA_SIGINFO) X(SIGPOLL) X(SI_USER) X(SI_KERNEL) X(SI_TIMER)            \
+    X(SI_SIGIO) X(NSIGILL) X(NSIGFPE) X(NSIGSEGV) X(NSIGBUS) X(NSIGTRAP)    \
+    X(NSIGCHLD) X(NSIGPOLL) X(NSIGSYS) X(BUS_MCEERR_AR) X(BUS_MCEERR_AO)    \
     X(STT_TLS) X(SHN_ABS) X(DT_VERSYM)
 
 /* The same, on x86_64 only: aarch64 has no arch_prctl. */
@@ -131,6 +136,12 @@
     X(LC_SIGINT, SIGINT) X(LC_SIGQUIT, SIGQUIT) X(LC_SIGABRT, SIGABRT)      \
     X(LC_SIGBUS, SIGBUS) X(LC_SIGSEGV, SIGSEGV) X(LC_SIGPIPE, SIGPIPE)      \
     X(LC_SIGALRM, SIGALRM) X(LC_SIGTERM, SIGTERM)                           \
+    X(LC_SIGHUP, SIGHUP) X(LC_SIGILL, SIGILL) X(LC_SIGTRAP, SIGTRAP)        \
+    X(LC_SIGFPE, SIGFPE) X(LC_SIGUSR1, SIGUSR1) X(LC_SIGSYS, SIGSYS)        \
+    X(LC_SIGNAL_RESTART, SA_RESTART)                                        \
+    /* LC_SIGNAL_MAX is the kernel's _NSIG, which x86_64's UAPI headers do  \
+     * not define: each bit of sigset_t is one signal. */                   \
+    X(LC_SIGNAL_MAX, sizeof(sigset_t) * 8)                                  \
     /* <lightc/socket.h> */                                                 \
     X(LC_IPPROTO_TCP, IPPROTO_TCP) X(LC_IPPROTO_UDP, IPPROTO_UDP)           \
     X(LC_SOL_SOCKET, SOL_SOCKET) X(LC_SO_REUSEADDR, SO_REUSEADDR)           \
@@ -376,6 +387,22 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef CLONE_CHILD_CLEARTID
 #undef CLONE_SETTLS
 #undef SA_RESTORER
+#undef SA_SIGINFO
+#undef SIGPOLL
+#undef SI_USER
+#undef SI_KERNEL
+#undef SI_TIMER
+#undef SI_SIGIO
+#undef NSIGILL
+#undef NSIGFPE
+#undef NSIGSEGV
+#undef NSIGBUS
+#undef NSIGTRAP
+#undef NSIGCHLD
+#undef NSIGPOLL
+#undef NSIGSYS
+#undef BUS_MCEERR_AR
+#undef BUS_MCEERR_AO
 #undef ELFMAG0
 #undef ELFMAG1
 #undef ELFMAG2
@@ -442,6 +469,8 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #define statx        lightc_statx
 #define statx_timestamp lightc_statx_timestamp
 #define iovec        lightc_iovec
+/* and its siginfo_t lightc_siginfo_t */
+#define siginfo_t    lightc_siginfo_t
 #include "../src/kernel.h"
 #undef Elf64_Addr
 #undef Elf64_Off
@@ -458,6 +487,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef statx
 #undef statx_timestamp
 #undef iovec
+#undef siginfo_t
 
 #include <lightc/io.h>
 #include <lightc/signal.h>
@@ -606,7 +636,12 @@ SAME_FIELD(lc_signal_info, ptr_val, struct signalfd_siginfo, ssi_ptr)
 SAME_FIELD(lc_signal_info, utime, struct signalfd_siginfo, ssi_utime)
 SAME_FIELD(lc_signal_info, stime, struct signalfd_siginfo, ssi_stime)
 SAME_FIELD(lc_signal_info, addr, struct signalfd_siginfo, ssi_addr)
-SAME_OFFSET(lc_signal_info, _pad, struct signalfd_siginfo, ssi_addr_lsb)
+SAME_FIELD(lc_signal_info, addr_lsb, struct signalfd_siginfo, ssi_addr_lsb)
+SAME_FIELD(lc_signal_info, _pad2, struct signalfd_siginfo, __pad2)
+SAME_FIELD(lc_signal_info, syscall, struct signalfd_siginfo, ssi_syscall)
+SAME_FIELD(lc_signal_info, call_addr, struct signalfd_siginfo, ssi_call_addr)
+SAME_FIELD(lc_signal_info, arch, struct signalfd_siginfo, ssi_arch)
+SAME_FIELD(lc_signal_info, _pad, struct signalfd_siginfo, __pad)
 
 /* bind, connect, accept4, sendto and recvfrom take the socket addresses. */
 SAME_SIZE(lc_socket_address, struct sockaddr_in)
@@ -742,6 +777,49 @@ SAME_OFFSET(struct lightc_statx, _rest, struct statx, stx_dio_mem_align)
 SAME_SIZE(struct lightc_iovec, struct iovec)
 SAME_FIELD(struct lightc_iovec, iov_base, struct iovec, iov_base)
 SAME_FIELD(struct lightc_iovec, iov_len, struct iovec, iov_len)
+
+/* rt_sigprocmask, rt_sigaction and signalfd4 take a sigset_t of 8 bytes,
+ * whose bit n - 1 is signal n: lc_signal_set is one. */
+SAME_SIZE(lc_signal_set, sigset_t)
+AT_OFFSET(lc_signal_set, bits, 0, 8)
+
+/*
+ * src/kernel.h: the siginfo_t the kernel gives a handler of SA_SIGINFO,
+ * for signal.c, which fills an lc_signal_info from it. Each field is
+ * checked against the UAPI's si_* macro for it where there is one, which
+ * the kernel's signalfd_copyinfo reads. lightc's _sifields ends in a pad
+ * to the end of the 128 bytes, where the UAPI's union is only as large as
+ * its largest member, so only its offset is checked.
+ */
+SAME_SIZE(lightc_siginfo_t, siginfo_t)
+SAME_FIELD(lightc_siginfo_t, si_signo, siginfo_t, si_signo)
+SAME_FIELD(lightc_siginfo_t, si_errno, siginfo_t, si_errno)
+SAME_FIELD(lightc_siginfo_t, si_code, siginfo_t, si_code)
+SAME_OFFSET(lightc_siginfo_t, _sifields, siginfo_t, _sifields)
+SAME_FIELD(lightc_siginfo_t, _sifields._kill._pid, siginfo_t, si_pid)
+SAME_FIELD(lightc_siginfo_t, _sifields._kill._uid, siginfo_t, si_uid)
+SAME_FIELD(lightc_siginfo_t, _sifields._timer._tid, siginfo_t, si_tid)
+SAME_FIELD(lightc_siginfo_t, _sifields._timer._overrun, siginfo_t, si_overrun)
+SAME_FIELD(lightc_siginfo_t, _sifields._timer._sigval, siginfo_t, _sifields._timer._sigval)
+SAME_FIELD(lightc_siginfo_t, _sifields._timer._sigval.sival_int, siginfo_t, _sifields._timer._sigval.sival_int)
+SAME_FIELD(lightc_siginfo_t, _sifields._timer._sigval.sival_ptr, siginfo_t, _sifields._timer._sigval.sival_ptr)
+SAME_FIELD(lightc_siginfo_t, _sifields._rt._pid, siginfo_t, _sifields._rt._pid)
+SAME_FIELD(lightc_siginfo_t, _sifields._rt._uid, siginfo_t, _sifields._rt._uid)
+SAME_FIELD(lightc_siginfo_t, _sifields._rt._sigval, siginfo_t, si_value)
+SAME_FIELD(lightc_siginfo_t, _sifields._rt._sigval.sival_int, siginfo_t, si_int)
+SAME_FIELD(lightc_siginfo_t, _sifields._rt._sigval.sival_ptr, siginfo_t, si_ptr)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigchld._pid, siginfo_t, _sifields._sigchld._pid)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigchld._uid, siginfo_t, _sifields._sigchld._uid)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigchld._status, siginfo_t, si_status)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigchld._utime, siginfo_t, si_utime)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigchld._stime, siginfo_t, si_stime)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigfault._addr, siginfo_t, si_addr)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigfault._addr_lsb, siginfo_t, si_addr_lsb)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigpoll._band, siginfo_t, si_band)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigpoll._fd, siginfo_t, si_fd)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigsys._call_addr, siginfo_t, si_call_addr)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigsys._syscall, siginfo_t, si_syscall)
+SAME_FIELD(lightc_siginfo_t, _sifields._sigsys._arch, siginfo_t, si_arch)
 
 /* src/kernel.h: ELF, as lc_library_open reads it from a shared object. */
 SAME_SIZE(lightc_Elf64_Addr, Elf64_Addr)

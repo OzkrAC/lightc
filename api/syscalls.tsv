@@ -322,6 +322,7 @@ lc_scheduler_destroy	write	x86_64 aarch64
 lc_scheduler_run	arch_prctl	x86_64
 lc_scheduler_run	gettid	x86_64 aarch64
 lc_scheduler_run	mmap	x86_64 aarch64
+lc_signal_action	rt_sigaction	x86_64 aarch64
 lc_signal_block	rt_sigprocmask	x86_64 aarch64
 lc_signal_handle	rt_sigaction	x86_64 aarch64
 lc_signal_ignore	rt_sigaction	x86_64 aarch64

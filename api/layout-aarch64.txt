@@ -197,7 +197,14 @@ lc_signal_info.ptr_val offset 48 size 8: uint64_t
 lc_signal_info.utime offset 56 size 8: uint64_t
 lc_signal_info.stime offset 64 size 8: uint64_t
 lc_signal_info.addr offset 72 size 8: uint64_t
-lc_signal_info._pad offset 80 size 48: uint8_t[48]
+lc_signal_info.addr_lsb offset 80 size 2: uint16_t
+lc_signal_info._pad2 offset 82 size 2: uint16_t
+lc_signal_info.syscall offset 84 size 4: int32_t
+lc_signal_info.call_addr offset 88 size 8: uint64_t
+lc_signal_info.arch offset 96 size 4: uint32_t
+lc_signal_info._pad offset 100 size 28: uint8_t[28]
+lc_signal_set size 8 align 8
+lc_signal_set.bits offset 0 size 8: uint64_t
 lc_socket_address size 16 align 4
 lc_socket_address.family offset 0 size 2: uint16_t
 lc_socket_address.port offset 2 size 2: uint16_t

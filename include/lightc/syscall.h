@@ -417,10 +417,18 @@ typedef struct {
 } lc_kernel_sigaction;
 
 /*
- * signalfd_siginfo — 128 bytes, read from a signalfd.
- * We only use the first few fields; the rest is padding.
+ * signalfd_siginfo — 128 bytes: the record a read of a signalfd gives for
+ * each signal, and the one a handler of lc_signal_action (<lightc/signal.h>)
+ * gets. The kernel's signalfd_copyinfo (fs/signalfd.c) fills signal, error
+ * and code, then the fields of the signal's kind, and zeroes the rest: pid
+ * and uid for a kill; pid, uid, int_val and ptr_val for a queued signal;
+ * tid, overrun, int_val and ptr_val for a POSIX timer's; band and fd for
+ * SIGIO; pid, uid, status, utime and stime for SIGCHLD; addr for a fault,
+ * with addr_lsb for a memory error's SIGBUS; and syscall, call_addr and
+ * arch for a seccomp filter's SIGSYS. trapno is only filled on arches
+ * other than x86_64 and aarch64.
  */
-typedef struct {
+typedef struct lc_signal_info {
     uint32_t signal;
     int32_t  error;
     int32_t  code;
@@ -437,7 +445,12 @@ typedef struct {
     uint64_t utime;
     uint64_t stime;
     uint64_t addr;
-    uint8_t  _pad[48];
+    uint16_t addr_lsb;
+    uint16_t _pad2;
+    int32_t  syscall;
+    uint64_t call_addr;
+    uint32_t arch;
+    uint8_t  _pad[28];
 } lc_signal_info;
 
 _Static_assert(sizeof(lc_signal_info) == 128, "lc_signal_info must be 128 bytes");

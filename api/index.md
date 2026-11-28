@@ -149,10 +149,16 @@ Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes
 | `lc_result_ptr_from_sysret` | `lightc/result.h` | `[[gnu::const]] static inline lc_result_ptr lc_result_ptr_from_sysret(int64_t ret);` | Convert from lc_sysret to lc_result_ptr (for mmap-style calls). | `.error` | module | none | yes |
 | `lc_on_crash` | `lightc/signal.h` | `void lc_on_crash(lc_crash_handler handler);` | Install a handler for the crash signals: SIGSEGV, SIGBUS and SIGABRT. | — | module | rt_sigaction | yes |
 | `lc_on_shutdown` | `lightc/signal.h` | `void lc_on_shutdown(lc_signal_handler handler);` | Install a handler for the shutdown signals: SIGTERM and SIGINT. | — | module | rt_sigaction | yes |
+| `lc_signal_action` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_action(int signo, lc_signal_action_handler handler, lc_signal_set mask, uint32_t flags);` | Install a handler for signal signo that gets what the kernel tells of each signal. | `.error` | module | rt_sigaction, and what its callbacks make | no: takes the address of actions |
 | `lc_signal_block` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_block(int signo);` | Block a signal. | `.error` | module | rt_sigprocmask | yes |
 | `lc_signal_handle` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_handle(int signo, lc_signal_handler handler);` | Install a handler for a specific signal. | `.error` | module | rt_sigaction | yes |
 | `lc_signal_ignore` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_ignore(int signo);` | Ignore a signal | `.error` | module | rt_sigaction | yes |
 | `lc_signal_reset` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_reset(int signo);` | Reset a signal to default behavior | `.error` | module | rt_sigaction | yes |
+| `lc_signal_set_add` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_set_add(lc_signal_set *set, int signo);` | Add signal signo to *set. | `.error` | module | none | yes |
+| `lc_signal_set_empty` | `lightc/signal.h` | `lc_signal_set lc_signal_set_empty(void);` | Get a set that holds no signal. | — | module | none | yes |
+| `lc_signal_set_full` | `lightc/signal.h` | `lc_signal_set lc_signal_set_full(void);` | Get the set of every signal, 1 to LC_SIGNAL_MAX. | — | module | none | yes |
+| `lc_signal_set_has` | `lightc/signal.h` | `bool lc_signal_set_has(lc_signal_set set, int signo);` | Tell whether set holds signal signo: false for a number outside 1 to LC_SIGNAL_MAX. | — | module | none | yes |
+| `lc_signal_set_remove` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_set_remove(lc_signal_set *set, int signo);` | Take signal signo out of *set. | `.error` | module | none | yes |
 | `lc_signal_unblock` | `lightc/signal.h` | `[[nodiscard]] lc_result lc_signal_unblock(int signo);` | Unblock a signal. | `.error` | module | rt_sigprocmask | yes |
 | `lc_host_to_network_16` | `lightc/socket.h` | `[[gnu::const]] static inline uint16_t lc_host_to_network_16(uint16_t value);` | A 16-bit value in network byte order. | — | module | none | yes |
 | `lc_host_to_network_32` | `lightc/socket.h` | `[[gnu::const]] static inline uint32_t lc_host_to_network_32(uint32_t value);` | A 32-bit value in network byte order. | — | module | none | yes |

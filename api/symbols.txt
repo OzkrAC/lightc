@@ -155,10 +155,16 @@ T lc_scheduler_create
 T lc_scheduler_create_with_capacity
 T lc_scheduler_destroy
 T lc_scheduler_run
+T lc_signal_action
 T lc_signal_block
 T lc_signal_handle
 T lc_signal_ignore
 T lc_signal_reset
+T lc_signal_set_add
+T lc_signal_set_empty
+T lc_signal_set_full
+T lc_signal_set_has
+T lc_signal_set_remove
 T lc_signal_unblock
 T lc_socket_accept
 T lc_socket_accept6

@@ -631,6 +631,21 @@ static void case_lc_on_crash(void) { enter(); lc_on_crash(any_handler); }
 static void case_lc_on_shutdown(void) { enter(); lc_on_shutdown(any_handler); }
 static void case_lc_signal_ignore(void) { enter(); (void)lc_signal_ignore(LC_SIGQUIT); }
 static void case_lc_signal_reset(void) { enter(); (void)lc_signal_reset(LC_SIGQUIT); }
+static void any_action(int signo, const lc_signal_info *info, void *context) {
+    (void)signo;
+    (void)info;
+    (void)context;
+}
+static void case_lc_signal_action(void) {
+    lc_signal_set mask = { 0 };
+    enter();
+    (void)lc_signal_action(LC_SIGQUIT, any_action, mask, LC_SIGNAL_RESTART);
+}
+static void case_lc_signal_set_empty(void) { enter(); (void)lc_signal_set_empty(); }
+static void case_lc_signal_set_full(void) { enter(); (void)lc_signal_set_full(); }
+static void case_lc_signal_set_add(void) { lc_signal_set set = { 0 }; enter(); (void)lc_signal_set_add(&set, LC_SIGQUIT); }
+static void case_lc_signal_set_remove(void) { lc_signal_set set = { 0 }; enter(); (void)lc_signal_set_remove(&set, LC_SIGQUIT); }
+static void case_lc_signal_set_has(void) { lc_signal_set set = { 0 }; enter(); (void)lc_signal_set_has(set, LC_SIGQUIT); }
 
 /* lightc/print.h */
 
@@ -728,6 +743,8 @@ static const index_case cases[] = {
 
     CASE(lc_signal_handle), CASE(lc_signal_block), CASE(lc_signal_unblock), CASE(lc_on_crash),
     CASE(lc_on_shutdown), CASE(lc_signal_ignore), CASE(lc_signal_reset),
+    CASE(lc_signal_action), CASE(lc_signal_set_empty), CASE(lc_signal_set_full),
+    CASE(lc_signal_set_add), CASE(lc_signal_set_remove), CASE(lc_signal_set_has),
 
     CASE(lc_print_char), CASE(lc_print_string), CASE(lc_print_line), CASE(lc_print_newline),
     CASE(lc_print_signed), CASE(lc_print_unsigned), CASE(lc_print_hex), CASE(lc_print_byte_hex),

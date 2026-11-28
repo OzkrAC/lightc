@@ -85,3 +85,4 @@ TIME-sleep-eintr        gating
 TIME-format-retlen      gating
 IO-dir-close-fd         gating
 HEAP-thread-exit-leak   gating
+RT-signal-block-range   gating

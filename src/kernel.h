@@ -209,6 +209,96 @@ struct iovec {
 /* SA_RESTORER flag — required on x86_64, not used on aarch64 */
 #define SA_RESTORER 0x04000000
 
+/* sigaction flag: call the handler with the siginfo_t and the context */
+#define SA_SIGINFO  4
+
+/* SIGIO's other name, which the kernel's tables use */
+#define SIGPOLL  29
+
+/*
+ * siginfo_t (<asm-generic/siginfo.h>), which the kernel gives a handler
+ * installed with SA_SIGINFO: 128 bytes on both arches. After si_code comes
+ * a union, whose member the signal and si_code choose, as the kernel's
+ * siginfo_layout (kernel/signal.c) does: _kill for kill and the kernel's
+ * own, _timer for a POSIX timer, _rt for a queued signal or tkill,
+ * _sigchld for SIGCHLD, _sigfault for a fault, _sigpoll for SIGIO and
+ * _sigsys for a seccomp filter's SIGSYS. Each member has the UAPI's name;
+ * _sigfault leaves out the fields of other arches and of the fault kinds
+ * whose fields a signalfd does not give.
+ */
+typedef struct {
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    union {
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+        } _kill;
+        struct {
+            int32_t _tid;
+            int32_t _overrun;
+            union {
+                int32_t sival_int;
+                void   *sival_ptr;
+            } _sigval;
+        } _timer;
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+            union {
+                int32_t sival_int;
+                void   *sival_ptr;
+            } _sigval;
+        } _rt;
+        struct {
+            int32_t  _pid;
+            uint32_t _uid;
+            int32_t  _status;
+            int64_t  _utime;
+            int64_t  _stime;
+        } _sigchld;
+        struct {
+            void   *_addr;
+            int16_t _addr_lsb;
+        } _sigfault;
+        struct {
+            int64_t _band;
+            int32_t _fd;
+        } _sigpoll;
+        struct {
+            void    *_call_addr;
+            int32_t  _syscall;
+            uint32_t _arch;
+        } _sigsys;
+        uint8_t _pad[112];
+    } _sifields;
+} siginfo_t;
+_Static_assert(sizeof(siginfo_t) == 128, "siginfo_t must be 128 bytes");
+
+/* si_code: who sent the signal, when it is 0 or less, or SI_KERNEL */
+#define SI_USER    0
+#define SI_KERNEL  0x80
+#define SI_TIMER   (-2)
+#define SI_SIGIO   (-5)
+
+/* The number of si_codes of each signal that has codes of its own:
+ * siginfo_layout reads a code above it as not the signal's. These are
+ * the UAPI headers' that tests/abi_check.c checks against; a later kernel
+ * may add codes, which signal.c then reads as one without them would. */
+#define NSIGILL   11
+#define NSIGFPE   15
+#define NSIGSEGV  10
+#define NSIGBUS   5
+#define NSIGTRAP  6
+#define NSIGCHLD  6
+#define NSIGPOLL  6
+#define NSIGSYS   2
+
+/* SIGBUS's codes for a memory error, whose siginfo has _addr_lsb */
+#define BUS_MCEERR_AR  4
+#define BUS_MCEERR_AO  5
+
 /* --- ELF64 (<linux/elf.h>), for library.c --- */
 
 typedef uint64_t Elf64_Addr;
