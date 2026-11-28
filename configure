@@ -755,20 +755,20 @@ build \$builddir/test_math_exact: link \$builddir/test_math_exact.o \$builddir/l
 # so it links only if liblightc.a defines each name it calls. It is built
 # at -O0 and -O2, each with -fno-math-errno, which every compile takes and
 # lightc.pc gives, and with -fmath-errno, under which GCC calls more names.
-build \$builddir/test_math_builtins_O0.o: cc_test tests/test_math_builtins.c
+build \$builddir/test_math_builtins_o0.o: cc_test tests/test_math_builtins.c
   cflags = \$cflags -O0
-build \$builddir/test_math_builtins_O0: link \$builddir/test_math_builtins_O0.o \$builddir/liblightc.a | \$ldscript
-build \$builddir/test_math_builtins_O2.o: cc_test tests/test_math_builtins.c
+build \$builddir/test_math_builtins_o0: link \$builddir/test_math_builtins_o0.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o2.o: cc_test tests/test_math_builtins.c
   cflags = \$cflags -O2
-build \$builddir/test_math_builtins_O2: link \$builddir/test_math_builtins_O2.o \$builddir/liblightc.a | \$ldscript
-build \$builddir/test_math_builtins_O0_errno.o: cc_test tests/test_math_builtins.c
+build \$builddir/test_math_builtins_o2: link \$builddir/test_math_builtins_o2.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o0_errno.o: cc_test tests/test_math_builtins.c
   cflags = \$cflags -O0 -fmath-errno
-build \$builddir/test_math_builtins_O0_errno: link \$builddir/test_math_builtins_O0_errno.o \$builddir/liblightc.a | \$ldscript
-build \$builddir/test_math_builtins_O2_errno.o: cc_test tests/test_math_builtins.c
+build \$builddir/test_math_builtins_o0_errno: link \$builddir/test_math_builtins_o0_errno.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o2_errno.o: cc_test tests/test_math_builtins.c
   cflags = \$cflags -O2 -fmath-errno
-build \$builddir/test_math_builtins_O2_errno: link \$builddir/test_math_builtins_O2_errno.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_o2_errno: link \$builddir/test_math_builtins_o2_errno.o \$builddir/liblightc.a | \$ldscript
 ${FAULT_SUITE_EDGES}
-build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_O0 \$builddir/test_math_builtins_O2 \$builddir/test_math_builtins_O0_errno \$builddir/test_math_builtins_O2_errno${FAULT_SUITES}
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_o0 \$builddir/test_math_builtins_o2 \$builddir/test_math_builtins_o0_errno \$builddir/test_math_builtins_o2_errno${FAULT_SUITES}
 
 # tests/run.sh runs every suite, even after one fails, each with a time
 # limit, and ends with a summary. The console pool streams each suite's
@@ -779,7 +779,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_O0 \$builddir/test_math_builtins_O2 \$builddir/test_math_builtins_O0_errno \$builddir/test_math_builtins_O2_errno${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_o0 \$builddir/test_math_builtins_o2 \$builddir/test_math_builtins_o0_errno \$builddir/test_math_builtins_o2_errno${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 
