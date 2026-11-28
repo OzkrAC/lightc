@@ -164,3 +164,21 @@ The kernel's real page size, captured from `AT_PAGESZ` at startup (`memory.h`). 
 
 {.source}
 Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `version.h`, `string.h`. Source: `src/lifecycle.c`, `src/memory.c`, `arch/<arch>/start.S`, `arch/<arch>/syscall.S`.
+
+## Math {#math}
+
+`<math.h>` is libc's, so lightc has `math.h`, which declares only `lc_` names. `<float.h>` is the compiler's, and still gives `FLT_MAX`, `FLT_EPSILON` and the rest. lightc has no libm, and nothing in `math.h` needs one.
+
+`lc_isnan(x)`, `lc_isinf(x)`, `lc_isfinite(x)` and `lc_signbit(x)` classify a float or a double as `<math.h>`'s macros of those names do, and give a `bool`. Each is a type-generic macro that calls the function for the type of `x`, such as `lc_float_isnan` or `lc_double_isnan`, so `x` is evaluated once and not converted; any other type does not compile. They test the bits of `x`, which `lc_float_to_bits` and `lc_double_to_bits` give, so GCC's flags do not change their answers: under `-ffast-math`, GCC folds `__builtin_isnan(x)` to false, and `__builtin_signbit(x)` to `x < 0`, which is false for `-0`, while these still give the class of `x`. That is checked with GCC, not with clang. What they classify is the value the compiled code made, though, and `-ffast-math` lets the compiler rewrite arithmetic, so an expression that gives a NaN, an infinity or `-0` under IEEE 754 can give another value there.
+
+| Constant | Value |
+|---|---|
+| `LC_INFINITY`, `LC_NAN` | positive infinity and a quiet NaN, as floats, which convert to doubles exactly |
+| `LC_PI`, `LC_PI_F` | π, as a double and as a float |
+| `LC_E`, `LC_E_F` | e |
+| `LC_LN2`, `LC_LN2_F` | ln 2 |
+
+Each constant is correctly rounded to its type: the float forms are literals of their own, not the doubles rounded again.
+
+{.source}
+Header `include/lightc/math.h`, with no source of its own: each function is `static inline`. `tests/test_math.c` is built twice, as `test_math` and, with `-O3 -ffast-math`, as `test_math_fast`.

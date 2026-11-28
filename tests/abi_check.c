@@ -237,6 +237,10 @@
     X(LC_LOG_BUFFER_SIZE)                                                   \
     /* <lightc/fault.h>, in the faultinject build */                        \
     X(LC_FAULT_MAX_RULES)                                                   \
+    /* <lightc/math.h> */                                                   \
+    X(lc_isnan) X(lc_isinf) X(lc_isfinite) X(lc_signbit)                    \
+    X(LC_INFINITY) X(LC_NAN) X(LC_PI) X(LC_PI_F) X(LC_E) X(LC_E_F)          \
+    X(LC_LN2) X(LC_LN2_F)                                                   \
     /* <lightdata/list.h> */                                                \
     X(lc_list_entry) X(lc_list_for_each) X(lc_list_for_each_safe)
 

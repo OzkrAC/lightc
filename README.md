@@ -19,7 +19,7 @@ Requires GCC and ninja.
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
-ninja test           # build and run the test suites (348 tests in 23 suites)
+ninja test           # build and run the test suites (373 tests in 25 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
@@ -81,6 +81,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `lifecycle.h` | `atexit` handler chain with SIGTERM integration |
 | `library.h` | Runtime shared library loading (ELF parser; self-contained libraries without TLS) |
 | `fault.h` | Fault rules that make chosen system calls fail, and chaos points: only in the faultinject build, and empty in the others |
+| `math.h` | `<math.h>`'s classification without libm: `lc_isnan`, `lc_isinf`, `lc_isfinite` and `lc_signbit` for floats and doubles, by their bits, so GCC's `-ffast-math` does not change their answers; `LC_INFINITY`, `LC_NAN`, and π, e and ln 2 as doubles and floats |
 
 ### Data structures (`include/lightdata/`)
 

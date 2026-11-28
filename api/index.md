@@ -99,6 +99,18 @@ Every public function of lightc, one row each. `sh tools/api-snapshot.sh` writes
 | `lc_log_set_level` | `lightc/log.h` | `void lc_log_set_level(lc_log_level min_level);` | Set the minimum log level. | — | module | none | no: writes log_min_level |
 | `lc_log_set_output` | `lightc/log.h` | `void lc_log_set_output(int32_t fd);` | Set the output file descriptor. | — | module | none | no: writes log_fd |
 | `lc_log_string` | `lightc/log.h` | `void lc_log_string(lc_log_level level, const char *message, size_t length);` | Log a message with known length. | — | module | clock_gettime gettid write writev | yes |
+| `lc_double_from_bits` | `lightc/math.h` | `[[gnu::const]] static inline double lc_double_from_bits(uint64_t bits);` | The double whose bits are `bits`, laid out as lc_double_to_bits gives them. | — | module | none | yes |
+| `lc_double_isfinite` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_double_isfinite(double x);` | Whether `x` is neither a NaN nor an infinity: lc_isfinite for a double. | — | module | none | yes |
+| `lc_double_isinf` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_double_isinf(double x);` | Whether `x` is an infinity: lc_isinf for a double. | — | module | none | yes |
+| `lc_double_isnan` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_double_isnan(double x);` | Whether `x` is a NaN: lc_isnan for a double. | — | module | none | yes |
+| `lc_double_signbit` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_double_signbit(double x);` | Whether the sign bit of `x` is set: lc_signbit for a double. | — | module | none | yes |
+| `lc_double_to_bits` | `lightc/math.h` | `[[gnu::const]] static inline uint64_t lc_double_to_bits(double x);` | The bits of `x`: the sign in bit 63, the exponent in bits 62 to 52 and the fraction in bits 51 to 0. | — | module | none | yes |
+| `lc_float_from_bits` | `lightc/math.h` | `[[gnu::const]] static inline float lc_float_from_bits(uint32_t bits);` | The float whose bits are `bits`, laid out as lc_float_to_bits gives them. | — | module | none | yes |
+| `lc_float_isfinite` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_float_isfinite(float x);` | Whether `x` is neither a NaN nor an infinity: lc_isfinite for a float. | — | module | none | yes |
+| `lc_float_isinf` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_float_isinf(float x);` | Whether `x` is an infinity: lc_isinf for a float. | — | module | none | yes |
+| `lc_float_isnan` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_float_isnan(float x);` | Whether `x` is a NaN: lc_isnan for a float. | — | module | none | yes |
+| `lc_float_signbit` | `lightc/math.h` | `[[gnu::const]] static inline bool lc_float_signbit(float x);` | Whether the sign bit of `x` is set: lc_signbit for a float. | — | module | none | yes |
+| `lc_float_to_bits` | `lightc/math.h` | `[[gnu::const]] static inline uint32_t lc_float_to_bits(float x);` | The bits of `x`: the sign in bit 31, the exponent in bits 30 to 23 and the fraction in bits 22 to 0. | — | module | none | yes |
 | `lc_allocate_pages` | `lightc/memory.h` | `[[nodiscard]] lc_result_ptr lc_allocate_pages(size_t count);` | Allocate `count` pages. | `.error` | module | mmap | yes |
 | `lc_arena_allocate` | `lightc/memory.h` | `[[gnu::hot]] static inline void *lc_arena_allocate(lc_arena *arena, size_t size);` | Allocate `size` bytes from the arena, 16-byte aligned. | — | module | none | yes |
 | `lc_arena_allocate_aligned` | `lightc/memory.h` | `void *lc_arena_allocate_aligned(lc_arena *arena, size_t size, size_t alignment);` | Allocate `size` bytes at an address aligned to `alignment`, a power of two, which may be larger than the page size. | — | module | none | yes |
