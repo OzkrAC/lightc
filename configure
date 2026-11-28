@@ -18,6 +18,8 @@
 #   ninja smoke              — run the examples that check their own results
 #   ninja bench              — run the benchmarks
 #   ninja api-check          — check that api/ is the snapshot of the public API
+#   ninja math-sweep         — build build/math-sweep, which checks the math
+#                              functions against the host's libm
 #
 # Environment (an empty value counts as unset):
 #   CC       — the compiler (default gcc). It sets the target: the arch is
@@ -28,6 +30,7 @@
 #              as in CC="ccache aarch64-linux-gnu-gcc"), ar, strip and objcopy
 #              for gcc. A prefixed tool that is not installed falls back to
 #              the plain name; set these when that is the wrong tool.
+#   READELF  — the same, for the readelf that checks the math objects.
 #   CFLAGS   — added after configure's own C flags, so they can override them.
 #   LDFLAGS  — added after configure's own link flags.
 #   SYSROOT  — passed to every compile and link as --sysroot=$SYSROOT.
@@ -76,6 +79,9 @@ find_tool() {
 AR=${AR:-$(find_tool ar)}
 STRIP=${STRIP:-$(find_tool strip)}
 OBJCOPY=${OBJCOPY:-$(find_tool objcopy)}
+# readelf for tools/math-objects.sh, which reads the math objects; any
+# readelf reads the objects of both arches.
+READELF=${READELF:-$(find_tool readelf)}
 
 # --- Detect C23 flag (GCC 14+ uses -std=c23, older uses -std=c2x) ---
 
@@ -193,6 +199,18 @@ case "$ARCH" in
 esac
 
 COMMON_FLAGS="-ffreestanding -nostdlib -nostartfiles -nodefaultlibs -fno-stack-protector${ARCH_FLAGS:+ ${ARCH_FLAGS}} -Iinclude"
+
+# The math functions' flags, which every source takes. -fno-math-errno, as
+# lightc has no errno and lightc.pc gives it to programs too: with it a
+# builtin such as __builtin_sqrtf is one instruction, and without it GCC
+# adds a call to sqrtf for a negative argument, which in src/math_exact.c's
+# sqrtf would call itself. -ffp-contract=off, so that GCC fuses no a * b + c
+# into an fma on aarch64 that it leaves apart on x86_64, and the math
+# functions give the same bits on both; it is also GCC's default in the ISO
+# C modes. They are in every compile, not only the math sources', as
+# tools/api-snapshot.sh reads the library's objects from cc edges that set
+# no variable; neither changes the code of any other source.
+COMMON_FLAGS="$COMMON_FLAGS -fno-math-errno -ffp-contract=off"
 
 # --- The version, and the config.h that ninja install writes ---
 
@@ -418,6 +436,10 @@ cflags = ${MODE_CFLAGS} ${COMMON_FLAGS}${CFLAGS:+ ${CFLAGS}}
 asflags = -Iinclude -Wa,--noexecstack${MODE_ASFLAGS:+ ${MODE_ASFLAGS}}
 ldflags = ${MODE_LDFLAGS}${LDFLAGS:+ ${LDFLAGS}}
 
+# The binutils of the math objects' checks and of the sweep tool.
+objcopy = ${OBJCOPY}
+readelf = ${READELF}
+
 # --- Rules ---
 
 rule cc
@@ -474,10 +496,27 @@ build \$builddir/lifecycle.o: cc src/lifecycle.c
 build \$builddir/version.o: cc src/version.c
 build \$builddir/probe.o: cc src/probe.c
 build \$builddir/fault.o: cc src/fault.c
+build \$builddir/math_exact.o: cc src/math_exact.c
 
 # --- Library ---
 
-build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o \$builddir/probe.o \$builddir/fault.o
+build \$builddir/liblightc.a: ar \$builddir/start.o \$builddir/syscall.o \$builddir/thread_asm.o \$builddir/clone_asm.o \$builddir/coroutine_asm.o \$builddir/mem.o \$builddir/string.o \$builddir/print.o \$builddir/memory.o \$builddir/heap.o \$builddir/thread.o \$builddir/io.o \$builddir/async.o \$builddir/socket.o \$builddir/coroutine.o \$builddir/format.o \$builddir/log.o \$builddir/time.o \$builddir/lightio.o \$builddir/library.o \$builddir/containers.o \$builddir/signal.o \$builddir/lifecycle.o \$builddir/version.o \$builddir/probe.o \$builddir/fault.o \$builddir/math_exact.o
+
+# --- Math objects ---
+
+# The objects of the math sources, src/math_*.c, define the standard names
+# GCC calls for a builtin it cannot inline, such as floorf, and must not
+# call them: a builtin that GCC did not inline there would be a call to the
+# function it is in. tools/math-objects.sh fails the build when an object
+# has one, and ninja builds this stamp with the library. A new math source
+# adds a cc edge for its object, which takes the math flags with every
+# other source, and adds the object to the liblightc.a edge, to this edge
+# and to the sweep's names.map edge below.
+rule math_calls
+  command = READELF=\$readelf sh tools/math-objects.sh calls \$out \$in
+  description = CHECK \$in
+
+build \$builddir/math.calls: math_calls \$builddir/math_exact.o | tools/math-objects.sh
 
 # --- Examples ---
 
@@ -708,8 +747,28 @@ build \$builddir/test_math: link \$builddir/test_math.o \$builddir/liblightc.a |
 build \$builddir/test_math_fast.o: cc_test tests/test_math.c
   cflags = \$cflags -O3 -ffast-math
 build \$builddir/test_math_fast: link \$builddir/test_math_fast.o \$builddir/liblightc.a | \$ldscript
+# test_math_exact checks both forms of the exact functions, the lc_ one
+# and the standard name, on the hard cases of tests/data/math_exact_cases.h.
+build \$builddir/test_math_exact.o: cc_test tests/test_math_exact.c
+build \$builddir/test_math_exact: link \$builddir/test_math_exact.o \$builddir/liblightc.a | \$ldscript
+# test_math_builtins calls each math builtin that GCC may turn into a call,
+# so it links only if liblightc.a defines each name it calls. It is built
+# at -O0 and -O2, each with -fno-math-errno, which every compile takes and
+# lightc.pc gives, and with -fmath-errno, under which GCC calls more names.
+build \$builddir/test_math_builtins_O0.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O0
+build \$builddir/test_math_builtins_O0: link \$builddir/test_math_builtins_O0.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_O2.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O2
+build \$builddir/test_math_builtins_O2: link \$builddir/test_math_builtins_O2.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_O0_errno.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O0 -fmath-errno
+build \$builddir/test_math_builtins_O0_errno: link \$builddir/test_math_builtins_O0_errno.o \$builddir/liblightc.a | \$ldscript
+build \$builddir/test_math_builtins_O2_errno.o: cc_test tests/test_math_builtins.c
+  cflags = \$cflags -O2 -fmath-errno
+build \$builddir/test_math_builtins_O2_errno: link \$builddir/test_math_builtins_O2_errno.o \$builddir/liblightc.a | \$ldscript
 ${FAULT_SUITE_EDGES}
-build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast${FAULT_SUITES}
+build tests: phony \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_O0 \$builddir/test_math_builtins_O2 \$builddir/test_math_builtins_O0_errno \$builddir/test_math_builtins_O2_errno${FAULT_SUITES}
 
 # tests/run.sh runs every suite, even after one fails, each with a time
 # limit, and ends with a summary. The console pool streams each suite's
@@ -720,7 +779,7 @@ rule run_tests
   description = Running tests
   pool = console
 
-build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
+build test: run_tests \$builddir/test_harness \$builddir/test_string \$builddir/test_format \$builddir/test_containers \$builddir/test_memory \$builddir/test_heap \$builddir/test_thread \$builddir/test_coroutine \$builddir/test_io \$builddir/test_time \$builddir/test_print \$builddir/test_async \$builddir/test_socket \$builddir/test_log \$builddir/test_signal \$builddir/test_lifecycle \$builddir/test_library \$builddir/test_thread_sync \$builddir/test_lightio \$builddir/test_syscall \$builddir/test_index \$builddir/test_probe \$builddir/test_sandbox \$builddir/test_math \$builddir/test_math_fast \$builddir/test_math_exact \$builddir/test_math_builtins_O0 \$builddir/test_math_builtins_O2 \$builddir/test_math_builtins_O0_errno \$builddir/test_math_builtins_O2_errno${FAULT_SUITES} | \$builddir/test_plugin.so \$builddir/plugins/page64k.so \$builddir/plugins/versioned.so tests/run.sh
 
 # --- Smoke tests: the examples that check their own results ---
 
@@ -826,9 +885,47 @@ rule run_benchmarks
 
 build bench: run_benchmarks \$builddir/bench_heap2 \$builddir/bench_arena \$builddir/bench_string \$builddir/bench_containers \$builddir/bench_thread \$builddir/bench_format
 
+# --- The math sweep tool ---
+
+# ninja math-sweep builds build/math-sweep, which compares the math
+# functions with the host's libm, over all 2^32 floats and on random
+# samples: tools/math-sweep.c says how to run it. It links libc and libm,
+# so it is a hosted program, built with CC, which must then target this
+# machine, and never by ninja, ninja test or the library. It takes the
+# library's math objects, compiled as the library is, and the lc_ forms,
+# which tools/math-sweep.c compiles freestanding with the library's flags,
+# and links copies of them whose standard names are renamed lightc_NAME,
+# so that libm's keep theirs. A new math source adds its object to the
+# names.map edge, an edge that renames it, and that copy to the link.
+rule math_names
+  command = READELF=\$readelf sh tools/math-objects.sh names \$out \$in
+  description = NAMES \$out
+
+rule math_rename
+  command = READELF=\$readelf OBJCOPY=\$objcopy sh tools/math-objects.sh rename \$builddir/sweep/names.map \$in \$out
+  description = RENAME \$out
+
+rule sweep_cc
+  command = \$cc ${CSTD} -O2 -g -Wall -Wextra -pthread -fno-builtin -ffp-contract=off -fno-stack-protector -MMD -MF \$out.d -c \$in -o \$out
+  depfile = \$out.d
+  description = CC \$out (hosted)
+
+rule sweep_link
+  command = \$cc -no-pie -pthread \$in -lm -o \$out
+  description = LINK \$out (hosted)
+
+build \$builddir/sweep/names.map: math_names \$builddir/math_exact.o | tools/math-objects.sh
+build \$builddir/sweep/math_exact.o: math_rename \$builddir/math_exact.o | \$builddir/sweep/names.map tools/math-objects.sh
+build \$builddir/sweep/lc.o: cc tools/math-sweep.c
+  cflags = \$cflags -DMATH_SWEEP_LC
+build \$builddir/sweep/lc.renamed.o: math_rename \$builddir/sweep/lc.o | \$builddir/sweep/names.map tools/math-objects.sh
+build \$builddir/sweep/main.o: sweep_cc tools/math-sweep.c
+build \$builddir/math-sweep: sweep_link \$builddir/sweep/main.o \$builddir/sweep/lc.renamed.o \$builddir/sweep/math_exact.o
+build math-sweep: phony \$builddir/math-sweep
+
 # --- Targets ---
 
-build all: phony \$builddir/liblightc.a \$builddir/hello \$builddir/syscalls \$builddir/strings \$builddir/print.example \$builddir/memory.example \$builddir/heap.example \$builddir/thread.example \$builddir/bench_heap \$builddir/io.example \$builddir/async.example \$builddir/socket.example \$builddir/httpd \$builddir/coroutine.example \$builddir/format.example \$builddir/log.example \$builddir/time.example \$builddir/lightio_echo \$builddir/lightio_http \$builddir/lightio_test \$builddir/test_plugin.so \$builddir/library.example \$builddir/containers.example \$builddir/heapviz
+build all: phony \$builddir/liblightc.a \$builddir/hello \$builddir/syscalls \$builddir/strings \$builddir/print.example \$builddir/memory.example \$builddir/heap.example \$builddir/thread.example \$builddir/bench_heap \$builddir/io.example \$builddir/async.example \$builddir/socket.example \$builddir/httpd \$builddir/coroutine.example \$builddir/format.example \$builddir/log.example \$builddir/time.example \$builddir/lightio_echo \$builddir/lightio_http \$builddir/lightio_test \$builddir/test_plugin.so \$builddir/library.example \$builddir/containers.example \$builddir/heapviz \$builddir/math.calls
 default all
 
 build clean: clean_cmd

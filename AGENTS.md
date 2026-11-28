@@ -19,6 +19,7 @@ When lightc lacks something general, add it to lightc rather than to the program
 - **Every public function has a comment right above its declaration**, whose first sentence says what it does. That sentence is its purpose in the index, and `tools/api-snapshot.sh` stops on a public function without one.
 - **A result that must be checked is `[[nodiscard]]`.**
 - **A new wrapper passes every argument the system call takes.**
+- **Math functions give the same bits on both arches.** `<lightc/math.h>` declares only `lc_` names, inline over GCC's builtins, and `src/math_exact.c` defines the standard names GCC calls when it cannot inline one, such as `floorf`, which no header declares. Every source builds with `-fno-math-errno` and `-ffp-contract=off`. `tools/math-objects.sh` fails the build when a math object calls a name it defines, and `tools/math-sweep.c` checks each function against the host's libm; `configure` says how a new math source joins both.
 - **Kernel values are checked against the kernel.** Each macro of the public headers and of `src/kernel.h` is in one list of `tests/abi_check.c`, which compares it with the UAPI header or says why it cannot, and `sh ci/abilint.sh` fails on one in no list. Each struct shared with the kernel has its size and every field checked there too.
 
 ## Adding a system call
@@ -43,6 +44,7 @@ ninja test                 # build and run the test suites
 ninja regress              # run the regress programs of fixed defects
 ninja smoke                # run the examples that check their own results
 ninja api-check            # check that api/ matches the tree
+ninja math-sweep           # build/math-sweep: the math functions against the host's libm
 CC=aarch64-linux-gnu-gcc ./configure release && ninja all tests   # aarch64 cross build
 ./configure faultinject    # system calls that fail on request, for tests
 ```

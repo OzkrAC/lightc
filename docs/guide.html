@@ -180,5 +180,28 @@ Headers: `include/lightc/result.h`, `lifecycle.h`, `syscall.h`, `types.h`, `vers
 
 Each constant is correctly rounded to its type: the float forms are literals of their own, not the doubles rounded again.
 
+### Exact functions {#math-exact}
+
+`lc_sqrtf`, `lc_floorf` and the other functions of the table are `<math.h>`'s functions of those names without `lc_`. Each is exact: it gives the correctly rounded result, bit for bit, with C23 Annex F's special values, and the same bits on x86_64 and aarch64. No `errno` is set and no FP flag is read, and the rounding mode is always to nearest, ties to even, as lightc never changes it. A NaN in gives a quiet NaN out, of no particular sign or payload, but `lc_fabsf` and `lc_copysignf` change only the sign bit, of a NaN too.
+
+| Function | Result |
+|---|---|
+| `lc_sqrtf(x)`, `lc_sqrt(x)` | the square root |
+| `lc_floorf(x)`, `lc_ceilf(x)`, `lc_truncf(x)`, and `lc_floor`, `lc_ceil`, `lc_trunc` | `x` rounded down, up, or toward zero, to an integer |
+| `lc_roundf(x)`, `lc_round(x)` | the nearest integer, ties away from zero |
+| `lc_rintf(x)`, `lc_nearbyintf(x)`, `lc_rint(x)`, `lc_nearbyint(x)` | the nearest integer, ties to even |
+| `lc_lrintf(x)` | the nearest `long`, ties to even, saturated |
+| `lc_fmaf(x, y, z)`, `lc_fma(x, y, z)` | `x * y + z`, rounded once |
+| `lc_fminf(x, y)`, `lc_fmaxf(x, y)`, `lc_fmin`, `lc_fmax` | the smaller or the larger; a NaN and a number give the number |
+| `lc_fabsf(x)`, `lc_copysignf(x, y)` | `x` with its sign bit clear, or with the sign bit of `y` |
+| `lc_frexpf(x, &e)` | a fraction of magnitude in [0.5, 1), and in `e` the power of 2 that makes `x` |
+| `lc_ldexpf(x, n)`, `lc_scalbnf(x, n)` | `x` times 2 to the power `n`, rounded once |
+
+Where C leaves the result open, lightc gives the same on both arches: `lc_rintf` and `lc_nearbyintf` are one function; `lc_fminf` of `-0` and `+0`, in either order, is `-0`, and `lc_fmaxf` of them `+0`, and a signalling NaN gives a quiet NaN, as aarch64's `fminnm` and `fmaxnm` do; `lc_lrintf` gives 0 for a NaN, `LONG_MAX` from 2^63 up and `LONG_MIN` below -2^63; `lc_frexpf` stores 0 for ±0, an infinity and a NaN.
+
+Each is `static inline` over the GCC builtin of its name, such as `__builtin_floorf`, so it is one instruction where the target has one, also in a function with a `target("...")` attribute: `sqrtss`, `roundss` with SSE4.1 and `vfmadd` with FMA on x86_64; `fsqrt`, the `frint` instructions, `fmadd`, `fminnm` and `fmaxnm` on aarch64. Elsewhere GCC calls the function of the standard name, such as `floorf`, which `liblightc.a` defines, as it defines `memcpy`, and which no lightc header declares: a program calls the `lc_` names. Baseline x86_64 has no rounding instruction, so there the rounding functions work on the bits, and `fma` multiplies in integers. `lightc.pc`'s Cflags give `-fno-math-errno`, without which GCC adds a call to `sqrtf` for a negative argument of `lc_sqrtf`. Under `-ffast-math`, GCC may rewrite these functions as it rewrites the program's own arithmetic, and when it folds a call on constants it takes a signalling NaN for a quiet one.
+
+Every source of lightc is built with `-fno-math-errno`, and with `-ffp-contract=off`, so that GCC fuses no multiply and add on aarch64 that it keeps apart on x86_64. `tools/math-sweep.c` compares each function with the host's libm: a float function of one argument over all 2^32 floats, and the others on every float with lists of second arguments, or on random samples. `ninja math-sweep` builds it as `build/math-sweep`; it links libc and libm, so neither `ninja` nor `ninja test` builds it. `tests/test_math_exact.c` checks both forms of each function, the `lc_` one and the standard name, on the hard cases in `tests/data/math_exact_cases.h`, which the tool writes.
+
 {.source}
-Header `include/lightc/math.h`, with no source of its own: each function is `static inline`. `tests/test_math.c` is built twice, as `test_math` and, with `-O3 -ffast-math`, as `test_math_fast`.
+Header `include/lightc/math.h`, whose functions are each `static inline`; the standard names in `src/math_exact.c`. `tests/test_math.c` is built twice, as `test_math` and, with `-O3 -ffast-math`, as `test_math_fast`; `tests/test_math_builtins.c` four times, at `-O0` and `-O2`, with and without `-fno-math-errno`.

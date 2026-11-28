@@ -20,6 +20,10 @@
 #     with the installed headers must load and run;
 #   - a call to a deprecated function, lc_socket_create, must warn, with the
 #     message that names its replacement, and still build.
+#   - the Cflags must give -fno-math-errno, and tests/test_math_builtins.c,
+#     which calls each math builtin that GCC may turn into a call to a
+#     standard name such as floorf, must link and pass at -O0 and -O2, with
+#     those Cflags and with -fmath-errno after them.
 #
 # Usage, from a configured tree (the built programs are run, so CC must
 # target this machine; it defaults to gcc):
@@ -286,5 +290,27 @@ grep -q "lc_socket_create.*deprecated.*lc_socket_open" "$work/deprecated.log" ||
 }
 "$work/deprecated" || fail "the program that calls lc_socket_create did not run"
 echo "ok: a call to lc_socket_create warns that it is deprecated, and builds"
+
+# --- Math: -fno-math-errno, and each builtin GCC may call links ---
+
+# GCC calls floorf for __builtin_floorf where the target has no rounding
+# instruction, sqrtf for a negative argument of __builtin_sqrtf under
+# -fmath-errno, and so on; liblightc.a defines those names (decision N-a).
+case " $cflags " in
+    *" -fno-math-errno "*) ;;
+    *) fail "the Cflags lack -fno-math-errno" ;;
+esac
+for level in -O0 -O2; do
+    for errno in "" -fmath-errno; do
+        how="$level${errno:+ $errno}"
+        $CC $cstd $cflags $level $errno -Itests tests/test_math_builtins.c $libs -o "$work/math" ||
+            fail "test_math_builtins did not build at $how"
+        "$work/math" > "$work/math.log" 2>&1 || {
+            cat "$work/math.log" >&2
+            fail "test_math_builtins failed at $how"
+        }
+    done
+done
+echo "ok: each math builtin links and gives its result at -O0 and -O2, with and without -fno-math-errno"
 
 echo "PASS: pkg-config consumer"
