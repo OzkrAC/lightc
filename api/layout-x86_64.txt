@@ -65,6 +65,31 @@ lc_directory_entry.type offset 8 size 1: uint8_t
 lc_duration size 16 align 8
 lc_duration.seconds offset 0 size 8: int64_t
 lc_duration.nanoseconds offset 8 size 8: int64_t
+lc_file_info size 168 align 8
+lc_file_info.mask offset 0 size 4: uint32_t
+lc_file_info.type offset 4 size 1: uint8_t
+lc_file_info.mode offset 6 size 2: uint16_t
+lc_file_info.links offset 8 size 4: uint32_t
+lc_file_info.uid offset 12 size 4: uint32_t
+lc_file_info.gid offset 16 size 4: uint32_t
+lc_file_info.block_size offset 20 size 4: uint32_t
+lc_file_info.inode offset 24 size 8: uint64_t
+lc_file_info.size offset 32 size 8: uint64_t
+lc_file_info.blocks offset 40 size 8: uint64_t
+lc_file_info.attributes offset 48 size 8: uint64_t
+lc_file_info.attributes_mask offset 56 size 8: uint64_t
+lc_file_info.accessed offset 64 size 16: lc_file_time
+lc_file_info.modified offset 80 size 16: lc_file_time
+lc_file_info.changed offset 96 size 16: lc_file_time
+lc_file_info.rdev_major offset 112 size 4: uint32_t
+lc_file_info.rdev_minor offset 116 size 4: uint32_t
+lc_file_info.dev_major offset 120 size 4: uint32_t
+lc_file_info.dev_minor offset 124 size 4: uint32_t
+lc_file_info.mount_id offset 128 size 8: uint64_t
+lc_file_info.reserved offset 136 size 32: uint64_t[4]
+lc_file_time size 16 align 8
+lc_file_time.seconds offset 0 size 8: int64_t
+lc_file_time.nanoseconds offset 8 size 8: int64_t
 lc_format size 32 align 8
 lc_format.buffer offset 0 size 8: char *
 lc_format.capacity offset 8 size 8: size_t

@@ -535,6 +535,13 @@ static void case_lc_file_read_all(void) {
 }
 static void case_lc_file_write_all(void) { enter(); (void)lc_file_write_all("/dev/null", "x", 1); }
 static void case_lc_file_get_size(void) { enter(); (void)lc_file_get_size("/dev/null"); }
+static void case_lc_file_stat(void) { lc_file_info i; enter(); (void)lc_file_stat("/dev/null", &i); }
+static void case_lc_file_stat_at(void) {
+    lc_file_info i;
+    enter();
+    (void)lc_file_stat_at(AT_FDCWD, "/dev/null", AT_SYMLINK_NOFOLLOW, &i);
+}
+static void case_lc_file_stat_fd(void) { int32_t fd = devnull(); lc_file_info i; enter(); (void)lc_file_stat_fd(fd, &i); }
 static void case_lc_directory_open(void) { lc_directory d; enter(); (void)lc_directory_open(&d, "/"); }
 static void case_lc_directory_next(void) {
     lc_directory d;
@@ -699,6 +706,7 @@ static const index_case cases[] = {
     CASE(lc_reader_create), CASE(lc_reader_destroy), CASE(lc_reader_is_end), CASE(lc_reader_read_byte),
     CASE(lc_reader_read_bytes), CASE(lc_reader_read_line), CASE(lc_file_read_all), CASE(lc_file_write_all),
     CASE(lc_file_get_size), CASE(lc_directory_open), CASE(lc_directory_next), CASE(lc_directory_close),
+    CASE(lc_file_stat), CASE(lc_file_stat_at), CASE(lc_file_stat_fd),
 
     CASE(lc_host_to_network_16), CASE(lc_host_to_network_32), CASE(lc_network_to_host_16),
     CASE(lc_network_to_host_32), CASE(lc_socket_address_create), CASE(lc_socket_address_any),

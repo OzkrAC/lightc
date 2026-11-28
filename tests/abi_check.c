@@ -35,9 +35,10 @@
  * UAPI_<name>, the UAPI macro is #undef'd, and only then are lightc's headers
  * included, so every assert compares lightc's definition with the kernel's.
  * src/kernel.h's Elf64_* typedefs would clash with <linux/elf.h>'s, its
- * struct statx with <linux/stat.h>'s and its struct iovec with
- * <linux/uio.h>'s, so that file is included with them renamed
- * lightc_Elf64_*, lightc_statx and lightc_iovec. SYS_* numbers are
+ * struct statx and struct statx_timestamp with <linux/stat.h>'s and its
+ * struct iovec with <linux/uio.h>'s, so that file is included with them
+ * renamed lightc_Elf64_*, lightc_statx, lightc_statx_timestamp and
+ * lightc_iovec. SYS_* numbers are
  * compared with __NR_* directly, and LC_ERR_* values with E* directly;
  * those names do not clash.
  *
@@ -63,7 +64,7 @@
 #include <linux/mount.h>     /* MS_* */
 #include <linux/sched.h>     /* CLONE_* */
 #include <linux/signalfd.h>  /* SFD_*, struct signalfd_siginfo */
-#include <linux/stat.h>      /* S_IF*, STATX_SIZE, struct statx */
+#include <linux/stat.h>      /* S_IF*, STATX_*, struct statx */
 #include <linux/time.h>      /* CLOCK_* */
 #include <linux/time_types.h>  /* struct __kernel_timespec */
 #include <linux/uio.h>       /* struct iovec */
@@ -103,8 +104,9 @@
     X(PF_W) X(PF_R) X(DT_NULL) X(DT_NEEDED) X(DT_HASH) X(DT_STRTAB)         \
     X(DT_SYMTAB) X(DT_RELA) X(DT_RELASZ) X(DT_RELAENT) X(DT_STRSZ)          \
     X(DT_SYMENT) X(DT_INIT) X(DT_FINI) X(DT_RELACOUNT) X(STB_GLOBAL)        \
-    X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF) X(STATX_SIZE)        \
+    X(STB_WEAK) X(STT_FUNC) X(STT_OBJECT) X(SHN_UNDEF)                      \
     X(PT_TLS) X(PT_GNU_RELRO) X(DT_PLTRELSZ) X(DT_PLTREL) X(DT_JMPREL)      \
+    X(AT_EMPTY_PATH)                                                        \
     X(STT_TLS) X(SHN_ABS) X(DT_VERSYM)
 
 /* The same, on x86_64 only: aarch64 has no arch_prctl. */
@@ -138,6 +140,25 @@
     /* <lightc/io.h> */                                                     \
     X(LC_DT_DIR, S_IFDIR >> 12) X(LC_DT_REG, S_IFREG >> 12)                 \
     X(LC_DT_LNK, S_IFLNK >> 12)                                             \
+    X(LC_DT_FIFO, S_IFIFO >> 12) X(LC_DT_CHR, S_IFCHR >> 12)                \
+    X(LC_DT_BLK, S_IFBLK >> 12) X(LC_DT_SOCK, S_IFSOCK >> 12)               \
+    X(LC_STATX_TYPE, STATX_TYPE) X(LC_STATX_MODE, STATX_MODE)               \
+    X(LC_STATX_NLINK, STATX_NLINK) X(LC_STATX_UID, STATX_UID)               \
+    X(LC_STATX_GID, STATX_GID) X(LC_STATX_ATIME, STATX_ATIME)               \
+    X(LC_STATX_MTIME, STATX_MTIME) X(LC_STATX_CTIME, STATX_CTIME)           \
+    X(LC_STATX_INO, STATX_INO) X(LC_STATX_SIZE, STATX_SIZE)                 \
+    X(LC_STATX_BLOCKS, STATX_BLOCKS)                                        \
+    X(LC_STATX_BASIC_STATS, STATX_BASIC_STATS)                              \
+    X(LC_STATX_MNT_ID, STATX_MNT_ID)                                        \
+    X(LC_STATX_ATTR_COMPRESSED, STATX_ATTR_COMPRESSED)                      \
+    X(LC_STATX_ATTR_IMMUTABLE, STATX_ATTR_IMMUTABLE)                        \
+    X(LC_STATX_ATTR_APPEND, STATX_ATTR_APPEND)                              \
+    X(LC_STATX_ATTR_NODUMP, STATX_ATTR_NODUMP)                              \
+    X(LC_STATX_ATTR_ENCRYPTED, STATX_ATTR_ENCRYPTED)                        \
+    X(LC_STATX_ATTR_AUTOMOUNT, STATX_ATTR_AUTOMOUNT)                        \
+    X(LC_STATX_ATTR_MOUNT_ROOT, STATX_ATTR_MOUNT_ROOT)                      \
+    X(LC_STATX_ATTR_VERITY, STATX_ATTR_VERITY)                              \
+    X(LC_STATX_ATTR_DAX, STATX_ATTR_DAX)                                    \
     /* src/kernel.h */                                                      \
     X(LC_AT_NULL, AT_NULL) X(LC_AT_PAGESZ, AT_PAGESZ)                       \
     X(SOCK_CLOEXEC, O_CLOEXEC)
@@ -388,7 +409,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef STT_FUNC
 #undef STT_OBJECT
 #undef SHN_UNDEF
-#undef STATX_SIZE
+#undef AT_EMPTY_PATH
 #undef PT_TLS
 #undef PT_GNU_RELRO
 #undef DT_PLTRELSZ
@@ -404,7 +425,8 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef ELF64_R_TYPE
 
 /* src/kernel.h, with its Elf64_* typedefs renamed lightc_Elf64_*, its
- * struct statx renamed lightc_statx and its struct iovec lightc_iovec */
+ * struct statx renamed lightc_statx, its struct statx_timestamp
+ * lightc_statx_timestamp and its struct iovec lightc_iovec */
 #define Elf64_Addr   lightc_Elf64_Addr
 #define Elf64_Off    lightc_Elf64_Off
 #define Elf64_Half   lightc_Elf64_Half
@@ -418,6 +440,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #define Elf64_Sym    lightc_Elf64_Sym
 #define Elf64_Rela   lightc_Elf64_Rela
 #define statx        lightc_statx
+#define statx_timestamp lightc_statx_timestamp
 #define iovec        lightc_iovec
 #include "../src/kernel.h"
 #undef Elf64_Addr
@@ -433,6 +456,7 @@ enum { UAPI_FUNCTIONS(CAPTURE_FUNCTION) };
 #undef Elf64_Sym
 #undef Elf64_Rela
 #undef statx
+#undef statx_timestamp
 #undef iovec
 
 #include <lightc/io.h>
@@ -681,9 +705,15 @@ _Static_assert(offsetof(struct linux_dirent64, d_name) == 19,
                "struct linux_dirent64.d_name is not at offset 19");
 
 /*
- * src/kernel.h: statx fills the whole struct, and lc_file_get_size reads
- * stx_size. lightc's _rest is the UAPI's fields from stx_blocks on.
+ * src/kernel.h: statx fills the whole struct, and lc_file_stat and its kin
+ * read the fields up to stx_mnt_id. lightc's _rest is the UAPI's fields
+ * from stx_dio_mem_align on, which Linux 6.1 added.
  */
+SAME_SIZE(struct lightc_statx_timestamp, struct statx_timestamp)
+SAME_FIELD(struct lightc_statx_timestamp, tv_sec, struct statx_timestamp, tv_sec)
+SAME_FIELD(struct lightc_statx_timestamp, tv_nsec, struct statx_timestamp, tv_nsec)
+SAME_FIELD(struct lightc_statx_timestamp, _reserved, struct statx_timestamp, __reserved)
+
 SAME_SIZE(struct lightc_statx, struct statx)
 SAME_FIELD(struct lightc_statx, stx_mask, struct statx, stx_mask)
 SAME_FIELD(struct lightc_statx, stx_blksize, struct statx, stx_blksize)
@@ -695,7 +725,18 @@ SAME_FIELD(struct lightc_statx, stx_mode, struct statx, stx_mode)
 SAME_FIELD(struct lightc_statx, _spare0, struct statx, __spare0)
 SAME_FIELD(struct lightc_statx, stx_ino, struct statx, stx_ino)
 SAME_FIELD(struct lightc_statx, stx_size, struct statx, stx_size)
-SAME_OFFSET(struct lightc_statx, _rest, struct statx, stx_blocks)
+SAME_FIELD(struct lightc_statx, stx_blocks, struct statx, stx_blocks)
+SAME_FIELD(struct lightc_statx, stx_attributes_mask, struct statx, stx_attributes_mask)
+SAME_FIELD(struct lightc_statx, stx_atime, struct statx, stx_atime)
+SAME_FIELD(struct lightc_statx, stx_btime, struct statx, stx_btime)
+SAME_FIELD(struct lightc_statx, stx_ctime, struct statx, stx_ctime)
+SAME_FIELD(struct lightc_statx, stx_mtime, struct statx, stx_mtime)
+SAME_FIELD(struct lightc_statx, stx_rdev_major, struct statx, stx_rdev_major)
+SAME_FIELD(struct lightc_statx, stx_rdev_minor, struct statx, stx_rdev_minor)
+SAME_FIELD(struct lightc_statx, stx_dev_major, struct statx, stx_dev_major)
+SAME_FIELD(struct lightc_statx, stx_dev_minor, struct statx, stx_dev_minor)
+SAME_FIELD(struct lightc_statx, stx_mnt_id, struct statx, stx_mnt_id)
+SAME_OFFSET(struct lightc_statx, _rest, struct statx, stx_dio_mem_align)
 
 /* src/kernel.h: writev reads an array of struct iovec, for log.c. */
 SAME_SIZE(struct lightc_iovec, struct iovec)

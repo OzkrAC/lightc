@@ -19,7 +19,7 @@ Requires GCC and ninja.
 
 ninja                # build the library and the examples, not the test suites
 ninja tests          # build the test suites without running them
-ninja test           # build and run the test suites (373 tests in 25 suites)
+ninja test           # build and run the test suites (385 tests in 25 suites)
 ninja regress        # run the regress programs of fixed defects (tests/regress/manifest)
 ninja smoke          # run the examples that check their own results
 ninja bench          # run benchmarks
@@ -70,7 +70,7 @@ The syscall numbers and errno values come from `syscalls.def`. `sh tools/gensysc
 | `heap.h` | General-purpose heap allocator with bucket allocator, large block cache, per-thread pages, optional statistics |
 | `format.h` | Type-safe format builder (no format strings, no varargs) |
 | `print.h` | Direct-to-fd printing (char, string, integer, hex) |
-| `io.h` | Buffered reader/writer, file utilities, directory listing |
+| `io.h` | Buffered reader/writer, file utilities, file status from statx (`lc_file_stat` and its kin), directory listing |
 | `thread.h` | Threads via `clone` syscall, spinlocks |
 | `coroutine.h` | Stackful coroutines with cooperative scheduling (~5ns context switch) |
 | `async.h` | Async I/O via `io_uring` |

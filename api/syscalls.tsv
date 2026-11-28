@@ -81,6 +81,9 @@ lc_file_read_all	munmap	x86_64 aarch64
 lc_file_read_all	openat	x86_64 aarch64
 lc_file_read_all	read	x86_64 aarch64
 lc_file_read_all	write	x86_64 aarch64
+lc_file_stat	statx	x86_64 aarch64
+lc_file_stat_at	statx	x86_64 aarch64
+lc_file_stat_fd	statx	x86_64 aarch64
 lc_file_write_all	close	x86_64 aarch64
 lc_file_write_all	openat	x86_64 aarch64
 lc_file_write_all	write	x86_64 aarch64

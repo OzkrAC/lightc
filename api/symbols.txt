@@ -45,6 +45,9 @@ T lc_directory_open
 T lc_exit
 T lc_file_get_size
 T lc_file_read_all
+T lc_file_stat
+T lc_file_stat_at
+T lc_file_stat_fd
 T lc_file_write_all
 T lc_format_add_binary
 T lc_format_add_bool

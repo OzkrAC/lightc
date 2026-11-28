@@ -9,6 +9,7 @@
  * Writers buffer output and flush to the kernel in batches.
  * Readers buffer input and refill from the kernel when exhausted.
  * File utilities handle common whole-file operations.
+ * File status comes from the statx syscall.
  * Directory listing wraps the getdents64 syscall.
  */
 
@@ -159,6 +160,13 @@ bool lc_reader_is_end(const lc_reader *reader);
 #define LC_DT_REG      8
 #define LC_DT_LNK      10
 
+/* The other types of file, which lc_file_info's type gives too. Each LC_DT_*
+ * is a mode's S_IFMT bits shifted right by 12, as getdents64's d_type is. */
+#define LC_DT_FIFO     1
+#define LC_DT_CHR      2
+#define LC_DT_BLK      6
+#define LC_DT_SOCK     12
+
 /* A directory being listed. error is 0, or the errno of the read that
  * ended the listing early, as lc_reader's and lc_writer's error is: when
  * lc_directory_next returns false with error 0, every entry was listed.
@@ -194,5 +202,111 @@ bool lc_directory_next(lc_directory *dir, lc_directory_entry *entry);
 /* Close the directory. Its buffer is emptied, so lc_directory_next returns
  * false afterwards; a second close closes nothing. */
 void lc_directory_close(lc_directory *dir);
+
+/* ========================================================================
+ * File Status
+ *
+ * lc_file_stat, lc_file_stat_at and lc_file_stat_fd fill an lc_file_info
+ * from statx, which opens nothing: a FIFO does not block them, a file needs
+ * no read permission, and a device sees no open. They ask statx for the
+ * fields of LC_STATX_BASIC_STATS and LC_STATX_MNT_ID.
+ *
+ * mask has the LC_STATX_* bit of each of those fields that the kernel
+ * filled. A filesystem can leave one out, as one that keeps no access
+ * times leaves out LC_STATX_ATIME, and that field then holds 0 or a
+ * stand-in value. type is LC_DT_UNKNOWN when mask has no LC_STATX_TYPE.
+ * The other fields have no bit, as the kernel always fills them:
+ * rdev_major and rdev_minor are 0 but for a device node.
+ *
+ * lc_file_info ends in reserved space, 0 today, so that a later release
+ * can add fields, such as the birth time or the subvolume, without
+ * changing its size. Each field added there comes with a new LC_STATX_*
+ * bit in mask: a caller tells that it was filled by that bit, never by a
+ * value that is not 0.
+ * ======================================================================== */
+
+/* The bits of lc_file_info's mask, statx's STATX_*: each names the field
+ * that the kernel filled. */
+#define LC_STATX_TYPE         0x00000001U   /* type */
+#define LC_STATX_MODE         0x00000002U   /* mode */
+#define LC_STATX_NLINK        0x00000004U   /* links */
+#define LC_STATX_UID          0x00000008U   /* uid */
+#define LC_STATX_GID          0x00000010U   /* gid */
+#define LC_STATX_ATIME        0x00000020U   /* accessed */
+#define LC_STATX_MTIME        0x00000040U   /* modified */
+#define LC_STATX_CTIME        0x00000080U   /* changed */
+#define LC_STATX_INO          0x00000100U   /* inode */
+#define LC_STATX_SIZE         0x00000200U   /* size */
+#define LC_STATX_BLOCKS       0x00000400U   /* blocks */
+#define LC_STATX_BASIC_STATS  0x000007ffU   /* the eleven above */
+#define LC_STATX_MNT_ID       0x00001000U   /* mount_id */
+
+/* The bits of lc_file_info's attributes, statx's STATX_ATTR_*. A bit that
+ * attributes_mask lacks is one the file's filesystem cannot report, so its
+ * being clear in attributes says nothing. */
+#define LC_STATX_ATTR_COMPRESSED  0x00000004   /* the filesystem compresses the file */
+#define LC_STATX_ATTR_IMMUTABLE   0x00000010   /* the file cannot be changed */
+#define LC_STATX_ATTR_APPEND      0x00000020   /* the file can only be appended to */
+#define LC_STATX_ATTR_NODUMP      0x00000040   /* backups by dump leave the file out */
+#define LC_STATX_ATTR_ENCRYPTED   0x00000800   /* reading the file needs a key */
+#define LC_STATX_ATTR_AUTOMOUNT   0x00001000   /* reaching the directory mounts a filesystem */
+#define LC_STATX_ATTR_MOUNT_ROOT  0x00002000   /* the root of a mount */
+#define LC_STATX_ATTR_VERITY      0x00100000   /* fs-verity guards the file's contents */
+#define LC_STATX_ATTR_DAX         0x00200000   /* its I/O bypasses the page cache (DAX) */
+
+/* A time of a file: seconds since the Unix epoch, and the nanoseconds past
+ * them, 0 to 999999999. */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} lc_file_time;
+
+/* The status of a file, from statx. type and mode split the file's mode:
+ * (uint32_t)type << 12 | mode puts it back together. */
+typedef struct {
+    uint32_t     mask;             /* the LC_STATX_* of the fields filled */
+    uint8_t      type;             /* LC_DT_*, as an lc_directory_entry's */
+    uint16_t     mode;             /* the permission bits, 07777 */
+    uint32_t     links;            /* the number of hard links */
+    uint32_t     uid;              /* the owner */
+    uint32_t     gid;              /* the group */
+    uint32_t     block_size;       /* the size of I/O the filesystem prefers */
+    uint64_t     inode;
+    uint64_t     size;             /* in bytes */
+    uint64_t     blocks;           /* the 512-byte blocks allocated to it */
+    uint64_t     attributes;       /* the LC_STATX_ATTR_* the file has */
+    uint64_t     attributes_mask;  /* the LC_STATX_ATTR_* its filesystem reports */
+    lc_file_time accessed;         /* the last read */
+    lc_file_time modified;         /* the last change of the contents */
+    lc_file_time changed;          /* the last change of the contents or the status */
+    uint32_t     rdev_major;       /* the device that a device node is */
+    uint32_t     rdev_minor;
+    uint32_t     dev_major;        /* the device of the filesystem that holds the file */
+    uint32_t     dev_minor;
+    uint64_t     mount_id;         /* the mount that holds it: the first field of
+                                    * its line in /proc/self/mountinfo */
+    uint64_t     reserved[4];      /* 0: a later release may fill it, each new
+                                    * field with a new LC_STATX_* bit in mask,
+                                    * which tells whether it was filled */
+} lc_file_info;
+
+/* Get the status of the file at `path` into *info, following a symlink at
+ * its end. value = 0 on success. On an error *info is all zero, so its
+ * type is LC_DT_UNKNOWN. */
+[[nodiscard]] lc_result lc_file_stat(const char *path, lc_file_info *info);
+
+/* Get the status of the file at `path`, relative to the directory `dirfd`
+ * (AT_FDCWD for the current one), into *info. flags go to statx unchanged:
+ * AT_SYMLINK_NOFOLLOW gives the status of a symlink at the end of path
+ * rather than of its target, and statx's other flags, AT_NO_AUTOMOUNT,
+ * AT_EMPTY_PATH and the AT_STATX_* sync flags, do what statx(2) says. A
+ * flag statx does not take fails with LC_ERR_INVAL, from the kernel.
+ * value = 0 on success. On an error *info is all zero. */
+[[nodiscard]] lc_result lc_file_stat_at(int32_t dirfd, const char *path, int32_t flags, lc_file_info *info);
+
+/* Get the status of the file that `fd` is open on into *info, from statx
+ * with AT_EMPTY_PATH. fd can be any, such as a pipe's, a socket's or one
+ * opened O_PATH. value = 0 on success. On an error *info is all zero. */
+[[nodiscard]] lc_result lc_file_stat_fd(int32_t fd, lc_file_info *info);
 
 #endif /* LIGHTC_IO_H */

@@ -11,6 +11,7 @@
 #include <lightc/heap.h>
 #include <lightc/format.h>
 #include <lightc/thread.h>
+#include <lightc/socket.h>
 
 /* Helper: create a pipe pair, returning 0 on success. */
 static int pipe_create(int32_t *read_fd, int32_t *write_fd) {
@@ -615,6 +616,341 @@ static void test_file_read_all_proc(void) {
     lc_heap_free(data);
 }
 
+/* ===== lc_file_stat, lc_file_stat_at and lc_file_stat_fd ===== */
+
+/* The tests make their files in STAT_DIR, and stat them relative to a dirfd
+ * on it, as STAT_DIR "/" name from the current directory, or by an fd. */
+#define STAT_DIR          "build"
+#define STAT_FIFO         "test_io_stat.fifo"
+#define STAT_SOCKET       "test_io_stat.sock"
+#define STAT_WRITE_ONLY   "test_io_stat.write-only"
+#define STAT_TARGET       "test_io_stat.target"
+#define STAT_LINK         "test_io_stat.link"
+#define STAT_MISSING      "test_io_stat.missing"
+#define STAT_SYSFS        "/sys/devices/system/cpu/online"
+
+/* struct stat, which fstat fills, has st_size at offset 48 on both arches,
+ * and st_mode at 24 on x86_64 (asm/stat.h) and at 16 on aarch64
+ * (asm-generic/stat.h). */
+#define STAT_SIZE_OFFSET  48
+#if defined(__x86_64__)
+#define STAT_MODE_OFFSET  24
+#elif defined(__aarch64__)
+#define STAT_MODE_OFFSET  16
+#endif
+
+/* An AF_UNIX socket address: struct sockaddr_un of <linux/un.h>. */
+typedef struct {
+    uint16_t family;
+    char     path[108];
+} test_sockaddr_un;
+
+/* A dirfd on STAT_DIR, or a negative errno. */
+static int32_t stat_dir(void) {
+    return (int32_t)lc_kernel_open_file(STAT_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+}
+
+/* The size and the type, as an LC_DT_*, that fstat gives for the file at
+ * path, opened without blocking: a system call other than statx, to check
+ * lc_file_stat_at against. false when the open or the fstat fails. */
+static bool fstat_size_and_type(const char *path, uint64_t *size, uint32_t *type) {
+    lc_sysret fd = lc_kernel_open_file(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
+    if (fd < 0) return false;
+    static uint8_t st[256];   /* more than either arch's struct stat */
+    lc_sysret ret = lc_syscall2(SYS_fstat, fd, (int64_t)st);
+    lc_kernel_close_file((int32_t)fd);
+    if (ret != 0) return false;
+    uint32_t mode;
+    lc_bytes_copy(size, st + STAT_SIZE_OFFSET, sizeof *size);
+    lc_bytes_copy(&mode, st + STAT_MODE_OFFSET, sizeof mode);
+    *type = mode >> 12;
+    return true;
+}
+
+/* A FIFO: statx opens nothing, so it returns at once, with size 0. */
+static void test_file_stat_at_fifo(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_FIFO, 0);
+    TEST_REQUIRE_EQ(lc_kernel_mknodat(dir, STAT_FIFO, S_IFIFO | 0600, 0), 0);
+    TEST_ASSERT_EQ(lc_kernel_fchmodat(dir, STAT_FIFO, 0640, 0), 0);   /* whatever the umask */
+
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_FIFO, 0, &info));
+    TEST_ASSERT_EQ(info.mask & (LC_STATX_TYPE | LC_STATX_MODE | LC_STATX_SIZE),
+                   LC_STATX_TYPE | LC_STATX_MODE | LC_STATX_SIZE);
+    TEST_ASSERT_EQ(info.type, LC_DT_FIFO);
+    TEST_ASSERT_EQ(info.mode, 0640);
+    TEST_ASSERT_EQ(info.size, 0);
+
+    lc_file_info by_path;
+    TEST_ASSERT_OK(lc_file_stat(STAT_DIR "/" STAT_FIFO, &by_path));
+    TEST_ASSERT_EQ(by_path.type, LC_DT_FIFO);
+    TEST_ASSERT_EQ(by_path.inode, info.inode);
+
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_FIFO, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* An AF_UNIX socket bound to a path: the path is a socket of size 0, and so
+ * is the file its fd is open on, an inode of sockfs. */
+static void test_file_stat_at_socket(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_SOCKET, 0);
+    lc_result opened = lc_socket_open(LC_AF_UNIX, LC_SOCK_STREAM, 0);
+    TEST_REQUIRE_OK(opened);
+    int32_t fd = (int32_t)opened.value;
+    test_sockaddr_un address = { .family = LC_AF_UNIX };
+    lc_bytes_copy(address.path, STAT_DIR "/" STAT_SOCKET, sizeof(STAT_DIR "/" STAT_SOCKET));
+    TEST_REQUIRE_EQ(lc_syscall3(SYS_bind, fd, (int64_t)&address, sizeof address), 0);
+
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_SOCKET, 0, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_SOCK);
+    TEST_ASSERT_EQ(info.size, 0);
+
+    lc_file_info by_fd;
+    TEST_ASSERT_OK(lc_file_stat_fd(fd, &by_fd));
+    TEST_ASSERT_EQ(by_fd.type, LC_DT_SOCK);
+    TEST_ASSERT_EQ(by_fd.size, 0);
+
+    lc_socket_close(fd);
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_SOCKET, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* A /proc file reports size 0, whatever it holds, as fstat says too. /proc/self
+ * is a symlink, which AT_SYMLINK_NOFOLLOW stats, and without it the
+ * directory it points at. */
+static void test_file_stat_at_proc(void) {
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_at(AT_FDCWD, "/proc/self/stat", 0, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_REG);
+    TEST_ASSERT_EQ(info.size, 0);
+    uint64_t size = 1;
+    uint32_t type = 0;
+    TEST_ASSERT(fstat_size_and_type("/proc/self/stat", &size, &type));
+    TEST_ASSERT_EQ(info.size, size);
+    TEST_ASSERT_EQ(info.type, type);
+
+    TEST_ASSERT_OK(lc_file_stat_at(AT_FDCWD, "/proc/self", AT_SYMLINK_NOFOLLOW, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_LNK);
+    TEST_ASSERT_OK(lc_file_stat_at(AT_FDCWD, "/proc/self", 0, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_DIR);
+}
+
+/* A sysfs attribute reports a page, whatever it holds: the size fstat
+ * gives, not that of what a read returns. */
+static void test_file_stat_at_sysfs(void) {
+    lc_file_info info;
+    lc_result r = lc_file_stat_at(AT_FDCWD, STAT_SYSFS, 0, &info);
+    if (r.error == LC_ERR_NOENT) TEST_SKIP("no sysfs at /sys");
+    TEST_ASSERT_OK(r);
+    TEST_ASSERT_EQ(info.type, LC_DT_REG);
+    TEST_ASSERT(info.size > 0);
+    uint64_t size = 0;
+    uint32_t type = 0;
+    TEST_REQUIRE(fstat_size_and_type(STAT_SYSFS, &size, &type));
+    TEST_ASSERT_EQ(info.size, size);
+    TEST_ASSERT_EQ(info.type, type);
+    TEST_ASSERT_EQ(lc_file_get_size(STAT_SYSFS).value, (int64_t)size);
+}
+
+/* A file of mode 0200, which its owner may write but not read: statx needs
+ * no read permission, and an fd opened to write gives the same file. */
+static void test_file_stat_at_write_only(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_WRITE_ONLY, 0);
+    TEST_REQUIRE_OK(lc_file_write_all(STAT_DIR "/" STAT_WRITE_ONLY, "seventeen bytes!\n", 17));
+    TEST_REQUIRE_EQ(lc_kernel_fchmodat(dir, STAT_WRITE_ONLY, 0200, 0), 0);
+
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_WRITE_ONLY, 0, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_REG);
+    TEST_ASSERT_EQ(info.mode, 0200);
+    TEST_ASSERT_EQ(info.size, 17);
+
+    lc_sysret fd = lc_kernel_open_file_at(dir, STAT_WRITE_ONLY, O_WRONLY | O_CLOEXEC, 0);
+    TEST_ASSERT(fd >= 0);
+    if (fd >= 0) {
+        lc_file_info by_fd;
+        TEST_ASSERT_OK(lc_file_stat_fd((int32_t)fd, &by_fd));
+        TEST_ASSERT_EQ(by_fd.type, LC_DT_REG);
+        TEST_ASSERT_EQ(by_fd.size, 17);
+        TEST_ASSERT_EQ(by_fd.inode, info.inode);
+        TEST_ASSERT_EQ(by_fd.dev_major, info.dev_major);
+        TEST_ASSERT_EQ(by_fd.dev_minor, info.dev_minor);
+        lc_kernel_close_file((int32_t)fd);
+    }
+
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_WRITE_ONLY, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* lc_file_stat follows a symlink, and lc_file_stat_at with
+ * AT_SYMLINK_NOFOLLOW gives the symlink itself, whose size is the length
+ * of its target. */
+static void test_file_stat_symlink(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_LINK, 0);
+    (void)lc_kernel_unlinkat(dir, STAT_TARGET, 0);
+    TEST_REQUIRE_OK(lc_file_write_all(STAT_DIR "/" STAT_TARGET, "five!", 5));
+    TEST_REQUIRE_EQ(lc_kernel_symlinkat(STAT_TARGET, dir, STAT_LINK), 0);
+
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat(STAT_DIR "/" STAT_LINK, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_REG);
+    TEST_ASSERT_EQ(info.size, 5);
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_LINK, 0, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_REG);
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_LINK, AT_SYMLINK_NOFOLLOW, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_LNK);
+    TEST_ASSERT_EQ(info.size, sizeof(STAT_TARGET) - 1);
+
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_LINK, 0), 0);
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_TARGET, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* The other fields of a new file: its owner, one link, its times, and the
+ * device and mount it shares with the directory that holds it. */
+static void test_file_stat_fields(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_TARGET, 0);
+    int64_t before = lc_time_now_unix();
+    TEST_REQUIRE_OK(lc_file_write_all(STAT_DIR "/" STAT_TARGET, "five!", 5));
+
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_TARGET, 0, &info));
+    TEST_ASSERT(info.mask & LC_STATX_MNT_ID);
+    TEST_ASSERT_EQ(info.uid, lc_kernel_getuid());
+    TEST_ASSERT_EQ(info.links, 1);
+    TEST_ASSERT(info.inode != 0);
+    TEST_ASSERT(info.block_size > 0);
+    TEST_ASSERT_EQ(info.rdev_major, 0);
+    TEST_ASSERT_EQ(info.rdev_minor, 0);
+    /* A day either way: the filesystem's clock need not be this one. */
+    TEST_ASSERT(info.modified.seconds > before - 86400 && info.modified.seconds < before + 86400);
+    TEST_ASSERT(info.modified.nanoseconds >= 0 && info.modified.nanoseconds < 1000000000);
+    TEST_ASSERT(info.changed.nanoseconds >= 0 && info.changed.nanoseconds < 1000000000);
+    TEST_ASSERT(info.accessed.nanoseconds >= 0 && info.accessed.nanoseconds < 1000000000);
+
+    lc_file_info directory;
+    TEST_ASSERT_OK(lc_file_stat_fd(dir, &directory));
+    TEST_ASSERT_EQ(directory.type, LC_DT_DIR);
+    TEST_ASSERT_EQ(directory.dev_major, info.dev_major);
+    TEST_ASSERT_EQ(directory.dev_minor, info.dev_minor);
+    TEST_ASSERT_EQ(directory.mount_id, info.mount_id);
+
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_TARGET, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* attributes: /proc is the root of a mount, and /proc/self, which is a
+ * directory of that mount, is not. Linux 5.8 and later report the bit for
+ * every file, so attributes_mask has it. */
+static void test_file_stat_attributes(void) {
+    lc_file_info root, self;
+    TEST_REQUIRE_OK(lc_file_stat("/proc", &root));
+    TEST_REQUIRE_OK(lc_file_stat("/proc/self", &self));
+    TEST_ASSERT(root.attributes_mask & LC_STATX_ATTR_MOUNT_ROOT);
+    TEST_ASSERT(self.attributes_mask & LC_STATX_ATTR_MOUNT_ROOT);
+    TEST_ASSERT(root.attributes & LC_STATX_ATTR_MOUNT_ROOT);
+    TEST_ASSERT(!(self.attributes & LC_STATX_ATTR_MOUNT_ROOT));
+    TEST_ASSERT_EQ(root.mount_id, self.mount_id);
+}
+
+/* A pipe's fd is a FIFO. */
+static void test_file_stat_fd_pipe(void) {
+    int32_t rfd, wfd;
+    TEST_REQUIRE_EQ(pipe_create(&rfd, &wfd), 0);
+    lc_file_info info;
+    TEST_ASSERT_OK(lc_file_stat_fd(rfd, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_FIFO);
+    TEST_ASSERT_OK(lc_file_stat_fd(wfd, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_FIFO);
+    lc_kernel_close_file(rfd);
+    lc_kernel_close_file(wfd);
+}
+
+/* On an error *info is all zero, whatever it held: type LC_DT_UNKNOWN and
+ * mask 0. A flag statx does not take, such as AT_REMOVEDIR, fails with
+ * EINVAL from the kernel. */
+static void test_file_stat_errors(void) {
+    lc_file_info info;
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    lc_result r = lc_file_stat(STAT_DIR "/" STAT_MISSING, &info);
+    TEST_ASSERT_EQ(r.error, LC_ERR_NOENT);
+    TEST_ASSERT_EQ(info.type, LC_DT_UNKNOWN);
+    TEST_ASSERT_EQ(info.mask, 0);
+    TEST_ASSERT_EQ(info.size, 0);
+    TEST_ASSERT_EQ(info.inode, 0);
+
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    TEST_ASSERT_EQ(lc_file_stat_at(AT_FDCWD, "/", AT_REMOVEDIR, &info).error, LC_ERR_INVAL);
+    TEST_ASSERT_EQ(info.mask, 0);
+    TEST_ASSERT_EQ(lc_file_stat_at(-1, "relative", 0, &info).error, LC_ERR_BADF);
+    TEST_ASSERT_EQ(lc_file_stat_fd(-1, &info).error, LC_ERR_BADF);
+    TEST_ASSERT_EQ(info.type, LC_DT_UNKNOWN);
+}
+
+/* True when every word of info's reserved space is 0. */
+static bool reserved_is_zero(const lc_file_info *info) {
+    for (size_t i = 0; i < sizeof info->reserved / sizeof info->reserved[0]; i++)
+        if (info->reserved[i] != 0) return false;
+    return true;
+}
+
+/* The reserved space is 0 after each of the three calls, whatever the
+ * caller's struct held before, and after one that fails. */
+static void test_file_stat_reserved_is_zero(void) {
+    int32_t dir = stat_dir();
+    TEST_REQUIRE(dir >= 0);
+    (void)lc_kernel_unlinkat(dir, STAT_TARGET, 0);
+    TEST_REQUIRE_OK(lc_file_write_all(STAT_DIR "/" STAT_TARGET, "five!", 5));
+
+    lc_file_info info;
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    TEST_ASSERT_OK(lc_file_stat(STAT_DIR "/" STAT_TARGET, &info));
+    TEST_ASSERT(reserved_is_zero(&info));
+
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    TEST_ASSERT_OK(lc_file_stat_at(dir, STAT_TARGET, AT_SYMLINK_NOFOLLOW, &info));
+    TEST_ASSERT(reserved_is_zero(&info));
+
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    TEST_ASSERT_OK(lc_file_stat_fd(dir, &info));
+    TEST_ASSERT(reserved_is_zero(&info));
+
+    lc_bytes_fill(&info, 0xa5, sizeof info);
+    TEST_ASSERT_EQ(lc_file_stat_at(dir, STAT_MISSING, 0, &info).error, LC_ERR_NOENT);
+    TEST_ASSERT(reserved_is_zero(&info));
+
+    TEST_ASSERT_EQ(lc_kernel_unlinkat(dir, STAT_TARGET, 0), 0);
+    lc_kernel_close_file(dir);
+}
+
+/* lc_file_get_size is lc_file_stat's size: a directory's, and a device
+ * node's st_size, 0 for /dev/null. */
+static void test_file_get_size_is_stat_size(void) {
+    lc_file_info info;
+    TEST_REQUIRE_OK(lc_file_stat(STAT_DIR, &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_DIR);
+    TEST_ASSERT_EQ(lc_file_get_size(STAT_DIR).value, (int64_t)info.size);
+    TEST_REQUIRE_OK(lc_file_stat("/dev/null", &info));
+    TEST_ASSERT_EQ(info.type, LC_DT_CHR);
+    TEST_ASSERT_EQ(info.rdev_major, 1);   /* /dev/null is char device 1:3 */
+    TEST_ASSERT_EQ(info.rdev_minor, 3);
+    lc_result r = lc_file_get_size("/dev/null");
+    TEST_ASSERT_OK(r);
+    TEST_ASSERT_EQ(r.value, 0);
+    TEST_ASSERT_EQ(lc_file_get_size(STAT_DIR "/" STAT_MISSING).error, LC_ERR_NOENT);
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)envp;
     test_init(argc, argv);
@@ -650,6 +986,20 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_file_functions_close_on_exec);
     TEST_RUN(test_writer_flush_retries_eintr);
     TEST_RUN(test_file_read_all_proc);
+
+    /* File status */
+    TEST_RUN(test_file_stat_at_fifo);
+    TEST_RUN(test_file_stat_at_socket);
+    TEST_RUN(test_file_stat_at_proc);
+    TEST_RUN(test_file_stat_at_sysfs);
+    TEST_RUN(test_file_stat_at_write_only);
+    TEST_RUN(test_file_stat_symlink);
+    TEST_RUN(test_file_stat_fields);
+    TEST_RUN(test_file_stat_attributes);
+    TEST_RUN(test_file_stat_fd_pipe);
+    TEST_RUN(test_file_stat_errors);
+    TEST_RUN(test_file_stat_reserved_is_zero);
+    TEST_RUN(test_file_get_size_is_stat_size);
 
     return test_main();
 }
