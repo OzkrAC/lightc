@@ -30,10 +30,10 @@
  * The chaos points make threads interleave in more ways. lc_chaos_seed
  * turns them on: then each pass of a chaos point may yield the CPU
  * (sched_yield) or spin for a while, as a random number seeded by it says.
- * The library has one in lc_spinlock_acquire, once the lock is taken, so
- * the threads that want it wait, and one in the heap's lock-free push of a
- * block that a thread frees into a page of another, between its load of the
- * list's head and its compare-and-swap. The tests seed them from the
+ * The library has one in lc_spinlock_acquire and in lc_spinlock_try_acquire,
+ * once the lock is taken, so the threads that want it wait, and one in each
+ * of the heap's lock-free pushes of a block that a thread frees into a page
+ * of another, between its load of the list's head and its compare-and-swap. The tests seed them from the
  * environment variable LC_CHAOS with tests/test.h's test_chaos_init, so a
  * run that fails can be run again with the seed it printed.
  *

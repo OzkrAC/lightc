@@ -51,3 +51,10 @@ regress/lio-3                    1
 regress/LOG-ts-uninit            1
 regress/NET-no-cloexec           1
 regress/NET-uring-sigpipe        1
+
+# Under qemu-user, VmRSS in /proc/self/status is the emulator's, which
+# counts memory that none of the program's mappings holds, so the three
+# tests of HEAP-thread-exit-leak that check VmRSS skip. The program tells
+# by VmSize, which is then more than 64 MiB above the size of the
+# mappings /proc/self/maps lists. Its two tests of the mapping counts run.
+regress/HEAP-thread-exit-leak    3

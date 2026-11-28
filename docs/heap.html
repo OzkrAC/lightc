@@ -44,7 +44,7 @@ The small allocator carves memory at two granularities:
 
 ### Per-thread allocation {#tls}
 
-Each thread owns an `lc_heap_local` — per-bucket page lists — reachable through the thread's TLS register (`%fs` on x86_64, `TPIDR_EL0` on aarch64) in a single instruction after the first allocation. Allocation touches shared state only when a new page or segment is needed, and then only a short global lock around the segment list. The locals are indexed in a global hash table keyed by thread id, so a recycled tid reconnects to its existing local, with its TLS slots cleared.
+Each thread owns an `lc_heap_local` — per-bucket page lists — reachable through the thread's TLS register (`%fs` on x86_64, `TPIDR_EL0` on aarch64) in a single instruction after the first allocation. Allocation touches shared state only when a new page or segment is needed, and then only a short global lock around the segment list. The locals are indexed in a global hash table keyed by thread id. A thread of `lc_thread_create` gives its local back when it exits ([Thread exit](#thread-exit)); a thread that ends itself with a raw `SYS_exit` leaves its local in the table, and a later thread that gets its id takes it over, with its TLS slots cleared.
 
 ### Cross-thread frees {#remote}
 
@@ -61,6 +61,40 @@ When the last block in a slab page is freed on its owning thread, the page is re
 :::note
 The TLS register must be valid before the first `%fs:0` read; `_start` establishes it for the main thread and `CLONE_SETTLS` for children (see [Threads](threads.html#detail)). This is why the heap and thread modules are intertwined.
 :::
+
+### Thread exit {#thread-exit}
+
+When the function of a thread that `lc_thread_create` started returns, the thread gives its heap state back before it exits. It drains the remote frees of each of its pages, returns the pages that are then empty to their segments, the one kept resident per bucket too, abandons the pages that still hold blocks, and unmaps its local. A block in an abandoned page stays valid: any thread may go on using it and free it, as a joiner frees the result its worker allocated.
+
+A free into an abandoned page clears the block's bit at once, under the heap's global lock, when that lock is free. When another thread holds the lock just then, the free goes onto a list of its own and tries the lock once more, and every holder of the lock applies that list before it releases the lock and looks at it again after: so the free is applied by the time the thread that held the lock has released it, with no later free or thread exit needed. An abandoned page goes back to its segment when the free of its last block is applied, and an allocation of its size class in another thread adopts it, before it takes a fresh page, once a quarter of its blocks are free. So the memory of threads that come and go comes back as their blocks are freed; a page that keeps a few of its blocks in use stays, with the rest of it free for an adoption to fill.
+
+A thread that ends itself with a raw `SYS_exit` skips this, and its local and pages stay until a thread that gets its id takes them over. A signal handler that allocates on a thread after that thread has given its heap state back starts a local that nothing gives back.
+
+### Page states {#states}
+
+Each slab page in use is in one of four states, and a page in none of them is free in its segment, held by no size class. This release has two of the states, owned and abandoned. Full and reserve belong to the same model and are for a later release, which uses them to bound the allocation walk and the cost of reclaiming.
+
+| State | The page | Who changes its blocks |
+|---|---|---|
+| owned | is on its owner's list for its size class | its owner, without a lock; another thread only pushes remote frees onto it |
+| full | (later) is on its owner's list of full pages for its class, which the allocation walk skips | as for owned |
+| reserve | (later) is empty, kept by its owner for reuse, at most two per class | its owner |
+| abandoned | is on one of two abandoned lists of its class, the one with room when at least a quarter of its blocks are free: its owner exited while it held a block | a thread that holds the heap's global lock |
+
+The transitions:
+
+- **free to owned:** an allocation that finds no free block in its own pages of the class, and no abandoned page of the class to adopt, takes a fresh page.
+- **owned to free:** the owner's free empties a page that is not the only one of its class, or the owner exits and the page is empty once its remote frees are drained.
+- **owned to abandoned:** the owner exits while the page still holds a block. From then on a free into the page does not push onto it: it is applied under the global lock, as above.
+- **abandoned to owned:** an allocation that finds no free block in its own pages of the class adopts an abandoned page of the class with at least a quarter of its blocks free, before it takes a fresh one. A page with fewer is left: it would give the adopter a few blocks, then sit full in its list.
+- **abandoned to free:** the free of the page's last block is applied.
+- **later:** owned to full, when the allocation walk finds the page full, and back to owned when a block is freed into it; owned to reserve, when a free empties a page other than the head of its class; reserve to owned, when an allocation reuses it; and reserve to free after the purge delay.
+
+The purge delay counts operations, not time: a reserve page goes back to its segment once `LC_HEAP_PURGE_OPS` allocations and frees of its owner, 4096 to start with, have passed without reusing it. Reading a clock on the free path would cost a system call.
+
+No step of these looks at more pages than it changes: an adoption takes the head of a list, and an exit costs its own pages and the frees waiting to be applied, however many pages are abandoned.
+
+The heap has three locks: the global lock, for the segment list, fresh pages and the abandoned lists; the table lock, for the table of locals; and the large-block cache's lock. No heap call holds two of them at once, and code that must hold more than one takes them in that order: table, global, large cache.
 
 ## Types {#types}
 

@@ -13,6 +13,15 @@
  *
  * Each allocation has a hidden 16-byte header storing its size class, so
  * lc_heap_free knows how to return it. See docs/heap.html for the full design.
+ *
+ * A thread of lc_thread_create gives its heap state back when its function
+ * returns. The blocks it allocated stay valid, and any thread may free them.
+ * A page of such a thread is adopted by another thread's allocation of its
+ * size class once a quarter of its blocks are free, and goes back to its
+ * segment when its last block is freed: at that free, or, when another
+ * thread holds the heap's lock just then, by the time that thread has
+ * released it, as each holder of the lock applies such frees before it
+ * releases it and looks for more after.
  */
 
 /* Allocate `size` bytes. */
@@ -79,7 +88,10 @@ void lc_heap_get_stats(lc_heap_stats *stats);
 void lc_heap_reset_stats(void);
 
 /* Return per-thread TLS slot array (used by lc_tls_get/set). A thread's
- * slots start NULL, also when it reuses the id of a thread that has exited. */
+ * slots start NULL, also when it reuses the id of a thread that has exited.
+ * The array is valid until the thread exits: a thread of lc_thread_create
+ * gives it back, with the rest of its heap state, when its function
+ * returns, so no other thread may keep a pointer into it past then. */
 void **lc_heap_tls_slots(void);
 
 #endif /* LIGHTC_HEAP_H */

@@ -44,6 +44,8 @@ typedef struct { int32_t tid; /* … stack, liveness … */ } lc_thread;
 #define LC_THREAD_MIN_STACK_SIZE (16 * 1024)     /* the least the _with_stack form takes */
 ```
 A thread runs an `lc_thread_func` and is represented by an `lc_thread` the caller owns. After a successful create, `tid` is the kernel thread id. The function's `int32_t` return becomes the status the thread exits with, which nothing collects: a thread's exit status is not reported to anyone, and `lc_thread_join` returns nothing. To hand a result back, have the function store it through `arg`; the join makes that store visible to the joiner.
+
+When the function returns, the thread gives its heap state back before it exits. A block it allocated, such as a result it hands back, stays valid, and any thread may free it: see [Thread exit](heap.html#thread-exit).
 :::
 
 :::member{#lc_thread_create}

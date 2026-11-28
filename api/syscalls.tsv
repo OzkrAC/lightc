@@ -35,10 +35,13 @@ lc_async_flush_ex	io_uring_enter	x86_64 aarch64
 lc_async_peek	io_uring_enter	x86_64 aarch64
 lc_async_ring_create	arch_prctl	x86_64
 lc_async_ring_create	close	x86_64 aarch64
+lc_async_ring_create	exit_group	x86_64 aarch64
 lc_async_ring_create	gettid	x86_64 aarch64
 lc_async_ring_create	io_uring_setup	x86_64 aarch64
+lc_async_ring_create	madvise	x86_64 aarch64
 lc_async_ring_create	mmap	x86_64 aarch64
 lc_async_ring_create	munmap	x86_64 aarch64
+lc_async_ring_create	write	x86_64 aarch64
 lc_async_ring_destroy	arch_prctl	x86_64
 lc_async_ring_destroy	close	x86_64 aarch64
 lc_async_ring_destroy	exit_group	x86_64 aarch64
@@ -104,13 +107,19 @@ lc_hashmap_set	mmap	x86_64 aarch64
 lc_hashmap_set	munmap	x86_64 aarch64
 lc_hashmap_set	write	x86_64 aarch64
 lc_heap_allocate	arch_prctl	x86_64
+lc_heap_allocate	exit_group	x86_64 aarch64
 lc_heap_allocate	gettid	x86_64 aarch64
+lc_heap_allocate	madvise	x86_64 aarch64
 lc_heap_allocate	mmap	x86_64 aarch64
 lc_heap_allocate	munmap	x86_64 aarch64
+lc_heap_allocate	write	x86_64 aarch64
 lc_heap_allocate_zeroed	arch_prctl	x86_64
+lc_heap_allocate_zeroed	exit_group	x86_64 aarch64
 lc_heap_allocate_zeroed	gettid	x86_64 aarch64
+lc_heap_allocate_zeroed	madvise	x86_64 aarch64
 lc_heap_allocate_zeroed	mmap	x86_64 aarch64
 lc_heap_allocate_zeroed	munmap	x86_64 aarch64
+lc_heap_allocate_zeroed	write	x86_64 aarch64
 lc_heap_free	arch_prctl	x86_64
 lc_heap_free	exit_group	x86_64 aarch64
 lc_heap_free	gettid	x86_64 aarch64
@@ -252,9 +261,12 @@ lc_probe_kernel	open_tree	x86_64 aarch64
 lc_probe_kernel	openat2	x86_64 aarch64
 lc_probe_kernel	pidfd_open	x86_64 aarch64
 lc_reader_create	arch_prctl	x86_64
+lc_reader_create	exit_group	x86_64 aarch64
 lc_reader_create	gettid	x86_64 aarch64
+lc_reader_create	madvise	x86_64 aarch64
 lc_reader_create	mmap	x86_64 aarch64
 lc_reader_create	munmap	x86_64 aarch64
+lc_reader_create	write	x86_64 aarch64
 lc_reader_destroy	arch_prctl	x86_64
 lc_reader_destroy	exit_group	x86_64 aarch64
 lc_reader_destroy	gettid	x86_64 aarch64
@@ -266,9 +278,12 @@ lc_reader_read_byte	read	x86_64 aarch64
 lc_reader_read_bytes	read	x86_64 aarch64
 lc_reader_read_line	read	x86_64 aarch64
 lc_ringbuf_create	arch_prctl	x86_64
+lc_ringbuf_create	exit_group	x86_64 aarch64
 lc_ringbuf_create	gettid	x86_64 aarch64
+lc_ringbuf_create	madvise	x86_64 aarch64
 lc_ringbuf_create	mmap	x86_64 aarch64
 lc_ringbuf_create	munmap	x86_64 aarch64
+lc_ringbuf_create	write	x86_64 aarch64
 lc_ringbuf_destroy	arch_prctl	x86_64
 lc_ringbuf_destroy	exit_group	x86_64 aarch64
 lc_ringbuf_destroy	gettid	x86_64 aarch64
@@ -281,13 +296,19 @@ lc_rwlock_read_unlock	futex	x86_64 aarch64
 lc_rwlock_write_lock	futex	x86_64 aarch64
 lc_rwlock_write_unlock	futex	x86_64 aarch64
 lc_scheduler_create	arch_prctl	x86_64
+lc_scheduler_create	exit_group	x86_64 aarch64
 lc_scheduler_create	gettid	x86_64 aarch64
+lc_scheduler_create	madvise	x86_64 aarch64
 lc_scheduler_create	mmap	x86_64 aarch64
 lc_scheduler_create	munmap	x86_64 aarch64
+lc_scheduler_create	write	x86_64 aarch64
 lc_scheduler_create_with_capacity	arch_prctl	x86_64
+lc_scheduler_create_with_capacity	exit_group	x86_64 aarch64
 lc_scheduler_create_with_capacity	gettid	x86_64 aarch64
+lc_scheduler_create_with_capacity	madvise	x86_64 aarch64
 lc_scheduler_create_with_capacity	mmap	x86_64 aarch64
 lc_scheduler_create_with_capacity	munmap	x86_64 aarch64
+lc_scheduler_create_with_capacity	write	x86_64 aarch64
 lc_scheduler_destroy	arch_prctl	x86_64
 lc_scheduler_destroy	exit_group	x86_64 aarch64
 lc_scheduler_destroy	gettid	x86_64 aarch64
@@ -335,16 +356,24 @@ lc_socket_set_reuse_address	setsockopt	x86_64 aarch64
 lc_socket_shutdown	shutdown	x86_64 aarch64
 lc_socket_tcp6	socket	x86_64 aarch64
 lc_socket_udp6	socket	x86_64 aarch64
+lc_thread_create	arch_prctl	x86_64
 lc_thread_create	clone	x86_64 aarch64
 lc_thread_create	exit	x86_64 aarch64
+lc_thread_create	exit_group	x86_64 aarch64
+lc_thread_create	madvise	x86_64 aarch64
 lc_thread_create	mmap	x86_64 aarch64
 lc_thread_create	mprotect	x86_64 aarch64
 lc_thread_create	munmap	x86_64 aarch64
+lc_thread_create	write	x86_64 aarch64
+lc_thread_create_with_stack	arch_prctl	x86_64
 lc_thread_create_with_stack	clone	x86_64 aarch64
 lc_thread_create_with_stack	exit	x86_64 aarch64
+lc_thread_create_with_stack	exit_group	x86_64 aarch64
+lc_thread_create_with_stack	madvise	x86_64 aarch64
 lc_thread_create_with_stack	mmap	x86_64 aarch64
 lc_thread_create_with_stack	mprotect	x86_64 aarch64
 lc_thread_create_with_stack	munmap	x86_64 aarch64
+lc_thread_create_with_stack	write	x86_64 aarch64
 lc_thread_join	futex	x86_64 aarch64
 lc_thread_join	munmap	x86_64 aarch64
 lc_time_elapsed_microseconds	clock_gettime	x86_64 aarch64
@@ -367,9 +396,12 @@ lc_tls_set	arch_prctl	x86_64
 lc_tls_set	gettid	x86_64 aarch64
 lc_tls_set	mmap	x86_64 aarch64
 lc_writer_create	arch_prctl	x86_64
+lc_writer_create	exit_group	x86_64 aarch64
 lc_writer_create	gettid	x86_64 aarch64
+lc_writer_create	madvise	x86_64 aarch64
 lc_writer_create	mmap	x86_64 aarch64
 lc_writer_create	munmap	x86_64 aarch64
+lc_writer_create	write	x86_64 aarch64
 lc_writer_destroy	arch_prctl	x86_64
 lc_writer_destroy	exit_group	x86_64 aarch64
 lc_writer_destroy	gettid	x86_64 aarch64

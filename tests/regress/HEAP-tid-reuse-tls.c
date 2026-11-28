@@ -10,6 +10,11 @@
  * slots as they were, and lc_tls_get gave it the dead thread's values. The
  * slots are now cleared when a thread takes a local over.
  *
+ * A thread of lc_thread_create now gives its local back when its function
+ * returns (HEAP-thread-exit-leak), so only a thread that ends itself with
+ * its own SYS_exit leaves a local behind for a thread of its id to take
+ * over. The marked threads end so, which keeps this test on the takeover.
+ *
  * MARKED threads each set a key to a value of their own and exit. Probe
  * threads then run one at a time, each joined before the next starts,
  * until the kernel's thread ids have wrapped round and WANTED probes got
@@ -49,12 +54,14 @@ static lc_tls_key key;
 static report marked[MARKED];
 static uint8_t is_marked[PID_MAX_LIMIT / 8];   /* one bit per thread id */
 
-/* Sets the key to this thread's own report, a value no other thread sets. */
+/* Sets the key to this thread's own report, a value no other thread sets,
+ * and ends the thread with SYS_exit, which leaves its local in the table. */
 static int32_t marker(void *arg) {
     report *r = arg;
     r->tid = lc_kernel_get_thread_id();
     r->found = lc_tls_get(key);
     lc_tls_set(key, r);
+    (void)lc_syscall1(SYS_exit, 0);
     return 0;
 }
 

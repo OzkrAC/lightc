@@ -21,6 +21,7 @@
 #include <lightc/heap.h>
 #include <lightc/syscall.h>
 #include <lightc/thread.h>
+#include <lightc/time.h>
 #include <stdatomic.h>
 
 #ifndef LC_FAULTINJECT
@@ -377,8 +378,9 @@ static int32_t allocate_one(void *arg) {
     return 0;
 }
 
-/* Each acquire of a spinlock passes one chaos point, and a free into a page
- * of another thread passes at least one, one per try of its CAS. */
+/* Each acquire of a spinlock passes one chaos point, as does a try-acquire
+ * that takes the lock, and a free into a page of another thread passes at
+ * least one, one per try of its CAS. */
 static void test_chaos_points_in_spinlock_and_remote_free(void) {
     /* This thread's own heap first, so that the free below takes no lock. */
     lc_result_ptr mine = lc_heap_allocate(64);
@@ -395,12 +397,14 @@ static void test_chaos_points_in_spinlock_and_remote_free(void) {
     lc_spinlock_acquire(&chaos_lock);
     lc_spinlock_release(&chaos_lock);
     TEST_ASSERT_EQ(lc_chaos_count(), 1u);
-    TEST_ASSERT(lc_spinlock_try_acquire(&chaos_lock));   /* no chaos point */
+    TEST_ASSERT(lc_spinlock_try_acquire(&chaos_lock));    /* takes it: a chaos point */
+    TEST_ASSERT_EQ(lc_chaos_count(), 2u);
+    TEST_ASSERT(!lc_spinlock_try_acquire(&chaos_lock));   /* fails: none */
     lc_spinlock_release(&chaos_lock);
-    TEST_ASSERT_EQ(lc_chaos_count(), 1u);
+    TEST_ASSERT_EQ(lc_chaos_count(), 2u);
 
     lc_heap_free(theirs);   /* their page: a remote free */
-    TEST_ASSERT(lc_chaos_count() >= 2u);
+    TEST_ASSERT(lc_chaos_count() >= 3u);
     uint64_t after_remote = lc_chaos_count();
     lc_heap_free(mine.value);   /* our page: no chaos point */
     TEST_ASSERT_EQ(lc_chaos_count(), after_remote);
@@ -552,6 +556,257 @@ static void test_chaos_init_stops_on_a_bad_value(void) {
     }
 }
 
+/* ===== The heap at a thread's exit, when its system calls fail =====
+ *
+ * When a thread of lc_thread_create returns, lc_heap_thread_exit gives its
+ * heap state back: it madvises the pages it returns, unmaps a segment they
+ * empty, points the TLS register at the sentinel (arch_prctl on x86_64) and
+ * unmaps the thread's local. Each worker below arms its rule just before it
+ * returns, so that the rule sees the calls of its exit, and main resets the
+ * table once the kernel has cleared the thread's `alive`, after the exit and
+ * before lc_thread_join unmaps the stack.
+ */
+
+#define EXIT_WAIT_MS 10000
+
+/* Starts func(arg), waits until its thread has exited, resets the rule
+ * table, then joins it. */
+static bool run_then_reset(lc_thread_func func, void *arg) {
+    lc_thread t;
+    if (lc_is_err(lc_thread_create(&t, func, arg))) return false;
+    int64_t start = lc_time_start_timer();
+    bool exited = true;
+    while (atomic_load_explicit(&t.alive, memory_order_acquire) != 0) {
+        if (lc_time_elapsed_milliseconds(start) > EXIT_WAIT_MS) {
+            exited = false;
+            break;
+        }
+        lc_time_sleep_microseconds(100);
+    }
+    lc_fault_reset();
+    lc_thread_join(&t);
+    return exited;
+}
+
+static bool same_segment(const void *a, const void *b) {
+    uintptr_t mask = ~(uintptr_t)(4 * 1024 * 1024 - 1);   /* a segment is 4 MiB, so aligned */
+    return ((uintptr_t)a & mask) == ((uintptr_t)b & mask);
+}
+
+/* 16 blocks of the 4096-byte class fill a 64 KiB page. A segment holds 63
+ * pages, and main holds a page of one, so 126 pages need at least one new
+ * segment, which holds pages of this thread's only. */
+#define SEGMENT_BLOCK_SIZE 4000
+#define SEGMENT_BLOCKS     (16 * 126)
+
+typedef struct {
+    void            *blocks[SEGMENT_BLOCKS];
+    uint32_t         got;
+    void            *slots;            /* lc_heap_tls_slots of the thread */
+    int64_t          rule;
+    _Atomic(int32_t) phase;            /* 1: allocated; 2: main freed them */
+    bool             allocated;
+} exit_fault_work;
+
+static exit_fault_work exit_fault_first, exit_fault_second;
+
+static bool wait_phase(_Atomic(int32_t) *phase, int32_t value) {
+    int64_t start = lc_time_start_timer();
+    while (atomic_load_explicit(phase, memory_order_acquire) != value) {
+        if (lc_time_elapsed_milliseconds(start) > EXIT_WAIT_MS) return false;
+        lc_time_sleep_microseconds(100);
+    }
+    return true;
+}
+
+/* Allocates enough to take new segments, waits while main frees it all,
+ * then arms munmap to fail: its exit drains main's frees, empties those
+ * segments and unmaps them and its local, which all fail. */
+static int32_t munmaps_fail_at_exit(void *arg) {
+    exit_fault_work *w = arg;
+    w->got = 0;
+    for (uint32_t i = 0; i < SEGMENT_BLOCKS; i++) {
+        lc_result_ptr r = lc_heap_allocate(SEGMENT_BLOCK_SIZE);
+        if (lc_ptr_is_err(r)) break;
+        w->blocks[i] = r.value;
+        ((uint8_t *)r.value)[0] = (uint8_t)i;
+        w->got++;
+    }
+    w->slots = lc_heap_tls_slots();
+    atomic_store_explicit(&w->phase, 1, memory_order_release);
+    (void)wait_phase(&w->phase, 2);
+    w->rule = arm(SYS_munmap, 1, 0, LC_ERR_NOMEM);
+    return 0;
+}
+
+/* With every mmap failing, allocates as much as the thread above did: it
+ * can only with the local and the segments whose munmap failed. */
+static int32_t allocate_with_mmap_failing(void *arg) {
+    exit_fault_work *w = arg;
+    w->rule = arm(SYS_mmap, 1, 0, LC_ERR_NOMEM);
+    w->got = 0;
+    for (uint32_t i = 0; i < SEGMENT_BLOCKS; i++) {
+        lc_result_ptr r = lc_heap_allocate(SEGMENT_BLOCK_SIZE);
+        if (lc_ptr_is_err(r)) break;
+        w->blocks[i] = r.value;
+        ((uint8_t *)r.value)[SEGMENT_BLOCK_SIZE - 1] = (uint8_t)i;
+        w->got++;
+    }
+    w->slots = lc_heap_tls_slots();
+    w->allocated = w->got == SEGMENT_BLOCKS && lc_fault_hits(w->rule) == 0;
+    for (uint32_t i = 0; i < w->got; i++) lc_heap_free(w->blocks[i]);
+    lc_fault_disarm(w->rule);
+    return 0;
+}
+
+/* A segment whose munmap fails stays on the heap's list with every page
+ * free, and a local whose munmap fails is kept for the next thread, so a
+ * later thread needs no mmap for either, rather than both staying mapped
+ * where nothing reaches them. */
+static void test_heap_exit_keeps_what_munmap_failed_to_unmap(void) {
+    lc_result_ptr mine = lc_heap_allocate(SEGMENT_BLOCK_SIZE);   /* holds a page of a segment */
+    TEST_REQUIRE_PTR_OK(mine);
+
+    exit_fault_work *first = &exit_fault_first;
+    first->rule = -1;
+    atomic_store(&first->phase, 0);
+    lc_thread t;
+    TEST_REQUIRE_OK(lc_thread_create(&t, munmaps_fail_at_exit, first));
+    bool allocated = wait_phase(&first->phase, 1);
+    TEST_ASSERT(allocated);
+    TEST_ASSERT_EQ(first->got, (uint32_t)SEGMENT_BLOCKS);
+    bool new_segment = false;
+    for (uint32_t i = 0; i < first->got; i++) {
+        if (!same_segment(first->blocks[i], mine.value)) new_segment = true;
+        lc_heap_free(first->blocks[i]);   /* remote frees: its exit drains them */
+    }
+    TEST_ASSERT(new_segment);
+    atomic_store_explicit(&first->phase, 2, memory_order_release);
+    int64_t start = lc_time_start_timer();
+    while (atomic_load_explicit(&t.alive, memory_order_acquire) != 0 &&
+           lc_time_elapsed_milliseconds(start) < EXIT_WAIT_MS)
+        lc_time_sleep_microseconds(100);
+    TEST_ASSERT(first->rule >= 0);
+    uint64_t failed = first->rule >= 0 ? lc_fault_hits(first->rule) : 0;
+    lc_fault_reset();
+    lc_thread_join(&t);
+    TEST_ASSERT(failed >= 2u);   /* a new segment at least, and the local */
+
+    exit_fault_work *second = &exit_fault_second;
+    second->rule = -1;
+    TEST_REQUIRE(run_then_reset(allocate_with_mmap_failing, second));
+    TEST_ASSERT(second->allocated);
+    TEST_ASSERT_EQ(second->got, (uint32_t)SEGMENT_BLOCKS);
+    TEST_ASSERT(second->slots == first->slots);   /* the kept local */
+
+    lc_heap_free(mine.value);
+}
+
+typedef struct {
+    int64_t rule;
+    void   *theirs;     /* a block of main's, which the thread frees */
+    void   *slots;
+    int32_t error;
+} exit_fault_small;
+
+/* With every madvise failing, the exit still gives the thread's emptied
+ * page back to its segment. */
+static int32_t madvise_fails_at_exit(void *arg) {
+    exit_fault_small *w = arg;
+    void *blocks[8];
+    for (int i = 0; i < 8; i++) {
+        lc_result_ptr r = lc_heap_allocate(500);
+        blocks[i] = lc_ptr_is_ok(r) ? r.value : NULL;
+        if (blocks[i] == NULL) w->error = r.error;
+    }
+    for (int i = 0; i < 8; i++) lc_heap_free(blocks[i]);
+    w->rule = arm(SYS_madvise, 1, 0, LC_ERR_NOMEM);
+    return 0;
+}
+
+static void test_heap_exit_survives_failed_madvise(void) {
+    lc_heap_stats before, after;
+    lc_heap_get_stats(&before);
+    exit_fault_small w = { .rule = -1 };
+    TEST_REQUIRE(run_then_reset(madvise_fails_at_exit, &w));
+    lc_heap_get_stats(&after);
+    TEST_ASSERT_EQ(w.error, 0);
+    TEST_ASSERT(w.rule >= 0);
+#if LC_STATS
+    TEST_ASSERT(after.heap_pages_reclaimed >= before.heap_pages_reclaimed + 1);
+#endif
+
+    /* The page that kept its memory is a fresh one again. */
+    exit_fault_small again = { .rule = -1 };
+    TEST_REQUIRE(run_then_reset(madvise_fails_at_exit, &again));
+    TEST_ASSERT_EQ(again.error, 0);
+}
+
+/* With every mmap failing from its start, a thread gets no local: its
+ * allocation fails with LC_ERR_NOMEM, it has no TLS slots, its free of a
+ * block of another thread still goes onto that page's remote list, and its
+ * exit has nothing to give back. */
+static int32_t no_local_at_all(void *arg) {
+    exit_fault_small *w = arg;
+    w->rule = arm(SYS_mmap, 1, 0, LC_ERR_NOMEM);
+    lc_result_ptr r = lc_heap_allocate(64);
+    w->error = r.error;
+    if (lc_ptr_is_ok(r)) lc_heap_free(r.value);
+    w->slots = lc_heap_tls_slots();
+    lc_heap_free(w->theirs);
+    return 0;
+}
+
+static void test_heap_thread_without_a_local(void) {
+    lc_result_ptr mine = lc_heap_allocate(64);
+    TEST_REQUIRE_PTR_OK(mine);
+    exit_fault_small w = { .rule = -1, .theirs = mine.value };
+    TEST_REQUIRE(run_then_reset(no_local_at_all, &w));
+    TEST_ASSERT_EQ(w.error, LC_ERR_NOMEM);
+    TEST_ASSERT_NULL(w.slots);
+
+    /* The free above went onto this thread's page, which drains it. */
+    lc_result_ptr again = lc_heap_allocate(64);
+    TEST_REQUIRE_PTR_OK(again);
+    TEST_ASSERT(again.value == mine.value);
+    lc_heap_free(again.value);
+}
+
+#if defined(__x86_64__)
+/* When arch_prctl fails at the exit, FS still points at the local, which
+ * then stays mapped, out of the table and with no page; the next thread
+ * maps a local of its own. */
+static int32_t arch_prctl_fails_at_exit(void *arg) {
+    exit_fault_small *w = arg;
+    lc_result_ptr r = lc_heap_allocate(64);
+    w->error = r.error;
+    if (lc_ptr_is_ok(r)) lc_heap_free(r.value);
+    w->slots = lc_heap_tls_slots();
+    w->rule = arm(SYS_arch_prctl, 1, 1, LC_ERR_PERM);
+    return 0;
+}
+
+static void test_heap_exit_survives_failed_arch_prctl(void) {
+    exit_fault_small first = { .rule = -1 };
+    lc_thread t;
+    TEST_REQUIRE_OK(lc_thread_create(&t, arch_prctl_fails_at_exit, &first));
+    int64_t start = lc_time_start_timer();
+    while (atomic_load_explicit(&t.alive, memory_order_acquire) != 0 &&
+           lc_time_elapsed_milliseconds(start) < EXIT_WAIT_MS)
+        lc_time_sleep_microseconds(100);
+    TEST_ASSERT(first.rule >= 0);
+    TEST_ASSERT_EQ(first.rule >= 0 ? lc_fault_hits(first.rule) : 0, 1u);
+    lc_fault_reset();
+    lc_thread_join(&t);
+    TEST_ASSERT_EQ(first.error, 0);
+
+    exit_fault_small second = { .rule = -1 };
+    TEST_REQUIRE(run_then_reset(arch_prctl_fails_at_exit, &second));
+    TEST_ASSERT_EQ(second.error, 0);
+    TEST_ASSERT(second.slots != first.slots);
+}
+#endif
+
 /* ===== main ===== */
 
 int main(int argc, char **argv, char **envp) {
@@ -581,6 +836,14 @@ int main(int argc, char **argv, char **envp) {
     TEST_RUN(test_chaos_keeps_locks_and_remote_frees_right);
     TEST_RUN(test_chaos_init_reads_lc_chaos);
     TEST_RUN(test_chaos_init_stops_on_a_bad_value);
+
+    /* The heap at a thread's exit, when its system calls fail */
+    TEST_RUN(test_heap_exit_keeps_what_munmap_failed_to_unmap);
+    TEST_RUN(test_heap_exit_survives_failed_madvise);
+    TEST_RUN(test_heap_thread_without_a_local);
+#if defined(__x86_64__)
+    TEST_RUN(test_heap_exit_survives_failed_arch_prctl);
+#endif
 
     return test_main();
 }

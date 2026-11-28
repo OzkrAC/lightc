@@ -86,6 +86,7 @@ T lc_heap_free
 T lc_heap_get_stats
 T lc_heap_reallocate
 T lc_heap_reset_stats
+T lc_heap_thread_exit
 T lc_heap_tls_sentinel
 T lc_heap_tls_slots
 T lc_kernel_clone

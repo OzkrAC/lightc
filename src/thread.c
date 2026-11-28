@@ -30,6 +30,38 @@ extern int64_t lc_thread_start(uint64_t flags, uint8_t *stack_top,
 /* From heap.c — the null TLS sentinel so child threads can safely read %fs:0 */
 extern void *lc_heap_tls_sentinel(void);
 
+/* From heap.c — gives back the calling thread's heap state as it exits */
+extern void lc_heap_thread_exit(void);
+
+/*
+ * What a new thread is to run. lc_thread_create_with_stack writes it at the
+ * top of the thread's stack mapping, above the stack itself, and starts the
+ * thread in thread_entry with its address. It stays there until the join
+ * unmaps the stack.
+ */
+typedef struct {
+    lc_thread_func func;
+    void          *arg;
+} thread_start;
+
+/* The size the start block takes at the top of the mapping, a multiple of
+ * 16 so that the stack below it starts 16-byte aligned. */
+#define THREAD_START_SIZE ((sizeof(thread_start) + 15) & ~(size_t)15)
+
+/*
+ * The entry of every thread of lc_thread_create: run the thread's function,
+ * then give back its heap state, the last thing the thread does before
+ * thread.S makes SYS_exit with the status the function returned. A thread
+ * that makes its own SYS_exit skips lc_heap_thread_exit, and the heap keeps
+ * its local, for the next thread of that id to take over.
+ */
+static int32_t thread_entry(void *arg) {
+    thread_start *start = arg;
+    int32_t status = start->func(start->arg);
+    lc_heap_thread_exit();
+    return status;
+}
+
 lc_result lc_thread_create(lc_thread *thread, lc_thread_func func, void *arg) {
     return lc_thread_create_with_stack(thread, func, arg, LC_DEFAULT_STACK_SIZE);
 }
@@ -78,8 +110,15 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
     thread->stack_base = stack;
     thread->stack_size = total_size;
 
-    /* Stack grows downward — pass the top */
-    uint8_t *stack_top = (uint8_t *)stack + total_size;
+    /* Stack grows downward — pass the top, below the start block. The
+     * mapping is whole pages and the stack at least LC_THREAD_MIN_STACK_SIZE,
+     * so the block fits, and the clone makes these stores visible to the
+     * child. */
+    uint8_t *mapping_top = (uint8_t *)stack + total_size;
+    thread_start *start = (thread_start *)(mapping_top - THREAD_START_SIZE);
+    start->func = func;
+    start->arg = arg;
+    uint8_t *stack_top = (uint8_t *)start;
 
     /* Both parent_tid and child_tid point to thread->alive:
      *   CLONE_PARENT_SETTID → kernel stores tid here before returning to parent
@@ -88,7 +127,7 @@ lc_result lc_thread_create_with_stack(lc_thread *thread, lc_thread_func func, vo
                                   (int32_t *)&thread->alive,
                                   (int32_t *)&thread->alive,
                                   lc_heap_tls_sentinel(),
-                                  func, arg);
+                                  thread_entry, start);
     if (tid < 0) {
         thread->stack_base = NULL;  /* so a join cannot unmap it a second time */
         thread->stack_size = 0;
@@ -137,7 +176,14 @@ void lc_spinlock_release(lc_spinlock *lock) {
 }
 
 bool lc_spinlock_try_acquire(lc_spinlock *lock) {
-    return atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) == 0;
+    bool taken = atomic_exchange_explicit(&lock->state, 1, memory_order_acquire) == 0;
+#ifdef LC_FAULTINJECT
+    /* As in lc_spinlock_acquire, once the lock is taken: the heap's free
+     * into an abandoned page takes it so, and other frees then find it
+     * taken more often. */
+    if (taken) lc_chaos_point();
+#endif
+    return taken;
 }
 
 /*
